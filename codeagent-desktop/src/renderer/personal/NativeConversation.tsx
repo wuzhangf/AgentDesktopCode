@@ -163,6 +163,39 @@ function NativeConversationView({taskId, sendShortcut}: {taskId: string; sendSho
   const lastEventText = native?.lastEventKind ? `${EVENT_LABELS[native.lastEventKind] ?? native.lastEventKind} ${fmtClock(native.lastEventAt)}`.trim() : '';
   const claimedKeys = new Set(transcriptRows.filter(r => r.commandId).map(r => r.commandId as string));
   const orphanGroups = [...activityGroups.entries()].filter(([key]) => !key || !claimedKeys.has(key));
+  // A turn's user and assistant rows share one commandId, so attaching the
+  // whole group per-row would repeat it once per message. Instead each item
+  // lands under the latest row at-or-before its own time — it renders right
+  // after the narrative it followed; undated items settle under the turn's
+  // last row.
+  const activitySlices = new Map<string, NativeActivityRow[]>();
+  const sliceTailRow = new Map<string, string>();
+  {
+    const rowsByKey = new Map<string, NativeMessageRow[]>();
+    for (const row of transcriptRows) if (row.commandId) {
+      const list = rowsByKey.get(row.commandId) ?? [];
+      list.push(row);
+      rowsByKey.set(row.commandId, list);
+    }
+    for (const [key, items] of activityGroups) {
+      const rows = rowsByKey.get(key);
+      if (!rows?.length) continue;
+      const last = rows[rows.length - 1]!;
+      items.forEach((item, index) => {
+        const at = Date.parse(item.occurredAt ?? '');
+        let row = Number.isFinite(at) ? rows[0]! : last;
+        if (Number.isFinite(at)) for (const candidate of rows) {
+          const rt = Date.parse(candidate.occurredAt ?? '');
+          if (!Number.isFinite(rt)) continue;
+          if (rt <= at) row = candidate; else break;
+        }
+        const slice = activitySlices.get(row.id) ?? [];
+        slice.push(item);
+        activitySlices.set(row.id, slice);
+        if (index === items.length - 1) sliceTailRow.set(key, row.id);
+      });
+    }
+  }
   // Turn-activity blocks: the turn that owns the latest input stays expanded
   // so live tool steps are visible; older turns collapse but remember a
   // manual toggle either way.
@@ -201,7 +234,7 @@ function NativeConversationView({taskId, sendShortcut}: {taskId: string; sendSho
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }
   const renderMessage = (row: NativeMessageRow) => {
-    const turnActivity = row.commandId ? activityGroups.get(row.commandId) : undefined;
+    const turnActivity = activitySlices.get(row.id);
     return <div className="message-turn" key={row.id} data-testid={row.id === 'legacy-output' ? 'native-accumulated-output' : undefined}>
       {row.id === 'legacy-output' ? <span className="native-history-note">累计公开输出 · 来源未提供这部分逐条历史{row.textTruncated ? ' · 正文已截断' : ''}</span> : null}
       <ConversationMessage role={row.role} text={row.text} pending={row.pending} testId={`native-message-${row.id}`}
@@ -213,7 +246,7 @@ function NativeConversationView({taskId, sendShortcut}: {taskId: string; sendSho
         : null}
       {turnActivity?.length ? (() => {
         const turnKey = row.commandId as string;
-        const open = turnToggle.current.get(turnKey) ?? turnKey === latestTurnKey;
+        const open = turnToggle.current.get(turnKey) ?? (turnKey === latestTurnKey && sliceTailRow.get(turnKey) === row.id);
         return <details className="native-activity native-turn-activity" data-testid="native-turn-activity" open={open}
           onToggle={e => turnToggle.current.set(turnKey, e.currentTarget.open)}>
           <summary>本轮执行过程 · {turnActivity.length} 项{turnActivity.at(-1)?.state === 'running' ? ` · ${turnActivity.at(-1)!.label}` : ''}</summary>

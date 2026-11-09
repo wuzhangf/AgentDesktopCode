@@ -312,6 +312,46 @@ describe('native-messages/1 conversation paging', () => {
     expect(screen.queryByText('任务已完成')).toBeNull();
   });
 
+  it('interleaves a turn\'s tool steps between its narratives instead of repeating the block', async () => {
+    const T = (sec: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, sec)).toISOString();
+    const detail = {...DETAIL, native: {...DETAIL.native, state: 'RUNNING', currentCommandId: 'cmd-1'}};
+    const page = msgPage([
+      msgItem(1, 1, 'user', '审查下代码', 'ACCEPTED', {commandId: 'cmd-1', occurredAt: T(0)}),
+      msgItem(2, 1, 'assistant', '我先看下改动', 'COMPLETED', {commandId: 'cmd-1', occurredAt: T(30)}),
+      msgItem(3, 1, 'assistant', '再看几个文件', 'COMPLETED', {commandId: 'cmd-1', occurredAt: T(60)}),
+    ]);
+    const tool = (id: string, startSec: number, endSec: number, detailText: string) => ([
+      {kind: 'TOOL_START', toolCallId: id, toolName: 'bash', detail: detailText, targetCommandId: 'cmd-1', occurredAt: T(startSec)},
+      {kind: 'TOOL_END', toolCallId: id, toolName: 'bash', status: 'completed', isError: false, detail: detailText, result: 'ok', targetCommandId: 'cmd-1', occurredAt: T(endSec)},
+    ]);
+    const operation = vi.fn(async (op: PersonalOperation) => {
+      if (op.action === 'TASK') return env(detail);
+      if (op.action === 'TASK_MESSAGES') return env(page);
+      if (op.action === 'TASK_ACTIVITY') return env({items: [...tool('t1', 10, 15, 'git status'), ...tool('t2', 40, 45, 'sed -n 1,20p a.go')], cursor: '4'});
+      if (op.action === 'NATIVE_ARTIFACTS' || op.action === 'NATIVE_INPUTS') return env({items: []});
+      return env({});
+    });
+    window.codeAgentDesktop = {personalOperation: operation} as unknown as DesktopApi;
+    render(<NativeConversation taskId="t1" />);
+    await screen.findByText('我先看下改动');
+    await waitFor(() => expect(screen.getAllByTestId('native-turn-activity')).toHaveLength(2));
+    const list = screen.getByTestId('native-message-list');
+    const order = [...list.querySelectorAll('[data-testid^="native-message-source-"], [data-testid="native-turn-activity"]')]
+      .map(el => el.getAttribute('data-testid'));
+    // T10 tool lands after the user row, T40 tool after the first narrative —
+    // user → [t1] → narrative → [t2] → narrative.
+    expect(order).toEqual([
+      'native-message-source-m-1', 'native-turn-activity',
+      'native-message-source-m-2', 'native-turn-activity',
+      'native-message-source-m-3',
+    ]);
+    const blocks = screen.getAllByTestId('native-turn-activity');
+    expect(blocks[0]!.textContent).toContain('git status');
+    expect(blocks[0]!.textContent).not.toContain('sed -n');
+    expect(blocks[1]!.textContent).toContain('sed -n 1,20p a.go');
+    expect(blocks[1]!.textContent).not.toContain('git status');
+  });
+
   it('queued task shows position, slot occupancy and the start-of-run deadline', async () => {
     const queued = {
       ...DETAIL,
