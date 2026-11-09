@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "agent-code-api-artifact/1",
+  "version": "0.1.0-rc.1",
+  "sourceRepository": "AgentCodeService",
+  "sourceCommit": "b6e44dc0ff6cc6430a3dc6c344847ad9c335c3b6",
+  "protocolCompatibility": ["v1", "v2"],
+  "files": {
+    "openapi/business-codeagent-v2.yaml": "A7D0DB9BA8DDD6240CAB21F6D14E3E3536007F7114E084958FF6CD5D5FC25ED7",
+    "failure-catalog/failures.yaml": "4B046D4479AAD659A9F0F8CE24CD4B21F504DE9066C05E98214776F2128E710F"
+  },
+  "generatedBy": "AgentCodeService/distribution/assemble-local.ps1"
+}

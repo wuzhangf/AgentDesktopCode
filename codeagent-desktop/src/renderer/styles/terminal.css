@@ -1,0 +1,50 @@
+/* Terminal dock — ui-polish-plan-2026-10 §9 (U5). Loaded after styles.css;
+ * the legacy terminal-dock-header / terminal-context / primary-toolbar rules
+ * were removed from styles.css in the same phase. */
+
+.rotate-90 { transform: rotate(90deg); }
+
+/* ---- tab bar (always visible, [+ ▾] on the right) ------------------------ */
+.terminal-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.terminal-tabs { display: flex; flex: 1; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.terminal-tab { min-height: 26px !important; padding: 3px 9px !important; border-radius: 5px 5px 0 0 !important; color: var(--text-muted) !important; }
+.terminal-tab-active, .terminal-tab-active:hover:not(:disabled) { border-color: var(--accent) !important; color: var(--text-primary) !important; background: var(--bg-hover) !important; }
+.terminal-tab-dot { display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: var(--text-muted); vertical-align: middle; }
+.terminal-tab-dot.terminal-state-RUNNING { background: var(--success); }
+.terminal-tab-dot.terminal-state-STARTING, .terminal-tab-dot.terminal-state-CREATED { background: var(--info); }
+.terminal-tab-dot.terminal-state-FAILED, .terminal-tab-dot.terminal-state-LOST { background: var(--danger); }
+.terminal-tab-dot.terminal-state-EXITED, .terminal-tab-dot.terminal-state-TERMINATED,
+.terminal-tab-dot.terminal-state-CLOSED { background: var(--text-muted); }
+.terminal-tab-exit { margin-left: 4px; color: var(--text-muted); font-size: var(--fs-2xs); }
+
+.terminal-new { display: inline-flex; flex-shrink: 0; }
+.terminal-new-button { min-height: 26px !important; padding: 3px 8px !important; border-radius: 5px 0 0 5px !important; }
+.terminal-new-menu-button { min-height: 26px !important; padding: 3px 6px !important; border-left: 0 !important; border-radius: 0 5px 5px 0 !important; }
+
+/* ---- one-row command input (T3) ------------------------------------------ */
+.terminal-run-command { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.terminal-run-command input { flex: 1; min-width: 0; font-family: var(--font-mono, monospace); }
+
+/* ---- create form ---------------------------------------------------------- */
+.terminal-dock-create { display: grid; grid-template-columns: minmax(150px, 1.05fr) minmax(100px, .7fr) minmax(160px, 1.25fr); align-items: end; gap: 8px; padding: 9px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--bg-surface); }
+.terminal-dock-create label { display: flex; min-width: 0; flex-direction: column; gap: 3px; color: var(--text-muted); font-size: var(--fs-xs); }
+
+/* ---- bottom status bar: meta left, actions right -------------------------- */
+.terminal-dock-statusbar { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.terminal-dock-meta { display: flex; flex: 1; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; color: var(--text-muted); font-family: var(--font-mono, monospace); font-size: var(--fs-2xs); }
+.terminal-dock-meta > span { padding: 2px 5px; border: 1px solid var(--border-subtle); border-radius: 4px; }
+.terminal-dock-meta .terminal-badge-agent { margin-right: 0; }
+.terminal-dock-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.terminal-dock-controls button { min-height: 24px !important; padding: 2px 7px !important; }
+.terminal-open-url { border-color: var(--accent) !important; color: var(--accent) !important; font-family: var(--font-mono, monospace); }
+
+@media (max-width: 900px) {
+  .terminal-dock-create { grid-template-columns: 1fr; align-items: stretch; }
+  .terminal-dock-statusbar { align-items: stretch; flex-direction: column; }
+}

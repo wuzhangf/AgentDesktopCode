@@ -1,0 +1,89 @@
+/* Git changes surface — ui-polish-plan-2026-10 §8 (U4).
+ * Loaded after styles.css; tone colours stay in styles.css for the CLI
+ * transcript's shared .diff-line rules, light-theme overrides live here. */
+
+/* ---- 8.1 numbered diff lines -------------------------------------------- */
+.diff-line {
+  display: grid;
+  grid-template-columns: 48px 48px 16px minmax(0, 1fr);
+  align-items: stretch;
+  padding: 0;
+  white-space: pre;
+}
+.diff-line-gutter {
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+.diff-line.tone-add .diff-line-gutter { background: rgba(91, 212, 154, .07); }
+.diff-line.tone-del .diff-line-gutter { background: rgba(242, 125, 142, .07); }
+.diff-line-sign { color: inherit; text-align: center; user-select: none; }
+.diff-line-code { display: block; min-width: 0; padding-right: 8px; font-family: inherit; white-space: pre; }
+.diff-lines.wrap .diff-line-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-line.tone-meta .diff-line-code { color: var(--text-muted); }
+.diff-line-hunk {
+  padding: 2px 10px;
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 8%, transparent);
+  font-size: var(--fs-2xs);
+  user-select: none;
+  white-space: pre;
+}
+
+/* ---- 8.2 two-line file rows ---------------------------------------------- */
+.git-file-row > button { display: flex; flex-direction: column; align-items: stretch; gap: 1px; }
+.git-file-row-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.git-file-stats { display: inline-flex; flex-shrink: 0; gap: 5px; font-size: var(--fs-2xs); }
+.git-file-stats em, .git-diff-stats em { font-style: normal; }
+.git-file-dir {
+  display: block;
+  min-width: 0;
+  padding-left: 22px;
+  overflow: hidden;
+  color: var(--text-muted);
+  direction: rtl;
+  font-size: var(--fs-2xs);
+  text-align: left;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+  white-space: nowrap;
+}
+
+/* ---- 8.3 toolbar + sticky file header ------------------------------------ */
+.git-changes-summary { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.git-changes-summary strong { color: var(--text-primary); font-size: var(--fs-md); white-space: nowrap; }
+.git-changes-summary > span { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.git-change-stats { display: flex; align-items: center; gap: 9px; }
+.git-diff-option {
+  min-height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: var(--fs-xs);
+}
+.git-diff-option:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-hover); }
+.git-diff-option.selected { border-color: var(--accent); color: var(--accent); }
+.git-diff-header { flex: 0 0 auto; gap: 12px; }
+.git-diff-title { display: flex; flex: 1; align-items: center; gap: 9px; min-width: 0; }
+.git-diff-stats { display: inline-flex; flex-shrink: 0; gap: 6px; font-size: var(--fs-2xs); }
+.git-diff-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.git-diff-actions button {
+  min-height: 25px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: var(--fs-xs);
+}
+.git-diff-actions button:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-hover); }
+
+/* ---- light theme overrides (migrated from styles.css §U4) ----------------- */
+.workbench[data-theme="light"] .diff-line.tone-add { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.workbench[data-theme="light"] .diff-line.tone-del { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.workbench[data-theme="light"] .diff-line.tone-ctx { color: var(--text-secondary); }

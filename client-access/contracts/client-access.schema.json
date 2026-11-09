@@ -1,0 +1,800 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sage:client-access:1",
+  "$defs": {
+    "Manifest": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "client-access/1"
+        },
+        "storeId": {
+          "type": "string"
+        },
+        "authBinding": {
+          "type": "string"
+        },
+        "replyDelivery": {
+          "const": "POLL"
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "requestBytes": {
+              "const": 65536
+            },
+            "textBytes": {
+              "const": 8192
+            },
+            "replyPageBytes": {
+              "const": 262144
+            }
+          },
+          "required": [
+            "requestBytes",
+            "textBytes",
+            "replyPageBytes"
+          ],
+          "additionalProperties": true
+        },
+        "features": {
+          "type": "object",
+          "properties": {
+            "conversationCreate": {
+              "type": "boolean"
+            },
+            "replyContent": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "conversationCreate",
+            "replyContent"
+          ],
+          "additionalProperties": true
+        },
+        "bootId": {
+          "type": "string"
+        },
+        "authorizationRevision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "storeId",
+        "authBinding",
+        "replyDelivery",
+        "limits",
+        "features"
+      ],
+      "additionalProperties": true
+    },
+    "Agent": {
+      "type": "object",
+      "properties": {
+        "agentRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "sourceKind": {
+          "type": "string"
+        },
+        "availability": {
+          "enum": [
+            "AVAILABLE",
+            "UNAVAILABLE",
+            "UNSUPPORTED"
+          ]
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engineId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agentRef",
+        "displayName",
+        "sourceKind",
+        "availability",
+        "reasonCode"
+      ],
+      "additionalProperties": true
+    },
+    "Agents": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Agent"
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": true
+    },
+    "ConversationPage": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "agentRef": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 2800,
+                "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+              },
+              "conversationRef": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 2800,
+                "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agentRef",
+              "conversationRef",
+              "title"
+            ],
+            "additionalProperties": true
+          },
+          "maxItems": 50
+        },
+        "nextCursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor",
+        "truncated"
+      ],
+      "additionalProperties": true
+    },
+    "Action": {
+      "type": "object",
+      "properties": {
+        "actionId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "availability": {
+          "enum": [
+            "AVAILABLE",
+            "UNAVAILABLE",
+            "UNSUPPORTED"
+          ]
+        },
+        "reasonCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputKind": {
+          "type": "string"
+        },
+        "binding": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "actionId",
+        "label",
+        "availability",
+        "reasonCode",
+        "inputKind",
+        "binding"
+      ],
+      "additionalProperties": true
+    },
+    "Conversation": {
+      "type": "object",
+      "properties": {
+        "agentRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "conversationRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "sourceState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "executionRef": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 2800,
+                "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+              },
+              "sourceState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "executionRef",
+              "sourceState"
+            ],
+            "additionalProperties": true
+          },
+          "maxItems": 20
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNSUPPORTED"
+              ]
+            },
+            "reasonCode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "meaning": {
+              "type": "string"
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "availability",
+            "reasonCode",
+            "meaning",
+            "binding"
+          ],
+          "additionalProperties": true
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Action"
+          },
+          "maxItems": 200
+        },
+        "actionsTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agentRef",
+        "conversationRef",
+        "title",
+        "observedAt",
+        "sourceState",
+        "executions",
+        "message",
+        "actions",
+        "actionsTruncated"
+      ],
+      "additionalProperties": true
+    },
+    "CreateRequest": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        }
+      },
+      "required": [
+        "requestId"
+      ],
+      "additionalProperties": false
+    },
+    "MessageRequest": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "description": "Additionally at most 8192 UTF-8 bytes, not whitespace-only."
+        },
+        "binding": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "requestId",
+        "text",
+        "binding"
+      ],
+      "additionalProperties": false
+    },
+    "ActionRequest": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        },
+        "actionId": {
+          "enum": [
+            "execution.supplement",
+            "execution.stop",
+            "execution.pause",
+            "execution.resume_paused",
+            "execution.resume_waiting",
+            "input.respond"
+          ]
+        },
+        "binding": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "input": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192,
+                  "description": "Additionally at most 8192 UTF-8 bytes, not whitespace-only."
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "confirmed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "confirmed"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192,
+                  "description": "Additionally at most 8192 UTF-8 bytes, not whitespace-only."
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "decision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192,
+                  "description": "Additionally at most 8192 UTF-8 bytes, not whitespace-only."
+                }
+              },
+              "required": [
+                "decision"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "actionId",
+        "binding",
+        "input"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptLocator": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "CREATE_CONVERSATION"
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+            },
+            "agentRef": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "agentRef"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "MESSAGE"
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+            },
+            "conversationRef": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "conversationRef",
+            "binding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "ACTION"
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+            },
+            "conversationRef": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            "actionId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "conversationRef",
+            "binding",
+            "actionId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        },
+        "accepted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sourceStatus": {
+          "type": "string"
+        },
+        "consumed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "conversationRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "executionRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "requestId",
+        "accepted",
+        "sourceStatus",
+        "consumed",
+        "observedAt"
+      ],
+      "additionalProperties": true
+    },
+    "Reply": {
+      "type": "object",
+      "properties": {
+        "replyRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "contentRevision": {
+          "type": "string"
+        },
+        "textComplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "replyRef",
+        "text",
+        "contentRevision",
+        "textComplete"
+      ],
+      "additionalProperties": true
+    },
+    "ReplyPage": {
+      "type": "object",
+      "properties": {
+        "representation": {
+          "enum": [
+            "MESSAGES",
+            "TEXT_SNAPSHOT"
+          ]
+        },
+        "revision": {
+          "type": "string"
+        },
+        "unchanged": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reply"
+          },
+          "maxItems": 50
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Reply"
+        },
+        "nextCursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage": {
+          "enum": [
+            "BOUNDED_HISTORY",
+            "BOUNDED_PUBLIC_OUTPUT"
+          ]
+        }
+      },
+      "required": [
+        "representation",
+        "revision",
+        "unchanged",
+        "items",
+        "nextCursor",
+        "coverage"
+      ],
+      "additionalProperties": true
+    },
+    "ReplyContent": {
+      "type": "object",
+      "properties": {
+        "replyRef": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 2800,
+          "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+        },
+        "contentRevision": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "nextCursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 2800,
+              "pattern": "^[acberp]1\\.[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "replyRef",
+        "contentRevision",
+        "text",
+        "nextCursor",
+        "complete",
+        "coverage"
+      ],
+      "additionalProperties": true
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "sourceCode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "requestId"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

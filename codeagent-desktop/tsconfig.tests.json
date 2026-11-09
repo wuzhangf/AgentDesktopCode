@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "@codeagent/protocol": ["./packages/protocol/src/index.ts"]
+    }
+  },
+  "include": [
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "packages/protocol/src/**/*.ts",
+    "packages/service-client/src/**/*.ts",
+    "packages/client-access/src/**/*.ts",
+    "electron/main/**/*.ts",
+    "electron/preload/api.d.ts"
+  ]
+}

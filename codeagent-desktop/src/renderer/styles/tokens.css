@@ -1,0 +1,39 @@
+/* Design tokens v2 (design 2026-09-30 §3). Loaded before styles.css so the
+ * legacy rules can reference the scale; palette tokens stay where they were
+ * because they must re-resolve per [data-theme] on .workbench. */
+:root {
+  /* Type scale — nothing below --fs-2xs (11px) may carry text. */
+  --fs-2xs: 11px; /* counters, timestamps, badges */
+  --fs-xs: 12px;  /* secondary copy, buttons, form controls, rail subtitles */
+  --fs-sm: 13px;  /* regular UI text: rail titles, activity rows, settings rows */
+  --fs-md: 14px;  /* message body, composer input */
+  --fs-lg: 16px;  /* section, card and panel titles */
+  --fs-xl: 20px;  /* page titles */
+  --lh-tight: 1.35;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.7;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --control-h-sm: 28px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.14);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.28);
+
+  --content-width: 920px; /* single reading column: messages, transcript, composer */
+  --page-width: 1120px;   /* page-type content: Git, settings */
+}
