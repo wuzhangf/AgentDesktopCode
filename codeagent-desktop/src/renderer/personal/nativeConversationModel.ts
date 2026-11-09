@@ -502,6 +502,16 @@ export function nativeStatus(native: NativeTaskDetail | undefined): {label: stri
   return {label: '等待来源状态', tone: 'neutral'};
 }
 
+/** Source-terminal states (worker-host/1 contract): no more task events can
+ * arrive, so the transcript, artifacts and receipts are authoritative and
+ * final — live observation (serial poll, SSE tail, elapsed ticker) must
+ * stop instead of churning forever. UNKNOWN is terminal at the source too
+ * (a reaped orphan cannot resume); the conversation view still keeps its
+ * own "需要核对" notice, so callers decide how to present it. */
+export function nativeTaskTerminal(state: unknown): boolean {
+  return ['SUCCEEDED', 'COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'INTERRUPTED', 'STOPPED', 'UNKNOWN'].includes(String(state ?? ''));
+}
+
 /** Pending input requests that still need a user answer. */
 export function pendingQuestions(items: NativeInputRequest[] | undefined): NativeInputRequest[] {
   return (items ?? []).filter((item) => item.state === 'PENDING');

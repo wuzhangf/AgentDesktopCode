@@ -16,6 +16,7 @@ import {
   emptyNativeTranscript,
   mergeNativeMessagePage,
   nativeReceiptSettled,
+  nativeTaskTerminal,
   projectNativeConversation,
   type NativeConversationProjection,
   type NativeMessagePageDirection,
@@ -141,7 +142,7 @@ export function useNativeConversation(taskId: string): {
   // A settled task owns its authoritative transcript — the event stream is
   // finished by definition, so resubscribes and stale interruption marks
   // must stop rather than linger as a false "reconnecting" warning.
-  const taskSettled = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(String(native?.state ?? ''));
+  const taskSettled = nativeTaskTerminal(native?.state);
   const settledRef = useRef(false);
   settledRef.current = taskSettled;
 
@@ -149,6 +150,8 @@ export function useNativeConversation(taskId: string): {
 
   const readError = useCallback((label: string, message: string | undefined) => {
     setReadErrors(old => {
+      const prev = old[label];
+      if (message === undefined ? prev === undefined : prev === message) return old;
       const next = {...old};
       if (message === undefined) delete next[label]; else next[label] = message;
       return next;
@@ -165,9 +168,9 @@ export function useNativeConversation(taskId: string): {
    * identical to the last applied value must not replace the state object —
    * reference churn is what re-rendered the whole conversation every 2.5 s. */
   const appliedJson = useRef<Record<string, string>>({});
-  const applyStable = useCallback(<T,>(channel: string, value: T, apply: (v: T) => void) => {
+  const applyStable = useCallback(<T,>(channel: string, value: T, apply: (v: T) => void, stableOf?: (v: T) => unknown) => {
     let json: string;
-    try { json = JSON.stringify(value) ?? 'null'; } catch { json = ''; }
+    try { json = JSON.stringify(stableOf ? stableOf(value) : value) ?? 'null'; } catch { json = ''; }
     if (appliedJson.current[channel] === json) return;
     appliedJson.current[channel] = json;
     apply(value);
@@ -244,7 +247,12 @@ export function useNativeConversation(taskId: string): {
       await read('任务状态', () => personalCall<PersonalTaskDetail>({action: 'TASK', taskId: id}), next => {
         value = next;
         detailRef.current = next;
-        applyStable('detail', next, setDetail);
+        // observedAt is a per-read stamp, not content — comparing on it made
+        // every poll tick a full re-render even when nothing changed.
+        applyStable('detail', next, setDetail, v => {
+          const {observedAt: _observedAt, ...stable} = v;
+          return stable;
+        });
       });
       if (!value?.native || !live()) return;
       // §9: detail/messages/inputs/artifacts read and fail independently — a
@@ -319,11 +327,16 @@ export function useNativeConversation(taskId: string): {
 
   // §9: serial polling — the next round is scheduled only after the current
   // one ends, so a slow source GET can no longer overlap poll rounds. A
-  // settled task drops to a slow liveness cadence: nothing new should arrive,
-  // but a follow-up opened elsewhere still becomes visible.
+  // settled task's transcript is authoritative and final: run one catch-up
+  // read, then stop polling — a follow-up submitted from this page triggers
+  // its own refresh, which flips taskSettled and restarts the loop.
   useEffect(() => {
     mounted.current = true;
-    const poll = createSerialPoll(() => refresh(), taskSettled ? 15000 : 2500);
+    void refresh();
+    if (taskSettled) {
+      return () => { mounted.current = false; };
+    }
+    const poll = createSerialPoll(() => refresh(), 2500);
     return () => { mounted.current = false; poll.cancel(); };
   }, [refresh, taskSettled]);
 

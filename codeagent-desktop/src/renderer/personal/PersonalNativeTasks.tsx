@@ -3,6 +3,7 @@ import {validPersonalEnvelope} from '../../../packages/protocol/src/personal';
 import type {AvailableProject, PersonalTaskCreate, PersonalTaskDetail, PersonalTaskOptions} from '../../../packages/protocol/src/personal-task';
 import {supportedNativeProfile, type NativeInputRequest, type NativeInput, type NativeRequestView} from '../../../packages/protocol/src/native-task';
 import {personalCall, readStored} from './personalGateway';
+import {nativeTaskTerminal} from './nativeConversationModel';
 import {NativeQuestion} from './NativeQuestion';
 export {personalCall};
 interface Artifacts {items: {artifactId: string; path: string; status: string; sha256?: string}[]; reasonCode?: string}
@@ -26,6 +27,7 @@ export function PersonalNativeTasks(props: {onOpenTask?: (taskId: string) => voi
   const [stopHistory,setStopHistory]=useState<NativeRequestView[]>(()=>{const id=readStored<string>('desktop.personal.task');const rows=id?readStored<NativeRequestView[]>('desktop.personal.stop-history.'+id):[];return Array.isArray(rows)?rows:[];});
   const canPrepareStop=stopRequest?.kind==='STOP'&&stopReceipt?.state==='REJECTED'&&stopReceipt.requestKey===stopRequest.requestKey&&stopReceipt.request?.requestKey===stopRequest.requestKey&&stopReceipt.request.kind==='STOP'&&stopReceipt.request.generation===stopRequest.generation&&stopReceipt.request.targetCommandId===stopRequest.targetCommandId&&stopReceipt.request.nativeSessionId===stopRequest.nativeSessionId&&stopReceipt.request.nativeTurnId===stopRequest.nativeTurnId;
   const selectedTask=useRef(taskId);
+  const nativeState=useRef('');
   const refreshSequence=useRef(0),appliedSequence=useRef(0);
   const [content,setContent]=useState(''),[inputs,setInputs]=useState<NativeInputRequest[]>([]);
   const [inputPending,setInputPending]=useState<NativeInput|undefined>(()=>readStored<NativeInput>('desktop.personal.input.'+taskId)),[inputReceipt,setInputReceipt]=useState<NativeRequestView>();
@@ -39,6 +41,7 @@ export function PersonalNativeTasks(props: {onOpenTask?: (taskId: string) => voi
     const value = await personalCall<PersonalTaskDetail>({action: 'TASK', taskId: id});
     if(selectedTask.current!==id||sequence<appliedSequence.current)return;
     appliedSequence.current=sequence;
+    nativeState.current=String(value.native?.state ?? '');
     setDetail(value);
     if (!value.native) return;
     const [out, events, files, questions] = await Promise.all([
@@ -55,9 +58,12 @@ export function PersonalNativeTasks(props: {onOpenTask?: (taskId: string) => voi
   useEffect(() => {
     if (!taskId) return;
     selectedTask.current=taskId;
+    nativeState.current='';
     let active = true;
     let timer:ReturnType<typeof setTimeout>;
-    const poll = async () => {if(!active)return;try{await refresh(taskId);}catch(e){if(active)setError((e as Error).message);}finally{if(active)timer=setTimeout(()=>void poll(),2500);}};
+    // A terminal task needs no more rounds — stop rescheduling so an open
+    // detail page does not churn forever; write actions still call refresh.
+    const poll = async () => {if(!active)return;try{await refresh(taskId);}catch(e){if(active)setError((e as Error).message);}finally{if(active&&!nativeTaskTerminal(nativeState.current))timer=setTimeout(()=>void poll(),2500);}};
     void poll();
     return () => {active = false; clearTimeout(timer); if(selectedTask.current===taskId)selectedTask.current='';};
   }, [taskId]);

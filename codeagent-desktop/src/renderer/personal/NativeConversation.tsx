@@ -4,7 +4,7 @@ import {ConversationHeaderFrame, HeaderAction} from '../app/conversation/Convers
 import {VirtualMessageWindow} from '../app/conversation/VirtualMessageWindow';
 import {Icon} from '../app/Icon';
 import {useNativeConversation} from './useNativeConversation';
-import {nativeReceiptLabel, nativeReceiptSettled, nativeStatus, pendingQuestions, type NativeMessageRow} from './nativeConversationModel';
+import {nativeReceiptLabel, nativeReceiptSettled, nativeStatus, nativeTaskTerminal, pendingQuestions, type NativeMessageRow} from './nativeConversationModel';
 import type {NativeActivityRow} from './nativeActivityModel';
 import {nativeLiveTailText, nativeThinkingBlocks} from '../app/activity/nativeVisibleTextProjection';
 import {readStored, writeStored} from './personalGateway';
@@ -81,9 +81,9 @@ function NativeConversationView({taskId, sendShortcut}: {taskId: string; sendSho
   // deltas are history, not live generation. The tail may only render while
   // the task itself reports an unfinished state; a settled task's replayed
   // buckets are residue, never a "generating" row.
-  const taskSettled = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(
-    String(native?.state ?? ''),
-  );
+  // UNKNOWN is source-terminal too but keeps its dedicated "需要核对"
+  // notice and stall copy instead of the settled status line.
+  const taskSettled = nativeTaskTerminal(native?.state) && String(native?.state ?? '') !== 'UNKNOWN';
   // Live tasks get a 1 s ticker so the progress line can report elapsed,
   // deadline-remaining and seconds-since-last-event honestly.
   const [now, setNow] = useState(() => Date.now());

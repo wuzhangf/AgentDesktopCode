@@ -131,4 +131,36 @@ describe('native observation scheduling', () => {
     await act(async () => {await hook.result.current.refresh();});
     expect(hook.result.current.readErrors).toEqual({});
   });
+  it('stops scheduling polls once the task reports a terminal state', async () => {
+    vi.useFakeTimers();
+    const operation = api(op => op.action === 'TASK'
+      ? {...detail, native: {...detail.native, state: 'TIMED_OUT', reasonCode: 'TASK_DEADLINE_EXCEEDED', endedAt: '2026-11-10T05:18:22Z'}}
+      : undefined);
+    const hook = renderHook(() => useNativeConversation('task1'));
+    await act(async () => {});
+    await act(async () => {await vi.advanceTimersByTimeAsync(60000);});
+    const settledReads = operation.mock.calls.filter(([op]) => op.action === 'TASK').length;
+    // Initial load plus at most one catch-up read right after settling —
+    // then no further rounds, however long the detail page stays open.
+    expect(settledReads).toBeLessThanOrEqual(2);
+    await act(async () => {await vi.advanceTimersByTimeAsync(120000);});
+    expect(operation.mock.calls.filter(([op]) => op.action === 'TASK')).toHaveLength(settledReads);
+    hook.unmount();
+  });
+  it('does not re-render or repoll on detail responses that only change observedAt', async () => {
+    vi.useFakeTimers();
+    let tick = 0;
+    const operation = api(op => op.action === 'TASK'
+      ? {...detail, observedAt: `2026-11-10T05:18:${String(tick++).padStart(2, '0')}Z`}
+      : undefined);
+    const hook = renderHook(() => useNativeConversation('task1'));
+    await act(async () => {});
+    const first = hook.result.current.detail;
+    await act(async () => {await vi.advanceTimersByTimeAsync(2600);});
+    // The poll still reads the source, but an observedAt-only diff keeps the
+    // applied detail object — volatile stamps must not churn the tree.
+    expect(operation.mock.calls.filter(([op]) => op.action === 'TASK').length).toBeGreaterThan(1);
+    expect(hook.result.current.detail).toBe(first);
+    hook.unmount();
+  });
 });
