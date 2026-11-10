@@ -2,9 +2,9 @@
     "schemaVersion":  "agent-code-consumer-lock/1",
     "serviceVersion":  "0.1.0-worker-writable.16",
     "coordinates":  {
-                        "contract":  "com.sage.agentcode:agent-code-contract:0.1.0-worker-writable.16",
-                        "runtime":  "com.sage.agentcode:agent-code-runtime:0.1.0-worker-writable.16",
-                        "local":  "com.sage.agentcode:agent-code-local:0.1.0-worker-writable.16"
+                        "contract":  "com.steercrew.agentcode:agent-code-contract:0.1.0-worker-writable.16",
+                        "runtime":  "com.steercrew.agentcode:agent-code-runtime:0.1.0-worker-writable.16",
+                        "local":  "com.steercrew.agentcode:agent-code-local:0.1.0-worker-writable.16"
                     },
     "protocolCompatibility":  [
                                   "v1",
