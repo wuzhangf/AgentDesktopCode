@@ -102,7 +102,7 @@ export default function SettingsPage() {
 
       <Card title="Worker 发行目录" sub="受管 Worker 从该 release tree 安装启动">
         <div className="row" style={{ gap: 8 }}>
-          <input className="mono grow" value={form.releaseRoot} placeholder="如 D:\project\worker-release"
+          <input className="mono grow" value={form.releaseRoot} placeholder="如 D:\agent-release"
             onChange={(e) => patch({ releaseRoot: e.target.value })} />
           <button className="row" style={{ gap: 6 }} disabled={check.busy} onClick={checkInstall}>
             {check.busy ? '检查中…' : '检查安装'}
@@ -134,7 +134,7 @@ export default function SettingsPage() {
         </select>
       </Card>
 
-      <Card title="ACS 连接" sub="只保存环境变量名 — token 值仅存 D:\project\env，不落库不传输"
+      <Card title="ACS 连接" sub="只保存环境变量名 — token 值仅存本机环境变量目录，不落库不传输"
         right={<button className="row" style={{ gap: 4 }} onClick={() => patch({ acsConnections: [...form.acsConnections, { name: '', baseUrl: '', tokenEnv: '' }] })}><Plus size={13} /> 添加</button>}>
         {form.acsConnections.length === 0 && <div className="muted" style={{ fontSize: 12 }}>未配置 ACS 连接。</div>}
         <div className="col" style={{ gap: 8 }}>
@@ -144,7 +144,7 @@ export default function SettingsPage() {
                 onChange={(e) => patch({ acsConnections: form.acsConnections.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)) })} />
               <input className="mono grow" placeholder="baseUrl（loopback）" value={c.baseUrl}
                 onChange={(e) => patch({ acsConnections: form.acsConnections.map((x, j) => (j === i ? { ...x, baseUrl: e.target.value } : x)) })} />
-              <input className="mono" style={{ width: 200 }} placeholder="环境变量名（值仅存 D:\project\env）" value={c.tokenEnv}
+              <input className="mono" style={{ width: 200 }} placeholder="环境变量名（值仅存本机环境变量目录）" value={c.tokenEnv}
                 onChange={(e) => patch({ acsConnections: form.acsConnections.map((x, j) => (j === i ? { ...x, tokenEnv: e.target.value } : x)) })} />
               <button className="ghost" aria-label="删除" onClick={() => patch({ acsConnections: form.acsConnections.filter((_, j) => j !== i) })}>
                 <Trash2 size={14} />

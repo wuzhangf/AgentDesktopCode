@@ -19,7 +19,7 @@ function run(script: string, input: unknown, args: string[] = []) {
 
 describe('runtime launch scripts', () => {
   it('projects canonical and legacy scheduler config through the package script', () => {
-    const canonical = run(configScript, undefined, ['--properties', path.join(repoRoot, 'busi-agent-config/service.properties')])
+    const canonical = run(configScript, undefined, ['--properties', path.join(repoRoot, 'service-config/service.properties')])
     expect(canonical.status).toBe(0)
     const config = JSON.parse(canonical.stdout)
     expect(config).toMatchObject({
@@ -62,8 +62,8 @@ describe('runtime launch scripts', () => {
           },
         },
       },
-      process: { pid: 42, commandLine: 'java -cp D:/repo/runtime.jar D:/repo/BusinessAgentServiceMain --config D:/repo/busi-agent-config/service.properties' },
-      configPath: 'D:/repo/busi-agent-config/service.properties',
+      process: { pid: 42, commandLine: 'java -cp D:/repo/runtime.jar D:/repo/BusinessAgentServiceMain --config D:/repo/service-config/service.properties' },
+      configPath: 'D:/repo/service-config/service.properties',
       expectedClasspathEntries: ['D:/repo/runtime.jar'],
     }
     const accepted = run(provenanceScript, input)
@@ -79,13 +79,13 @@ describe('runtime launch scripts', () => {
   })
 
   it('keeps launcher/config free of legacy paths and inline bearer output', () => {
-    const properties = fs.readFileSync(path.join(repoRoot, 'busi-agent-config/service.properties'), 'utf8')
+    const properties = fs.readFileSync(path.join(repoRoot, 'service-config/service.properties'), 'utf8')
     const launcher = fs.readFileSync(path.join(repoRoot, 'codex-dev-run.ps1'), 'utf8')
     expect(properties).not.toContain('zcode-workspace')
     expect(properties).not.toContain('D:/project/workspace')
     expect(properties).not.toMatch(/^auth\.token=/m)
     expect(properties).toContain('auth.token-env=CODEAGENT_SERVICE_TOKEN')
-    expect(launcher).toContain('busi-agent-config\\start-service.ps1')
+    expect(launcher).toContain('service-config\\start-service.ps1')
     expect(launcher).toContain('-ConfigPath')
     expect(launcher).not.toContain('runtime-provenance.mjs')
     expect(launcher).not.toContain('-Druns.scheduler.mode=')

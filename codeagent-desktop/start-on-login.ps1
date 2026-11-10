@@ -11,7 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (Test-Path 'D:\project\env\env.ps1') { . 'D:\project\env\env.ps1' }
+if ($env:AGENT_ENV_PS1 -and (Test-Path $env:AGENT_ENV_PS1)) { . $env:AGENT_ENV_PS1 }
 $AppRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $BusinessRoot = [IO.Path]::GetFullPath((Join-Path $AppRoot '..\..'))
 $ConfigPath = [IO.Path]::GetFullPath((Join-Path $BusinessRoot 'busi-agent-config\service.properties'))

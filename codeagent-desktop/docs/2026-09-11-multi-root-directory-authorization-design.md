@@ -9,13 +9,13 @@
 用户在 `petclinic` 会话中，已有目录：
 
 ```text
-D:\project\workspace\spring-petclinic-microservices
+D:\workspace\spring-petclinic-microservices
 ```
 
 再添加：
 
 ```text
-D:\project\workspace\TestSemantic
+D:\workspace\TestSemantic
 ```
 
 开启第二个目录的“可编辑”后，模型应能够通过现有执行工具修改两个目录中的文件。第二个目录不必是第一个目录的子目录，不必注册成另一个工作区，也不必移动磁盘位置。不同磁盘、非 Git 目录遵循同样规则。
@@ -51,7 +51,7 @@ D:\project\workspace\TestSemantic
 
 以下为当前源码事实，不是对用户正在运行的构建版本的断言。工作树已有多处未提交改动，实施前需重新核对方法，行号不作为固定依据。
 
-### 3.1 BusinessAgentCode 内的链路
+### 3.1 产品仓内的链路
 
 | 位置（仓库相对路径） | 当前行为 | 本次改造职责 |
 |---|---|---|
@@ -396,8 +396,8 @@ ApprovedBusinessTask.withWorkspacePath、执行 binding factory、续跑时的�
 ```text
 目录                                  [×]
 
-D:\project\workspace\spring-petclinic… [可编辑 ✓] [修改] [移除]
-D:\project\workspace\TestSemantic      [可编辑 ✓] [修改] [移除]
+D:\workspace\spring-petclinic… [可编辑 ✓] [修改] [移除]
+D:\workspace\TestSemantic      [可编辑 ✓] [修改] [移除]
 E:\reference                           [只读   ○] [修改] [移除]
 
 [添加目录路径____________________] [选择] [添加]

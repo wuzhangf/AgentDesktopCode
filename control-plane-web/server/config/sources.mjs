@@ -22,9 +22,9 @@ function defaultSources() {
     {
       id: 'local-state',
       label: '本地运行数据',
-      path: resolve(repoRoot, 'busi-agent-config/state/observations/observations.db'),
+      path: resolve(repoRoot, './data/observations.db'),
       altPaths: [
-        process.env.OBSERVATIONS_DB_PATH ?? 'busi-agent-config/state/observations/observations.db',
+        process.env.OBSERVATIONS_DB_PATH ?? './data/observations.db',
       ],
       mode: 'LIVE',
     },

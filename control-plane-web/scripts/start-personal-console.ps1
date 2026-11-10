@@ -5,7 +5,7 @@ param(
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
-. D:\project\env\env.ps1
+if ($env:AGENT_ENV_PS1) { . $env:AGENT_ENV_PS1 }
 $appRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $appRoot
 try {

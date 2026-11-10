@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (Test-Path 'D:\project\env\env.ps1') { . 'D:\project\env\env.ps1' }
+if ($env:AGENT_ENV_PS1 -and (Test-Path $env:AGENT_ENV_PS1)) { . $env:AGENT_ENV_PS1 }
 $AppRoot = if ($PSScriptRoot) {
     [System.IO.Path]::GetFullPath($PSScriptRoot)
 } else {

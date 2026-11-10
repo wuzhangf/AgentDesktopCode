@@ -6,7 +6,7 @@
 //
 //   node scripts/e2e-multi-engine.mjs [run-label]
 //
-// Workers repo location: WORKERS_ROOT env, default <repo>/../EnterpriseDockerCode/workers.
+// Workers repo location: WORKERS_ROOT env, default <repo>/../workers-repo/workers (set WORKERS_ROOT).
 // Codex engine binary:    CODEX_EXECUTABLE env, default the pinned
 //                         workers/codex/vendor/.../codex binary.
 

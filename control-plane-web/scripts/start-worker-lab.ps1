@@ -1,12 +1,12 @@
 param(
     [int]$Port = 8796,
-    [string]$RealProject = 'D:\project\workspace\demo-springboot-crud',
+    [string]$RealProject = $env:REAL_PROJECT_ROOT ?? 'D:\workspace\demo-springboot-crud',
     [ValidateSet('Central')][string]$ModelProvider = 'Central',
     [switch]$ProtocolModel,
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
-. D:\project\env\env.ps1
+. $env:AGENT_ENV_PS1
 foreach ($name in @('MODEL_BASE_URL','MODEL_NAME','MODEL_API_KEY')) {
     if (-not [Environment]::GetEnvironmentVariable($name,'Process')) { throw ('Central configuration is missing '+$name) }
 }

@@ -63,7 +63,7 @@
 ### P0-2 「成果」按钮永久禁用且无解释——E2E 点击超时实证
 
 - **位置**：`NativeConversation.tsx:133` `disabled={!conv.artifacts?.items.length}`；模态内成果分区仅在 `items.length>0 || reasonCode` 时渲染（`:230`）。
-- **触发**：本任务真实创建了 `D:\project\worker-state\e2e-project\sweep-e2e.txt`（终态消息自述），但 `NATIVE_ARTIFACTS` 全程返回空 items → 按钮在运行中、settle 后（`40` 图）始终禁用 → Playwright 点击 30 s 超时记入 `result.json.errors`。
+- **触发**：本任务真实创建了 `<workdir>\e2e-project\sweep-e2e.txt`（终态消息自述），但 `NATIVE_ARTIFACTS` 全程返回空 items → 按钮在运行中、settle 后（`40` 图）始终禁用 → Playwright 点击 30 s 超时记入 `result.json.errors`。
 - **影响**：禁用控件不携带任何原因；解释文案「来源暂未提供可读取的成果；详细原因见诊断」反而藏在打不开的分区里（reasonCode 为空时整个分区不渲染）。成果入口成为死端：用户看到按钮、得不到「为什么没有、以后会不会有」的答案。**后端待核实**：codep 对写文件任务是否上报 artifacts（未上报 / 滞后 / 无此能力三选一）。
 - **参考**：HAX **G2**（如实呈现能力边界——禁用却不解释是最差的 G2 形态）、**G11**（说清系统为什么这么做）；Shape of AI **Caveat**「Place caveats where they naturally align with outputs… at the moment of decision-making」——限制说明应在决策点可见，而非埋在无法到达的折叠里。
 - **修改**：二选一的最小改动：① 按钮保持禁用但 `title`/旁边小字写明当前原因（`reasonCode` 或「来源未报告成果」）；② 按钮可点、打开成果分区空态显示同一文案。不加新控件、不删既有 honest-empty 逻辑。优先核实 artifacts 上报链路（§5）再定文案。

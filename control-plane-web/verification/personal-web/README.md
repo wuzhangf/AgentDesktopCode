@@ -7,7 +7,7 @@
 需要当前工作区中的 AgentCodeService、AgentProducts、AgentFramework，JDK 21、Node、Python，
 以及已安装的 Web 依赖和 Playwright Chromium。构建复用 ACS 的 `target/dependency`，不发布 Maven 制品。
 
-从 `BusinessAgentCode/apps/control-plane-web` 执行，输出目录必须未存在：
+从 `<repo>/apps/control-plane-web` 执行，输出目录必须未存在：
 
 ```powershell
 pnpm management:build

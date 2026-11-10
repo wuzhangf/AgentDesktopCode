@@ -6,8 +6,8 @@
 ## 1. 最短安全诊断路径
 
 ```powershell
-$desktop = 'D:\project\codex-workspace\BusinessAgentCode\apps\codeagent-desktop'
-$serviceConfig = 'D:\project\codex-workspace\BusinessAgentCode\busi-agent-config\service.properties'
+$desktop = '<repo>\apps\codeagent-desktop'
+$serviceConfig = '<config>\service.properties'
 $profileRoot = Join-Path $env:USERPROFILE '.codeagent\desktop-profiles'
 $profileId = 'operator-a'
 $env:CODEAGENT_DESKTOP_PROFILE_ROOT = $profileRoot

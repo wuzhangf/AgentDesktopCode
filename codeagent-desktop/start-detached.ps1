@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (Test-Path 'D:\project\env\env.ps1') { . 'D:\project\env\env.ps1' }
+if ($env:AGENT_ENV_PS1 -and (Test-Path $env:AGENT_ENV_PS1)) { . $env:AGENT_ENV_PS1 }
 $AppRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BusinessRoot = Split-Path -Parent (Split-Path -Parent $AppRoot)
 $Launcher = Join-Path $AppRoot 'start-with-service.ps1'

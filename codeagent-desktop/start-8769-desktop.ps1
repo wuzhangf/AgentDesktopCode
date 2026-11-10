@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-if (Test-Path 'D:\project\env\env.ps1') { . 'D:\project\env\env.ps1' }
-if ([string]::IsNullOrWhiteSpace($env:CODEAGENT_SERVICE_TOKEN)) { throw 'CODEAGENT_SERVICE_TOKEN is missing from D:\project\env' }
+if ($env:AGENT_ENV_PS1 -and (Test-Path $env:AGENT_ENV_PS1)) { . $env:AGENT_ENV_PS1 }
+if ([string]::IsNullOrWhiteSpace($env:CODEAGENT_SERVICE_TOKEN)) { throw 'CODEAGENT_SERVICE_TOKEN is missing (set AGENT_ENV_PS1 or the env var)' }
 $existing = Get-Process -Name electron -ErrorAction SilentlyContinue
 if ($existing) { throw ("Electron already running (pid " + $existing[0].Id + "); close it first.") }
 $appRoot = $PSScriptRoot

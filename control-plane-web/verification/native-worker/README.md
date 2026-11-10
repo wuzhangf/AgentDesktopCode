@@ -5,9 +5,9 @@ This runs the same `PersonalTasks` / `NativeTasks` consumer used by the personal
 From `apps/control-plane-web`, load credentials through the central helper and provide the selected host token by environment reference:
 
 ```powershell
-. D:\project\env\env.ps1
+. $env:AGENT_ENV_PS1  # central env loader
 $env:NWF_HOST_URL = 'http://127.0.0.1:<isolated-port>'
-$env:NWF_HOST_TOKEN = & D:\project\env\env.ps1 -Get <registered-host-token-key>
+$env:NWF_HOST_TOKEN = & $env:AGENT_ENV_PS1 -Get <registered-host-token-key>
 $env:NWF_ENGINE = 'pi' # or codex
 $env:NWF_CONSUMER_OUT = '<new-isolated-evidence-directory>'
 npm run worker:native-smoke
