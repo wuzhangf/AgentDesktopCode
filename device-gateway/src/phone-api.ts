@@ -50,10 +50,12 @@ import { bindingFor, releaseBinding } from './bindings.js';
 import { requestMeta } from './request-meta.js';
 import {
   ACTION_SET,
+  SCOPE_RESOURCE_LIMIT,
   checkedLaunchScopes,
+  validLaunchScope,
   validateResourceActions,
 } from './scope.js';
-import type { LaunchScope } from './protocol.js';
+import { launchScopeKey, type LaunchScope } from './protocol.js';
 
 // ---------------------------------------------------------------------------
 // Request helpers — Java bearer()/header()/body()/query() equivalents.
@@ -189,9 +191,13 @@ const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonOb
   if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
   const catalog = await ctx.localTasks.ownerCatalog();
   const launches: LaunchScope[] = [];
+  const seen = new Set<string>();
   const catalogs = [catalog,
     ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])];
-  for (const c of catalogs) {
+  // The wire scope is bounded: engines outside the protocol set cannot be
+  // expressed, and a catalog may hold more project × engine combinations than
+  // SCOPE_RESOURCE_LIMIT — dedupe and take the first that fit.
+  outer: for (const c of catalogs) {
     const backend = asText(c.backendStoreId);
     if (backend === '') continue;
     const engines = asArr(c.engines).map(asObj)
@@ -200,7 +206,13 @@ const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonOb
       const project = asText(p.projectId);
       if (project === '') continue;
       for (const engineId of engines) {
-        launches.push({ backendStoreId: backend, projectId: project, engineId });
+        const launch = { backendStoreId: backend, projectId: project, engineId };
+        if (!validLaunchScope(launch)) continue;
+        const key = launchScopeKey(launch);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        launches.push(launch);
+        if (launches.length >= SCOPE_RESOURCE_LIMIT) break outer;
       }
     }
   }
