@@ -381,6 +381,48 @@ export class Devices {
     });
   }
 
+  /**
+   * Member-attested pairing — relay ingress already proves member
+   * authorization, so there is no invitation to redeem. The pairing record
+   * snapshots the caller-supplied member scope and is created APPROVED;
+   * observe/redemption/polling semantics are identical to invite pairing.
+   */
+  memberRequest(body: Json, scope: ScopeRecord): Json {
+    const rid = text(body, 'pairingRequestId');
+    const installation = text(body, 'installationId');
+    const label = text(body, 'label');
+    const poll = text(body, 'pollingSecretHash');
+    id(rid);
+    id(installation);
+    if (label.length > 80 || !POLL_PATTERN.test(poll)) fail('INVALID_REQUEST', 400);
+    return this.store.transaction(() => {
+      this.cleanup();
+      const fp = hash(JSON.stringify(['member', installation, label, poll]));
+      const previous = this.store.get<Pairing>('pairing', rid);
+      if (previous != null) {
+        if (fp !== previous.fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+        return this.pairingView(previous);
+      }
+      this.requireDeviceSlot();
+      const p: Pairing = {
+        id: rid,
+        installationId: installation,
+        label,
+        pollHash: poll,
+        fingerprint: fp,
+        expiresAt: this.now() + INVITE_TTL,
+        state: 'APPROVED',
+        checkWords: hash(`member:${rid}`).substring(0, 12),
+        recoverUntil: 0,
+        resources: scope.resources ?? [],
+        launchScopes: scope.launchScopes ?? [],
+        actions: sortedActions(scope.actions),
+      };
+      this.store.put('pairing', rid, p);
+      return this.pairingView(p);
+    });
+  }
+
   observePairing(rid: string, poll: string): Json {
     return this.store.transaction(() => this.pairingView(this.pairing(rid, poll)));
   }
@@ -441,15 +483,19 @@ export class Devices {
         if (current.state === 'ACTIVE' && current.absoluteExpiry > this.now()) activeCount++;
       }
       if (activeCount >= MAX_ACTIVE_DEVICES) fail('DEVICE_LIMIT', 429);
-      const i = this.store.get<Invite>('invite', p.inviteId!)!;
-      normalizeScope(i, this.storeId);
+      // Member-attested pairings carry their scope on the pairing record
+      // itself — there is no invitation row to re-read.
+      const granted: ScopeRecord = p.inviteId != null
+        ? this.store.get<Invite>('invite', p.inviteId)!
+        : p;
+      normalizeScope(granted, this.storeId);
       const d: Device = {
         id: randomUUID(),
         label: p.label,
         installationId: p.installationId,
-        resources: i.resources,
-        launchScopes: i.launchScopes,
-        actions: i.actions,
+        resources: granted.resources,
+        launchScopes: granted.launchScopes,
+        actions: granted.actions,
         state: 'ACTIVE',
         revision: 1,
         scopeVersion: 2,

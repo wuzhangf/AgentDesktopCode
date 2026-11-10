@@ -8,7 +8,7 @@
  * ClientAccessService): service methods return the Java view objects verbatim
  * as plain JSON, so handlers forward them without field-level adaptation.
  */
-import type { Device, LaunchScope, Resource, SourceRead } from './protocol';
+import type { Device, LaunchScope, Resource, ScopeRecord, SourceRead } from './protocol';
 
 export type MaybePromise<T> = T | Promise<T>;
 export type JsonObject = Record<string, unknown>;
@@ -53,6 +53,13 @@ export interface HttpRequest {
   clientSessionHeader?: string;
   /** Socket peer address — never trusts X-Forwarded-For. */
   clientIp: string;
+  /**
+   * True only when the request arrived on the loopback relay listener —
+   * i.e. it transited the member-authenticated relay fabric bound to this
+   * host. Member-attested pairing is honored on this channel alone; the
+   * public phone listener still requires a sealed invitation.
+   */
+  relayIngress?: boolean;
 }
 
 export interface HttpResponse {
@@ -73,6 +80,13 @@ export interface HttpResponse {
 export interface GatewayAuth {
   /** POST /personal/v1/pairing-requests → 202 pairingView. */
   request(body: JsonObject): MaybePromise<JsonObject>;
+  /**
+   * Member-attested pairing (relay ingress only): same pairing state machine
+   * without an invitation — the member-authenticated channel is the grant.
+   * Pairing is created APPROVED with the caller-supplied scope snapshot;
+   * absent implementations fail closed.
+   */
+  memberRequest?(body: JsonObject, scope: ScopeRecord): MaybePromise<JsonObject>;
   /** GET /personal/v1/pairing-requests/{id} (bearer = polling secret). */
   observePairing(rid: string, poll: string): MaybePromise<JsonObject>;
   /** POST /pairing-requests/{id}/redemptions → issued credentials object. */

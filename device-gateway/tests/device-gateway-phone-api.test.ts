@@ -331,6 +331,73 @@ describe('pairing routes', () => {
     expect(ctx.calls.auth[0]).toEqual(['redeem', 'pr-9', 'poll-9', 'rd-1']);
   });
 
+  it('relay ingress + member body → auth.memberRequest with catalog scope', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    ctx.localTasks!.ownerCatalog = () => ({
+      available: true, backendStoreId: 'local-1',
+      projects: [{ projectId: 'p1' }, { projectId: 'p2' }],
+      engines: [{ engineId: 'macos' }],
+    });
+    let seen: { body: unknown; scope: unknown } | undefined;
+    ctx.auth.memberRequest = (body, scope) => {
+      seen = { body, scope };
+      return { pairingRequestId: 'pr-m', state: 'APPROVED' };
+    };
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-m', member: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }, { relayIngress: true }));
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ pairingRequestId: 'pr-m', state: 'APPROVED' });
+    const scope = seen?.scope as { launchScopes: unknown[]; actions: string[] };
+    expect(scope.launchScopes).toEqual([
+      { backendStoreId: 'local-1', projectId: 'p1', engineId: 'macos' },
+      { backendStoreId: 'local-1', projectId: 'p2', engineId: 'macos' },
+    ]);
+    expect(scope.actions).toContain('LAUNCH');
+    expect(ctx.calls.auth.filter((c) => c[0] === 'request')).toEqual([]);
+  });
+
+  it('member marker on the public listener → 400 INVALID_REQUEST', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-m', member: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }));
+    expect(res.status).toBe(400);
+    expect((res.body as JsonObject).code).toBe('INVALID_REQUEST');
+    expect(ctx.calls.auth).toEqual([]);
+  });
+
+  it('relay ingress without the member marker falls back to invite validation', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-m', installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }, { relayIngress: true }));
+    expect(res.status).toBe(400);
+    expect((res.body as JsonObject).code).toBe('INVALID_REQUEST');
+  });
+
+  it('invite-bearing body still takes the sealed path on relay ingress', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests',
+      PAIR_BODY, { relayIngress: true }));
+    expect(res.status).toBe(202);
+    expect(ctx.calls.auth[0]).toEqual(['request', PAIR_BODY]);
+  });
+
+  it('member pairing without local tasks → 409 LOCAL_SOURCE_NOT_CONFIGURED', async () => {
+    const ctx = fakeCtx();
+    ctx.auth.memberRequest = () => ({});
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-m', member: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }, { relayIngress: true }));
+    expect(res.status).toBe(409);
+    expect((res.body as JsonObject).code).toBe('LOCAL_SOURCE_NOT_CONFIGURED');
+  });
+
   it('other methods under /pairing-requests/{id} → 404 NOT_FOUND', async () => {
     const ctx = fakeCtx();
     const res = await handlePhoneRoute(ctx, req('DELETE', '/personal/v1/pairing-requests/pr-9', {

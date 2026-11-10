@@ -48,6 +48,12 @@ import type {
 } from './context.js';
 import { bindingFor, releaseBinding } from './bindings.js';
 import { requestMeta } from './request-meta.js';
+import {
+  ACTION_SET,
+  checkedLaunchScopes,
+  validateResourceActions,
+} from './scope.js';
+import type { LaunchScope } from './protocol.js';
 
 // ---------------------------------------------------------------------------
 // Request helpers — Java bearer()/header()/body()/query() equivalents.
@@ -170,6 +176,44 @@ const rate = (ctx: GatewayContext, req: HttpRequest): void => {
   }
 };
 
+/**
+ * Member pairing — relay-ingress-only grant. The member's device gets the
+ * full local catalog as its launch scope (member = owner of the bound host):
+ * every project × every registered engine on every reachable backend, plus
+ * the complete action set. Launched taskIds self-grant WORKER_LOCAL via
+ * appendLaunchedTask; no pre-pinned resources are needed.
+ */
+const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonObject> => {
+  if (b.member !== true) fail('INVALID_REQUEST', 400);
+  if (ctx.auth.memberRequest === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+  if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
+  const catalog = await ctx.localTasks.ownerCatalog();
+  const launches: LaunchScope[] = [];
+  const catalogs = [catalog,
+    ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])];
+  for (const c of catalogs) {
+    const backend = asText(c.backendStoreId);
+    if (backend === '') continue;
+    const engines = asArr(c.engines).map(asObj)
+      .map((e) => asText(e.engineId)).filter((e) => e !== '');
+    for (const p of asArr(c.projects).map(asObj)) {
+      const project = asText(p.projectId);
+      if (project === '') continue;
+      for (const engineId of engines) {
+        launches.push({ backendStoreId: backend, projectId: project, engineId });
+      }
+    }
+  }
+  const actions = [...ACTION_SET];
+  const scope = {
+    resources: [],
+    launchScopes: checkedLaunchScopes(launches),
+    actions,
+  };
+  validateResourceActions(scope.resources, scope.launchScopes, actions);
+  return ctx.auth.memberRequest(b, scope);
+};
+
 // ---------------------------------------------------------------------------
 // ACS seam helpers — Java call() sites. A missing seam maps to the Java
 // IOException path: UPSTREAM_UNAVAILABLE 503.
@@ -260,7 +304,15 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   if (path === '/personal/v1/pairing-requests' && method === 'POST') {
     rate(ctx, req);
     const b = exact(jsonBody(req),
-      'pairingRequestId', 'inviteId', 'inviteSecret', 'installationId', 'label', 'pollingSecretHash');
+      'pairingRequestId', 'inviteId', 'inviteSecret', 'installationId', 'label', 'pollingSecretHash', 'member');
+    // Member-attested pairing: reaching the relay listener at all means the
+    // member service authenticated the caller and routed it to this bound
+    // host, so the channel itself is the grant — no sealed invitation. The
+    // member marker is meaningless on the public listener and rejected there.
+    if (b.member !== undefined && req.relayIngress !== true) fail('INVALID_REQUEST', 400);
+    if (req.relayIngress === true && b.inviteId === undefined) {
+      return { status: 202, body: await memberPairing(ctx, b) };
+    }
     return { status: 202, body: await ctx.auth.request(b) };
   }
 

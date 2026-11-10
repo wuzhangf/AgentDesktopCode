@@ -50,6 +50,8 @@ export interface GatewayListenerOptions {
   port: number;
   /** Hard cap on drained request bodies (default 16MiB = Java messageBudget). */
   maxRawBody?: number;
+  /** Tag requests as member-attested relay ingress (relay listener only). */
+  relayIngress?: boolean;
 }
 
 export interface OwnerListenerOptions {
@@ -244,7 +246,10 @@ export function createGatewayListener(opts: GatewayListenerOptions): https.Serve
   });
 
   server.on('request', (req, res) => {
-    dispatch(req, res, maxRawBody, (request) => handlePhoneRoute(opts.ctx, request));
+    dispatch(req, res, maxRawBody, (request) => {
+      if (opts.relayIngress === true) request.relayIngress = true;
+      return handlePhoneRoute(opts.ctx, request);
+    });
   });
   return server;
 }
@@ -252,7 +257,7 @@ export function createGatewayListener(opts: GatewayListenerOptions): https.Serve
 /** Local connector ingress uses the exact phone handler, TLS identity and
  * device authorization. It is never an owner or arbitrary-proxy endpoint. */
 export function createRelayListener(opts: Omit<GatewayListenerOptions, 'bind'>): https.Server {
-  return createGatewayListener({ ...opts, bind: '127.0.0.1' });
+  return createGatewayListener({ ...opts, bind: '127.0.0.1', relayIngress: true });
 }
 
 export interface HooksListenerOptions {

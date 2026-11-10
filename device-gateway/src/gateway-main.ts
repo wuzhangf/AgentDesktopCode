@@ -120,6 +120,7 @@ const storeKey = (dataDir: string): Uint8Array => {
   const fromEnv = env('DEVICE_GATEWAY_STORE_KEY');
   if (fromEnv !== undefined) return parseStoreKey(fromEnv, 'DEVICE_GATEWAY_STORE_KEY');
   const keyPath = join(dataDir, 'store.key');
+  mkdirSync(dataDir, { recursive: true });
   if (existsSync(keyPath)) {
     const value = readFileSync(keyPath, 'utf8').trim();
     return parseStoreKey(value, `${keyPath} contents`);
@@ -136,6 +137,7 @@ const hooksToken = (dataDir: string): string => {
   if (fromEnv !== undefined) return fromEnv;
   const tokenPath = join(dataDir, 'hooks.token');
   if (existsSync(tokenPath)) return readFileSync(tokenPath, 'utf8').trim();
+  mkdirSync(dataDir, { recursive: true });
   const generated = randomBytes(32).toString('base64url');
   writeFileSync(tokenPath, generated, { mode: 0o600 });
   try { chmodSync(tokenPath, 0o600); } catch { /* advisory on Windows */ }

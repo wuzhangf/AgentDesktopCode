@@ -14,6 +14,7 @@ import {
   type LaunchScope,
   type Pairing,
   type Resource,
+  type ScopeRecord,
 } from '../src/protocol.js';
 
 type Json = Record<string, unknown>;
@@ -404,6 +405,76 @@ describe('pairing auto-approve', () => {
     const inv = invite();
     const rid = next('pr');
     expectFail(() => requestPairing(inv, rid, secret()), 'DEVICE_LIMIT', 429);
+    expect(store.get('pairing', rid)).toBeUndefined();
+  });
+});
+
+describe('member-attested pairing (relay ingress)', () => {
+  const memberScope = (): ScopeRecord => ({
+    resources: [localRes('task-1')],
+    launchScopes: [launch('macos', 'p1'), launch('macos', 'p2')],
+    actions: ['OBSERVE', 'CONTROL', 'INTERACT', 'LAUNCH'],
+  });
+  const memberPairing = (rid = next('pr'), poll = secret(), label = 'Phone'): Json =>
+    devices.memberRequest!({
+      pairingRequestId: rid,
+      installationId: 'inst-member-1',
+      label,
+      pollingSecretHash: hash(poll),
+      member: true,
+    }, memberScope());
+
+  it('creates an APPROVED pairing with the caller scope and redeems a device', () => {
+    const rid = next('pr');
+    const poll = secret();
+    const view = memberPairing(rid, poll);
+    expect(view.state).toBe('APPROVED');
+    expect(view.launchScopes).toEqual(memberScope().launchScopes);
+    expect(view.actions).toEqual([...memberScope().actions!].sort());
+
+    const issued = devices.redeem(rid, poll, `red-${rid}`);
+    expect(issued.deviceGrantId).toBeTruthy();
+    const d = deviceRecord(issued.deviceGrantId as string);
+    expect(d.state).toBe('ACTIVE');
+    expect(d.resources).toEqual(memberScope().resources);
+    expect(d.launchScopes).toEqual(memberScope().launchScopes);
+    expect(d.actions).toEqual([...memberScope().actions!].sort());
+    // the device view exposes the same member scope
+    const shown = devices.devices().find((v) => v.deviceGrantId === issued.deviceGrantId);
+    expect(shown?.launchScopes).toEqual(memberScope().launchScopes);
+  });
+
+  it('replays idempotently and mismatches on payload drift', () => {
+    const rid = next('pr');
+    const poll = secret();
+    const first = memberPairing(rid, poll);
+    expect(memberPairing(rid, poll)).toEqual(first);
+    expectFail(() => memberPairing(rid, poll, 'Tablet'), 'IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+    expectFail(() => memberPairing(rid, secret()), 'IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+  });
+
+  it('validates the polling hash and label bound like invite pairing', () => {
+    expectFail(() => devices.memberRequest!({
+      pairingRequestId: next('pr'), installationId: 'inst-1', label: 'Phone',
+      pollingSecretHash: 'not-hex', member: true,
+    }, memberScope()), 'INVALID_REQUEST', 400);
+    expectFail(() => devices.memberRequest!({
+      pairingRequestId: next('pr'), installationId: 'inst-1', label: 'x'.repeat(81),
+      pollingSecretHash: hash('p'), member: true,
+    }, memberScope()), 'INVALID_REQUEST', 400);
+  });
+
+  it('hides pairings behind PAIRING_UNAUTHORIZED for wrong polls', () => {
+    const rid = next('pr');
+    memberPairing(rid, secret());
+    expectFail(() => devices.observePairing(rid, 'wrong-poll'), 'PAIRING_UNAUTHORIZED', 401);
+    expectFail(() => devices.redeem(rid, 'wrong-poll', 'red-x'), 'PAIRING_UNAUTHORIZED', 401);
+  });
+
+  it('enforces DEVICE_LIMIT without persisting a pairing', () => {
+    for (let i = 0; i < 4; i++) fakeDevice(next('fd'));
+    const rid = next('pr');
+    expectFail(() => memberPairing(rid), 'DEVICE_LIMIT', 429);
     expect(store.get('pairing', rid)).toBeUndefined();
   });
 });
