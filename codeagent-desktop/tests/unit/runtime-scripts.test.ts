@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 const desktopRoot = path.resolve(__dirname, '../..')
-const repoRoot = path.resolve(desktopRoot, '../..')
+const repoRoot = path.resolve(desktopRoot, '..')
 const configScript = path.join(desktopRoot, 'scripts/runtime-config.mjs')
 const provenanceScript = path.join(desktopRoot, 'scripts/runtime-provenance.mjs')
 

@@ -43,7 +43,10 @@ if ($CheckOnly) { exit 0 }
 
 # endpoint/token 从同一份 service.properties 读取，只注入本次 Electron 进程（坑3/14）
 $props = @{}
-Get-Content -LiteralPath (Join-Path $BusinessRoot 'busi-agent-config\service.properties') | ForEach-Object {
+$repoConfig = Join-Path (Split-Path -Parent $AppRoot) 'service-config\service.properties'
+$legacyConfig = Join-Path $BusinessRoot 'busi-agent-config\service.properties'
+$serviceConfigPath = if (Test-Path -LiteralPath $repoConfig -PathType Leaf) { $repoConfig } else { $legacyConfig }
+Get-Content -LiteralPath $serviceConfigPath | ForEach-Object {
     $line = $_.Trim()
     if ($line -and -not $line.StartsWith('#') -and $line.Contains('=')) {
         $kv = $line.Split('=', 2); $props[$kv[0].Trim()] = $kv[1].Trim()

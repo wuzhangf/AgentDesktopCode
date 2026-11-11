@@ -14,8 +14,11 @@ $ErrorActionPreference = 'Stop'
 if ($env:AGENT_ENV_PS1 -and (Test-Path $env:AGENT_ENV_PS1)) { . $env:AGENT_ENV_PS1 }
 $AppRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $BusinessRoot = [IO.Path]::GetFullPath((Join-Path $AppRoot '..\..'))
-$ConfigPath = [IO.Path]::GetFullPath((Join-Path $BusinessRoot 'busi-agent-config\service.properties'))
-$ServiceLauncher = Join-Path $BusinessRoot 'busi-agent-config\start-service.ps1'
+$repoServiceConfig = Join-Path (Split-Path -Parent $AppRoot) 'service-config'
+$legacyServiceConfig = Join-Path $BusinessRoot 'busi-agent-config'
+$serviceConfigDir = if (Test-Path -LiteralPath (Join-Path $repoServiceConfig 'service.properties') -PathType Leaf) { $repoServiceConfig } else { $legacyServiceConfig }
+$ConfigPath = [IO.Path]::GetFullPath((Join-Path $serviceConfigDir 'service.properties'))
+$ServiceLauncher = Join-Path $serviceConfigDir 'start-service.ps1'
 $ElectronCmd = Join-Path $AppRoot 'node_modules\.bin\electron.CMD'
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {

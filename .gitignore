@@ -12,3 +12,6 @@ coverage/
 playwright-report/
 test-results/
 *.tsbuildinfo
+service-config/state/
+service-config/sandbox-state/
+service-config/model-providers.properties

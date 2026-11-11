@@ -24,7 +24,9 @@ $ConfigPath = if ($ServiceConfig) {
     }
     [System.IO.Path]::GetFullPath($ServiceConfig)
 } else {
-    Join-Path $BusinessRoot 'busi-agent-config\service.properties'
+    $repoConfig = Join-Path (Split-Path -Parent $AppRoot) 'service-config\service.properties'
+    $legacyConfig = Join-Path $BusinessRoot 'busi-agent-config\service.properties'
+    if (Test-Path -LiteralPath $repoConfig -PathType Leaf) { $repoConfig } else { $legacyConfig }
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
