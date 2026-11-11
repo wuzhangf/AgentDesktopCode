@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "outDir": "dist-electron",
+    "rootDir": "."
+  },
+  "include": [
+    "electron/preload/**/*.ts",
+    "electron/shared/**/*.ts",
+    "packages/protocol/src/index.ts",
+    "packages/protocol/src/compatibility.ts",
+    "packages/protocol/src/validators.ts",
+    "packages/protocol/src/openapi-schema.gen.ts"
+  ]
+}

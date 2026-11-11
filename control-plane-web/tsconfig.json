@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["vite/client", "node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "shared/**/*.ts", "shared/**/*.mts", "vite.config.ts", "vitest.config.ts", "server/worker*.ts", "server/management/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx", "verification/native-worker/**/*.ts", "../packages/personal-gateway-core/**/*.ts"]
+}

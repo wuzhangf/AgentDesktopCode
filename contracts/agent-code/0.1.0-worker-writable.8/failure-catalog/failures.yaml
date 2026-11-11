@@ -1,0 +1,1613 @@
+schemaVersion: "1"
+failures:
+  - code: MODEL_TOOL_ARGUMENTS_INVALID
+    domain: TOOL_INPUT
+    allowedPhases: [PREPARE, VALIDATE]
+    defaultDisposition: AUTO_RECOVERING
+    allowedRecoveryModes: [MODEL_REPAIR_INPUT, NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: MODEL_RESPONSE_INCOMPLETE
+    domain: MODEL_PROTOCOL
+    allowedPhases: [RECEIVE, VALIDATE]
+    defaultDisposition: AUTO_RECOVERING
+    allowedRecoveryModes: [NEW_MODEL_ATTEMPT, NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [CONTINUE_RESPONSE]
+  - code: MODEL_STREAM_TERMINATOR_MISSING
+    domain: MODEL_TRANSPORT
+    allowedPhases: [RECEIVE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NEW_MODEL_ATTEMPT, NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: [RETRY_WITH_RECONCILIATION]
+  - code: PATH_OUTSIDE_WORKSPACE
+    domain: WORKSPACE_SCOPE
+    allowedPhases: [PREPARE, VALIDATE, EXECUTE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [MODEL_REPAIR_INPUT, NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: SNAPSHOT_BINDING_MISMATCH
+    domain: WORKSPACE_SNAPSHOT
+    allowedPhases: [ADMISSION, PREPARE, VALIDATE, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: WORKSPACE_SNAPSHOT_INCOMPLETE
+    domain: WORKSPACE_SNAPSHOT
+    allowedPhases: [ADMISSION, PREPARE, VALIDATE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [RETRY_OPERATION, NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: WORKSPACE_SNAPSHOT_UNTRUSTED
+    domain: WORKSPACE_SNAPSHOT
+    allowedPhases: [PREPARE, VALIDATE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: WORKSPACE_BASELINE_MISSING
+    domain: WORKSPACE_SNAPSHOT
+    allowedPhases: [PREPARE, EXECUTE, RECONCILE]
+    defaultDisposition: OPERATOR_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: DELIVERY_CANDIDATE_UNTRUSTED
+    domain: DELIVERY
+    allowedPhases: [VALIDATE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: [SHOW_TOOL_DETAILS]
+  - code: RUNTIME_ERROR
+    domain: INTERNAL
+    allowedPhases: [EXECUTE]
+    defaultDisposition: TERMINAL
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ATTACHMENT_IMAGE_INVALID
+    domain: TOOL_INPUT
+    allowedPhases: [ADMISSION, VALIDATE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ATTACHMENT_LIMIT_EXCEEDED
+    domain: TOOL_INPUT
+    allowedPhases: [ADMISSION, VALIDATE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: MODEL_IMAGE_INPUT_UNSUPPORTED
+    domain: CONTEXT
+    allowedPhases: [PREPARE, VALIDATE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INPUT_ASSET_NOT_ACCESSIBLE
+    domain: PERMISSION
+    allowedPhases: [ADMISSION, VALIDATE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INPUT_ASSET_MISSING
+    domain: SERVICE_TRANSPORT
+    allowedPhases: [ADMISSION, PREPARE, VALIDATE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [RETRY_OPERATION, NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INPUT_ASSET_HASH_MISMATCH
+    domain: INTERNAL
+    allowedPhases: [ADMISSION, PREPARE, VALIDATE]
+    defaultDisposition: OPERATOR_ACTION_REQUIRED
+    allowedRecoveryModes: [RETRY_OPERATION, NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: RUN_CONTROL_PENDING
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTROL_DISPATCH_UNKNOWN
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: CAPABILITY_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: IDEMPOTENCY_KEY_REUSED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: STATE_VERSION_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: OPERATION_RECONCILIATION_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: WORKER_SESSION_SINGLE_RUN
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_CAPTURE_BUSY
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_CAPTURE_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_QUOTA_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_SIZE_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SNAPSHOT_PUBLICATION_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: EXECUTION_DEADLINE_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_BUDGET_EXHAUSTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_QUEUE_FULL
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_RESULT_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_RETRY_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_SESSION_RESTRICTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: AUXILIARY_TURN_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BOUNDARY_INPUT_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BOUNDARY_INPUT_PENDING
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_ACCESS_DENIED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_INCOMPLETE
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_QUOTA_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CONTEXT_PACKAGE_SIZE_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: EXECUTION_EPOCH_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: HANDOFF_ADAPTER_UNSUPPORTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: HANDOFF_QUIESCENCE_UNPROVEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INVALID_REQUEST
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PROFILE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PROFILE_INCOMPATIBLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: RESEARCH_VIEW_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: RUN_STOPPED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SESSION_ARCHIVED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SESSION_VERSION_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: STATE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: STATE_STORE_ERROR
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: TRANSITION_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: TRANSITION_PENDING
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: WORKER_DEADLINE_UNKNOWN
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_AUTHORITY_REVOKED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_AUTHORIZATION_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_AUTHORIZATION_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_CHECKPOINT_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_CONTEXT_PROOF_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_CONTEXT_PROOF_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_CONTEXT_PROOF_MISSING
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_EVIDENCE_INCOMPLETE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_IDENTITY_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_PARENT_STILL_ACTIVE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_PAUSED_CHECKPOINT_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_PRECHECKPOINT_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_PREIMAGE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_PREIMAGE_MISSING
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_PREIMAGE_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_PREVIEW_TREE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_PRODUCER_QUIESCENCE_UNPROVEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_RECONCILIATION_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: ADOPTION_VERIFICATION_POLICY_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_WORKSPACE_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_WRITE_SCOPE_EMPTY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ANCESTOR_BASE_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BASE_BUNDLE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BASE_CAPTURE_BUSY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BASE_CAPTURE_INCOMPLETE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: BASE_MATERIALIZATION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_BASE_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_BYTES_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_COMPOSITION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_DUPLICATE_SELECTION
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_ID_ALREADY_PUBLISHED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_NOT_QUIESCENT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CANDIDATE_SEAL_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CHILD_PARENT_STOPPED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CHILD_QUIESCENCE_UNPROVEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CHILD_RECURSIVE_DELEGATION_FORBIDDEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CHILD_REWORK_NOT_ALLOWED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: CHILD_SCOPE_VIOLATION
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_AUTHORITY_UNPROVEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BARRIER_PENDING
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BASE_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BOUNDARY_BUSY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BUDGET_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BUDGET_EXHAUSTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BUDGET_IDENTITY_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BUDGET_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_BUDGET_UNBOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_CANDIDATE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_CONSUMPTION_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_CONSUMPTION_RELEASED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_CONTROL_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_EVIDENCE_INCOMPLETE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_EVIDENCE_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_GRANT_WIDENED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PARENT_NOT_QUIESCENT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PATH_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PATH_RESERVED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PREVIEW_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PREVIEW_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_PUBLICATION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_QUOTA_EXCEEDED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REAUTHORIZATION_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REQUIRED_PENDING
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_RESERVATION_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_RESERVATION_SETTLED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_RESOURCE_BUSY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_RESOURCE_CANCELLED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REVALIDATION_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REVIEW_CANCELLED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REVIEW_STALE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_REVISION_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_SCOPE_DENIED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: COLLABORATION_USER_CONFIRM_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: DEPENDENCY_BLOCKED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: EXECUTION_WINDOW_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INTEGRATION_CANDIDATE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: INTEGRATION_CANDIDATE_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: MODEL_PROPOSAL_INVALID
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PAUSED_NO_MODEL_BOUNDARY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_CAPTURE_BUSY
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_CURRENT_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_ID_ALREADY_EXISTS
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_REVISION_PROVENANCE_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: PREVIEW_TREE_CORRUPTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: READ_DEPENDENCY_DRIFT
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REVIEW_CONTROL_FORBIDDEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REVIEW_QUIESCENCE_UNPROVEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REVIEW_WRITE_FORBIDDEN
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: SELECTION_NOT_DEPENDENCY_CLOSED
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: VERIFICATION_PROOF_STALE
+    domain: CLIENT_PROTOCOL
+    allowedPhases:
+    - ADMISSION
+    - EXECUTE
+    - RECONCILE
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes:
+    - NONE
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REPAIR_SOURCE_NOT_VERIFICATION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REPAIR_ALLOWANCE_EXHAUSTED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REPAIR_BUDGET_INSUFFICIENT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REPAIR_SOURCE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: REPAIR_NEW_ADOPTION_REQUIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+  - code: ADOPTION_VERIFICATION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: APPLIED
+    actionIds: []
+  - code: REPAIR_OUTCOME_UNKNOWN
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: UNKNOWN
+    actionIds: []
+  - code: REPAIR_ADMISSION_FAILED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: COLLABORATION_ACTIVITY_IDENTITY_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: COLLABORATION_EVIDENCE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: COLLABORATION_STATE_CHANGED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: REPAIR_SCOPE_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: RESOURCE_EXPIRED
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: RESOURCE_NOT_FOUND
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: WORKER_ATTEMPT_NOT_CLOSING
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: ACCESS_DENIED
+    domain: PERMISSION
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: CLIENT_REGISTRATION_REQUIRED
+    domain: PERMISSION
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: COLLABORATION_WORKSPACE_UNAVAILABLE
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: EXECUTION_OWNERSHIP_MISMATCH
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: PRODUCT_RUN_IDENTITY_CONFLICT
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: WORKER_ATTEMPT_CLOSING
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []
+
+  - code: WORKSPACE_LANE_NOT_READY
+    domain: CLIENT_PROTOCOL
+    allowedPhases: [ADMISSION, EXECUTE, RECONCILE]
+    defaultDisposition: USER_ACTION_REQUIRED
+    allowedRecoveryModes: [NONE]
+    defaultEffectState: NOT_APPLIED
+    actionIds: []

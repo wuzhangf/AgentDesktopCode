@@ -1,0 +1,51 @@
+// @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { writeFileSync } from 'node:fs';
+import { ServiceClient } from '../../packages/service-client/src/index';
+import { WritableCollaborationPanel } from '../../src/renderer/app/WritableCollaborationPanel';
+import { collaborationDefinition, createCollaborationHandler } from '../../electron/main/ipc/collaboration';
+import { writableCollaborationDefinition, createWritableCollaborationHandler } from '../../electron/main/ipc/writable-collaboration';
+import { IpcRegistry, sessionsGetDefinition, sessionMessageContentDefinition } from '../../electron/main/ipc/registry';
+const bridge = vi.hoisted(() => ({ invoke: async (_channel: string, _payload: unknown): Promise<unknown> => { throw new Error('Transport not attached'); } }));
+vi.mock('electron', () => ({ contextBridge: { exposeInMainWorld: (name: string, api: unknown) => Object.defineProperty(window, name, { configurable: true, value: api }) }, ipcRenderer: { on: vi.fn(), removeListener: vi.fn(), invoke: (channel: string, payload: unknown) => bridge.invoke(channel, payload) } }));
+const suite = process.env.WRITABLE_CANDIDATE_URL ? describe : describe.skip;
+afterEach(cleanup);
+suite('real writable candidate through production main, preload and React', () => {
+ const sid = process.env.WRITABLE_SESSION_ID!, rid = process.env.WRITABLE_RUN_ID!;
+ const headers = { Authorization: `Bearer ${process.env.WRITABLE_BEARER}`, 'X-CodeAgent-Client-Token': process.env.WRITABLE_CLIENT_TOKEN! };
+ const read = async (path: string): Promise<Record<string, any>> => { const response = await fetch(process.env.WRITABLE_CANDIDATE_URL + path, { headers }); expect(response.status).toBe(200); return response.json() as Promise<Record<string, any>>; };
+ const release = async (): Promise<void> => { expect((await fetch(process.env.WRITABLE_CONTROL_URL + '/release', { method: 'POST' })).status).toBe(200); };
+ const click = async (name: string): Promise<void> => { const button = await screen.findByRole('button', { name }); await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(button); };
+ beforeAll(async () => {
+  configure({ asyncUtilTimeout: 25000 });
+  const client = new ServiceClient({ baseUrl: process.env.WRITABLE_CANDIDATE_URL!, token: process.env.WRITABLE_BEARER!, clientSessionToken: process.env.WRITABLE_CLIENT_TOKEN! });await client.getCapabilities();
+  const registry = new IpcRegistry();registry.register(collaborationDefinition);registry.register(writableCollaborationDefinition);registry.register(sessionsGetDefinition);registry.register(sessionMessageContentDefinition);
+  const collaboration = createCollaborationHandler(registry, operation => client.collaboration(operation));const writable = createWritableCollaborationHandler(registry, operation => client.writableCollaboration(operation));
+  bridge.invoke = async (channel, payload) => { if (channel === 'app/sessions/get') { const admitted = registry.admit('app/sessions/get', 'app://codeagent/index.html', payload); if (!admitted.ok) throw new Error(admitted.reason); return client.getSession((admitted.value as { sessionId: string }).sessionId); } if (channel === 'app/sessions/message-content') { const admitted = registry.admit('app/sessions/message-content', 'app://codeagent/index.html', payload); if (!admitted.ok) throw new Error(admitted.reason); const value = admitted.value as { sessionId: string; messageId: string; maxBytes: number }; return client.getMessageContentPage(value.sessionId, value.messageId, { maxBytes: value.maxBytes }); } if (channel === 'app/collaboration') return collaboration('app://codeagent/index.html', payload);if (channel === 'app/writable-collaboration') return writable('app://codeagent/index.html', payload);if (channel === 'app/agent-profiles/list') return client.listAgentProfiles();if (channel === 'app/models/catalog') return client.getModelCatalog();throw new Error(`Unexpected channel ${channel}`); };
+  await import('../../electron/preload/preload');
+ });
+ it('explicitly creates, authorizes, dispatches, selects, previews and adopts before the same main continues', async () => {
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={query}><WritableCollaborationPanel sessionId={sid} runId={rid} /></QueryClientProvider>);
+  const details = screen.getByText('写候选、协作计划与显式采纳').closest('details')!;details.open = true;fireEvent(details, new Event('toggle', { bubbles: true }));
+  fireEvent.change(screen.getByLabelText('目标', { exact: true }), { target: { value: 'CHILD_WRITE_X: change x.txt from v1 to v2 inside the isolated candidate.' } });
+  fireEvent.change(screen.getByLabelText('读取范围（相对路径，每行一个）'), { target: { value: 'x.txt' } });fireEvent.change(screen.getByLabelText('写入范围（相对路径，每行一个）'), { target: { value: 'x.txt' } });
+  await click('创建计划草稿');await screen.findByText(/等待授权 · 执行 epoch/);await click('确认授权 / 当前 epoch 重新授权');await screen.findByText(/已授权，尚未派发 · 执行 epoch/);await click('明确开始 / 继续未派发项');await release();
+  const candidate = await screen.findByRole('checkbox', { name: /unit-1 · 候选已就绪/ }, { timeout: 30000 });fireEvent.click(candidate);await click('固定本次选择');await click('创建新集成预览');
+  fireEvent.change(await screen.findByLabelText('相对文件路径'), { target: { value: 'x.txt' } });await click('读取固定内容');await screen.findByText('v2', { selector: 'pre' });
+  const groups = await read(`/api/v2/runs/${rid}/collaboration-groups`);const gid = groups.items[0].entityId;const before = await read(`/api/v2/runs/${rid}/collaboration-groups/${gid}`);expect(before.adoptions).toHaveLength(0);
+  await click('查看只读子会话'); const childView = await screen.findByRole('region', { name: '只读子任务会话' });
+  await waitFor(() => expect(within(childView).getByText(/CHILD_WRITE_X: change x.txt/)).toBeTruthy());
+  await within(childView).findByText(/Changed the scoped file from v1 to v2 inside the candidate stage/);expect(within(childView).queryByRole('textbox')).toBeNull();expect(childView.textContent).toContain('fixture/fixture-model');
+  const child = before.children.find((value: Record<string, unknown>) => !value.start);const childHistory = await read(`/api/v2/sessions/${child.sessionId}`);
+  expect(childHistory.messages.filter((value: Record<string, any>) => [child.objectiveMessageId, child.resultMessageId].includes(value.id))).toHaveLength(2);
+  expect(child.childBudget.LOGICAL_CALL.attemptSpent).toBe('3');expect(child.childBudget.EDIT_ATTEMPT.attemptSpent).toBe('1');
+  await click('关闭子会话');
+  await click('明确采纳此完整预览并验证主上下文');await screen.findByText(/等待主安全点采纳/);await release();
+  await screen.findByText('文件：已写入；验证：通过；主上下文：已提交', {}, { timeout: 30000 });const adopted = await read(`/api/v2/runs/${rid}/collaboration-groups/${gid}`);expect(adopted.state).toBe('ADOPTED');expect(adopted.adoptions[0]).toMatchObject({ contentApplied: true, verificationPassed: true, contextCommitted: true });
+  await release();await waitFor(async () => expect((await read(`/api/v2/runs/${rid}`)).state).toBe('RUNNING'));await release();await waitFor(async () => expect((await read(`/api/v2/runs/${rid}`)).state).toBe('COMPLETED'), { timeout: 30000 });
+  writeFileSync(process.env.WRITABLE_EVIDENCE_FILE!, JSON.stringify({ schemaVersion: 'writable-desktop-acceptance/1', transport: 'production IPC/preload/React with Electron transport shim and actual HTTP Host/Product', sessionId: sid, runId: rid, childHistoryViewedReadOnly: true, attemptBudgetVerified: true, childMessageIds: [child.objectiveMessageId, child.resultMessageId], before, adopted, completed: await read(`/api/v2/runs/${rid}`) }, null, 2));query.clear();
+ }, 110000);
+});

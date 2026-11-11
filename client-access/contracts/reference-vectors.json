@@ -1,0 +1,163 @@
+[
+  {
+    "reference": "c1.eyJjb252ZXJzYXRpb25JZCI6ImNvbnYtQSIsInNvdXJjZUtpbmQiOiJEQUlMWSIsInN0b3JlSWQiOiJkYWlseS1BIn0",
+    "prefix": "c1",
+    "value": {
+      "sourceKind": "DAILY",
+      "storeId": "daily-A",
+      "conversationId": "conv-A"
+    }
+  },
+  {
+    "reference": "e1.eyJjb252ZXJzYXRpb25JZCI6ImNvbnYtQSIsInJ1bklkIjoib3JpZ2luYWwtY29tbWFuZCIsInNvdXJjZUtpbmQiOiJEQUlMWSIsInN0b3JlSWQiOiJkYWlseS1BIn0",
+    "prefix": "e1",
+    "value": {
+      "sourceKind": "DAILY",
+      "storeId": "daily-A",
+      "conversationId": "conv-A",
+      "runId": "original-command"
+    }
+  },
+  {
+    "reference": "r1.eyJjb252ZXJzYXRpb25JZCI6ImNvbnYtQSIsIm1lc3NhZ2VJZCI6Im9yaWdpbmFsLW1lc3NhZ2UiLCJzb3VyY2VLaW5kIjoiREFJTFkiLCJzdG9yZUlkIjoiZGFpbHktQSJ9",
+    "prefix": "r1",
+    "value": {
+      "sourceKind": "DAILY",
+      "storeId": "daily-A",
+      "conversationId": "conv-A",
+      "messageId": "original-message"
+    }
+  },
+  {
+    "reference": "b1.eyJjb252ZXJzYXRpb25JZCI6ImNvbnYtQSIsIm9wZXJhdGlvbiI6Im1lc3NhZ2Uuc2VuZCIsInNvdXJjZUtpbmQiOiJEQUlMWSIsInN0b3JlSWQiOiJkYWlseS1BIn0",
+    "prefix": "b1",
+    "value": {
+      "sourceKind": "DAILY",
+      "storeId": "daily-A",
+      "conversationId": "conv-A",
+      "operation": "message.send"
+    }
+  },
+  {
+    "reference": "p1.eyJjb252ZXJzYXRpb25JZCI6ImNvbnYtQSIsIm9wZXJhdGlvbiI6InJlcGxpZXMiLCJwb3NpdGlvbiI6MSwic291cmNlS2luZCI6IkRBSUxZIiwic3RvcmVJZCI6ImRhaWx5LUEifQ",
+    "prefix": "p1",
+    "value": {
+      "sourceKind": "DAILY",
+      "storeId": "daily-A",
+      "conversationId": "conv-A",
+      "operation": "replies",
+      "position": 1
+    }
+  },
+  {
+    "reference": "c1.eyJzZXNzaW9uSWQiOiJzZXNzaW9uLUEiLCJzb3VyY2VLaW5kIjoiQUNTX1NFU1NJT04iLCJzdG9yZUlkIjoiYWNzLUEifQ",
+    "prefix": "c1",
+    "value": {
+      "sourceKind": "ACS_SESSION",
+      "storeId": "acs-A",
+      "sessionId": "session-A"
+    }
+  },
+  {
+    "reference": "e1.eyJydW5JZCI6Im9yaWdpbmFsLWNvbW1hbmQiLCJzZXNzaW9uSWQiOiJzZXNzaW9uLUEiLCJzb3VyY2VLaW5kIjoiQUNTX1NFU1NJT04iLCJzdG9yZUlkIjoiYWNzLUEifQ",
+    "prefix": "e1",
+    "value": {
+      "sourceKind": "ACS_SESSION",
+      "storeId": "acs-A",
+      "sessionId": "session-A",
+      "runId": "original-command"
+    }
+  },
+  {
+    "reference": "r1.eyJtZXNzYWdlSWQiOiJvcmlnaW5hbC1tZXNzYWdlIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1BIiwic291cmNlS2luZCI6IkFDU19TRVNTSU9OIiwic3RvcmVJZCI6ImFjcy1BIn0",
+    "prefix": "r1",
+    "value": {
+      "sourceKind": "ACS_SESSION",
+      "storeId": "acs-A",
+      "sessionId": "session-A",
+      "messageId": "original-message"
+    }
+  },
+  {
+    "reference": "b1.eyJvcGVyYXRpb24iOiJtZXNzYWdlLnNlbmQiLCJzZXNzaW9uSWQiOiJzZXNzaW9uLUEiLCJzb3VyY2VLaW5kIjoiQUNTX1NFU1NJT04iLCJzdG9yZUlkIjoiYWNzLUEifQ",
+    "prefix": "b1",
+    "value": {
+      "sourceKind": "ACS_SESSION",
+      "storeId": "acs-A",
+      "sessionId": "session-A",
+      "operation": "message.send"
+    }
+  },
+  {
+    "reference": "p1.eyJvcGVyYXRpb24iOiJyZXBsaWVzIiwicG9zaXRpb24iOjEsInNlc3Npb25JZCI6InNlc3Npb24tQSIsInNvdXJjZUtpbmQiOiJBQ1NfU0VTU0lPTiIsInN0b3JlSWQiOiJhY3MtQSJ9",
+    "prefix": "p1",
+    "value": {
+      "sourceKind": "ACS_SESSION",
+      "storeId": "acs-A",
+      "sessionId": "session-A",
+      "operation": "replies",
+      "position": 1
+    }
+  },
+  {
+    "reference": "c1.eyJiYWNrZW5kU3RvcmVJZCI6Indvcmtlci1BIiwiZW5naW5lSWQiOiJmdXR1cmUtY29yZSIsInNvdXJjZUtpbmQiOiJXT1JLRVJfTkFUSVZFIiwic3RvcmVJZCI6ImFjcy1BIiwidGFza0lkIjoidGFzay1BIn0",
+    "prefix": "c1",
+    "value": {
+      "sourceKind": "WORKER_NATIVE",
+      "storeId": "acs-A",
+      "backendStoreId": "worker-A",
+      "engineId": "future-core",
+      "taskId": "task-A"
+    }
+  },
+  {
+    "reference": "e1.eyJiYWNrZW5kU3RvcmVJZCI6Indvcmtlci1BIiwiZW5naW5lSWQiOiJmdXR1cmUtY29yZSIsInJ1bklkIjoib3JpZ2luYWwtY29tbWFuZCIsInNvdXJjZUtpbmQiOiJXT1JLRVJfTkFUSVZFIiwic3RvcmVJZCI6ImFjcy1BIiwidGFza0lkIjoidGFzay1BIn0",
+    "prefix": "e1",
+    "value": {
+      "sourceKind": "WORKER_NATIVE",
+      "storeId": "acs-A",
+      "backendStoreId": "worker-A",
+      "engineId": "future-core",
+      "taskId": "task-A",
+      "runId": "original-command"
+    }
+  },
+  {
+    "reference": "r1.eyJiYWNrZW5kU3RvcmVJZCI6Indvcmtlci1BIiwiZW5naW5lSWQiOiJmdXR1cmUtY29yZSIsIm1lc3NhZ2VJZCI6Im9yaWdpbmFsLW1lc3NhZ2UiLCJzb3VyY2VLaW5kIjoiV09SS0VSX05BVElWRSIsInN0b3JlSWQiOiJhY3MtQSIsInRhc2tJZCI6InRhc2stQSJ9",
+    "prefix": "r1",
+    "value": {
+      "sourceKind": "WORKER_NATIVE",
+      "storeId": "acs-A",
+      "backendStoreId": "worker-A",
+      "engineId": "future-core",
+      "taskId": "task-A",
+      "messageId": "original-message"
+    }
+  },
+  {
+    "reference": "b1.eyJiYWNrZW5kU3RvcmVJZCI6Indvcmtlci1BIiwiZW5naW5lSWQiOiJmdXR1cmUtY29yZSIsIm5hdGl2ZVR1cm5JZCI6bnVsbCwib3BlcmF0aW9uIjoibWVzc2FnZS5zZW5kIiwic291cmNlS2luZCI6IldPUktFUl9OQVRJVkUiLCJzdG9yZUlkIjoiYWNzLUEiLCJ0YXNrSWQiOiJ0YXNrLUEifQ",
+    "prefix": "b1",
+    "value": {
+      "sourceKind": "WORKER_NATIVE",
+      "storeId": "acs-A",
+      "backendStoreId": "worker-A",
+      "engineId": "future-core",
+      "taskId": "task-A",
+      "operation": "message.send",
+      "nativeTurnId": null
+    }
+  },
+  {
+    "reference": "p1.eyJiYWNrZW5kU3RvcmVJZCI6Indvcmtlci1BIiwiZW5naW5lSWQiOiJmdXR1cmUtY29yZSIsIm9wZXJhdGlvbiI6InJlcGxpZXMiLCJwb3NpdGlvbiI6MSwic291cmNlS2luZCI6IldPUktFUl9OQVRJVkUiLCJzdG9yZUlkIjoiYWNzLUEiLCJ0YXNrSWQiOiJ0YXNrLUEifQ",
+    "prefix": "p1",
+    "value": {
+      "sourceKind": "WORKER_NATIVE",
+      "storeId": "acs-A",
+      "backendStoreId": "worker-A",
+      "engineId": "future-core",
+      "taskId": "task-A",
+      "operation": "replies",
+      "position": 1
+    }
+  }
+]

@@ -1,0 +1,63 @@
+/* Visual tokens (§7.1): dark graphite workbench + light theme. Token colors
+   stay consistent for the same token class across pages. */
+:root[data-theme='dark'] {
+  --bg: #0b1020;
+  --surface: #131c2f;
+  --surface-raised: #1b2840;
+  --surface-hover: #223252;
+  --border: #33435e;
+  --border-soft: #26344e;
+  --text: #f1f5fc;
+  --text-secondary: #b2bfd4;
+  --text-faint: #7e8ca3;
+  --accent: #69a7ff;
+  --accent-soft: rgba(105, 167, 255, 0.16);
+  --input: #74b5ff;
+  --output: #50d3bd;
+  --reasoning: #c1a1ff;
+  --total: #f0a35e;
+  --success: #58d5a4;
+  --failure: #ff8797;
+  --warning: #f4c66b;
+  --unknown: #a2aec2;
+  --conflict: #f4c66b;
+  --cancelled: #8a94a8;
+  --danger-soft: rgba(255, 135, 151, 0.12);
+  --warning-soft: rgba(244, 198, 107, 0.14);
+  --success-soft: rgba(88, 213, 164, 0.12);
+  --radius-card: 12px;
+  --space-grid: 16px;
+  --shadow: 0 8px 28px rgba(2, 6, 18, 0.45);
+  --chart-grid: rgba(178, 191, 212, 0.12);
+  --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(162, 174, 194, 0.25) 4px 6px);
+}
+
+:root[data-theme='light'] {
+  --bg: #f2f5fb;
+  --surface: #ffffff;
+  --surface-raised: #f7f9fe;
+  --surface-hover: #eef2fa;
+  --border: #d3dcee;
+  --border-soft: #e3e9f5;
+  --text: #17233b;
+  --text-secondary: #4c5b76;
+  --text-faint: #7e8ca3;
+  --accent: #2f6fe0;
+  --accent-soft: rgba(47, 111, 224, 0.12);
+  --input: #3b7dd8;
+  --output: #189a86;
+  --reasoning: #8a63e0;
+  --total: #d07f2e;
+  --success: #1d9e70;
+  --failure: #d8455d;
+  --warning: #b9862a;
+  --unknown: #77839a;
+  --conflict: #b9862a;
+  --cancelled: #8a94a8;
+  --danger-soft: rgba(216, 69, 93, 0.1);
+  --warning-soft: rgba(185, 134, 42, 0.12);
+  --success-soft: rgba(29, 158, 112, 0.1);
+  --shadow: 0 6px 20px rgba(23, 35, 59, 0.08);
+  --chart-grid: rgba(76, 91, 118, 0.15);
+  --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(119, 131, 154, 0.2) 4px 6px);
+}

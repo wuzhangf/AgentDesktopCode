@@ -1,0 +1,5 @@
+node_modules/
+dist/
+dist-electron/
+# local Java service run dirs (logs, state DB, properties) from e2e/diag runs
+target/

@@ -1,0 +1,44 @@
+[
+  {
+    "values": [
+      "client-access/1",
+      "daily-owner",
+      "DAILY",
+      "store-A",
+      "",
+      "CONVERSATION",
+      "conv-A",
+      "MESSAGE",
+      "req-1"
+    ],
+    "sourceKey": "4448330948f702f32136c7efe0731f462042ce6e79bde74acf7dbfd2c44bcde3"
+  },
+  {
+    "values": [
+      "client-access/1",
+      "device-1",
+      "WORKER_NATIVE",
+      "personal-A",
+      "worker-A",
+      "NATIVE_TASK",
+      "task-1",
+      "MESSAGE",
+      "req-1"
+    ],
+    "sourceKey": "7111707a8a8eb599f762dc1c60f7f2bffb22adb8463b973ba0ec5c7ffb5309b0"
+  },
+  {
+    "values": [
+      "client-access/1",
+      "device-2",
+      "WORKER_NATIVE",
+      "personal-A",
+      "worker-A",
+      "NATIVE_TASK",
+      "task-1",
+      "MESSAGE",
+      "req-1"
+    ],
+    "sourceKey": "22eafccb35897d9e64a30fd97500873fd019b7c07c1d288bafacbe9afeaf2767"
+  }
+]

@@ -1,0 +1,21 @@
+﻿{
+    "schemaVersion":  "agent-code-artifact/1",
+    "version":  "0.1.0-worker-writable.16",
+    "sourceRepository":  "AgentCodeService",
+    "sourceCommit":  "14a0c8788aa66ad9e157417a9fa80c8d7b9a5ba7",
+    "javaTarget":  "8",
+    "protocolCompatibility":  [
+                                  "v1",
+                                  "v2"
+                              ],
+    "runtimeJars":  [
+                        "agent-code-runtime",
+                        "agent-code-local",
+                        "agent-code-contract",
+                        "agent-code-storage-local"
+                    ],
+    "files":  {
+                  "failure-catalog/failures.yaml":  "1aa3b5b20782ab08e634540122dc48d6eb744a9232f3e7a0ff826a3d1ff0a5c8",
+                  "openapi/business-codeagent-v2.yaml":  "ad7e5e2026159c42459368308f74e07dd06d6424ed9cf60dc7473e19b1343fa2"
+              }
+}

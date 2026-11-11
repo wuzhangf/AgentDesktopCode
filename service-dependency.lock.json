@@ -1,0 +1,23 @@
+{
+    "schemaVersion":  "agent-code-consumer-lock/1",
+    "serviceVersion":  "0.1.0-worker-writable.16",
+    "coordinates":  {
+                        "contract":  "com.sage.agentcode:agent-code-contract:0.1.0-worker-writable.16",
+                        "runtime":  "com.sage.agentcode:agent-code-runtime:0.1.0-worker-writable.16",
+                        "local":  "com.sage.agentcode:agent-code-local:0.1.0-worker-writable.16"
+                    },
+    "protocolCompatibility":  [
+                                  "v1",
+                                  "v2"
+                              ],
+    "sourceRepository":  "AgentCodeService",
+    "sourceCommit":  "14a0c8788aa66ad9e157417a9fa80c8d7b9a5ba7",
+    "sha256":  {
+                   "apiZip":  "58331f3f5b98d70fbd6017075989b69834c9e14d80067413d774b22e2385b9c2",
+                   "localZip":  "30bfd4700f725d7983fbc7d769f50d9ee1999f5a15b80da2eb6b0b537ff5ba30",
+                   "contractJar":  "99b9b9a4ef50e9e21164057cc0d6c8c1822058eca181de784f689f89ef7c7556",
+                   "runtimeJar":  "11b2b89222343eac453efa3a3240ad1abc18eb9daf1d24f6d409b9ba18a18b44"
+               },
+    "generatedInputs":  "contracts/agent-code/0.1.0-worker-writable.16",
+    "managedBy":  "build/import-service-artifacts.ps1"
+}

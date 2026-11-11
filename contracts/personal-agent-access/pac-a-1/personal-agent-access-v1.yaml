@@ -1,0 +1,5122 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Personal Agent Access",
+    "version": "1.3.0",
+    "description": "Paired HTTPS access with canonical ACS_SESSION / WORKER_LOCAL resources, bounded current-state inbox projection and explicit project/engine LAUNCH scopes. Independent action grants; original source business DTOs, native guards and receipts remain authoritative. Fixed whitelist, no generic proxy."
+  },
+  "paths": {
+    "/api/v2/personal-access/pairing-invitations": {
+      "post": {
+        "operationId": "createPersonalInvitation",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/personal-access/pairing-requests": {
+      "get": {
+        "operationId": "listPersonalPairings",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v2/personal-access/pairing-requests/{requestId}/decisions": {
+      "post": {
+        "operationId": "decidePersonalPairing",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingView"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Decision"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/personal-access/devices": {
+      "get": {
+        "operationId": "listPersonalDevices",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v2/personal-access/devices/{deviceId}": {
+      "delete": {
+        "operationId": "revokePersonalDevice",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        },
+        "parameters": [
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/pairing-requests": {
+      "post": {
+        "operationId": "requestPersonalPairing",
+        "security": [],
+        "responses": {
+          "202": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingView"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/pairing-requests/{requestId}": {
+      "get": {
+        "operationId": "readPersonalPairing",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingView"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/pairing-requests/{requestId}/redemptions": {
+      "post": {
+        "operationId": "redeemPersonalPairing",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Redemption"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/access-sessions/refresh": {
+      "post": {
+        "operationId": "refreshPersonalAccess",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Refresh"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/device": {
+      "delete": {
+        "operationId": "revokePersonalSelf",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        }
+      }
+    },
+    "/personal/v1/host": {
+      "get": {
+        "operationId": "readPersonalHost",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        }
+      }
+    },
+    "/personal/v1/inbox": {
+      "get": {
+        "operationId": "listPersonalInbox",
+        "security": [{"bearer": []}],
+        "parameters": [
+          {"name":"cursor","in":"query","schema":{"type":"string","pattern":"^[0-9]{1,19}(\\.[0-9]{1,19}){2}$"}},
+          {"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100,"default":30}}
+        ],
+        "responses": {
+          "200":{"description":"Bounded current-state inbox projection","content":{"application/json":{"schema":{"$ref":"#/components/schemas/InboxList"}}}},
+          "409":{"description":"Cursor bound to a superseded grant or list revision","content":{"application/json":{"schema":{"type":"object","properties":{"code":{"type":"string","enum":["INBOX_CURSOR_EXPIRED","GRANT_REVISION_CHANGED"]},"detail":{"type":"string"}}}}}}
+        }
+      }
+    },
+    "/personal/v1/inbox/{itemId}": {
+      "get": {
+        "operationId":"readPersonalInboxItem","security":[{"bearer":[]}],
+        "parameters":[{"name":"itemId","in":"path","required":true,"schema":{"type":"string","pattern":"^[A-Za-z0-9._-]{1,128}$"}}],
+        "responses":{"200":{"description":"Re-authorized source locator and current state","content":{"application/json":{"schema":{"$ref":"#/components/schemas/InboxItemDetail"}}}},"404":{"description":"Not visible to this device"}}
+      }
+    },
+    "/personal/v1/sessions": {
+      "get": {
+        "operationId": "listAuthorizedSessions",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/foundation": {
+      "get": {
+        "operationId": "readPersonalFoundation",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/SessionFoundationResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/foundation"
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/observation-snapshots": {
+      "post": {
+        "operationId": "createPersonalSnapshot",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ObservationSnapshotManifest"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/ObservationSnapshotRequest"
+              }
+            }
+          }
+        },
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/observation-snapshots"
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/observation-snapshots/{snapshotId}": {
+      "get": {
+        "operationId": "readPersonalSnapshot",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ObservationSnapshotManifest"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "snapshotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/observation-snapshots/{snapshotId}"
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/observation-snapshots/{snapshotId}/items": {
+      "get": {
+        "operationId": "readPersonalSnapshotItems",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ObservationSnapshotItemPage"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "snapshotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/observation-snapshots/{snapshotId}/items"
+      }
+    },
+    "/personal/v1/agent/runs/{runId}": {
+      "get": {
+        "operationId": "readPersonalRun",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof"
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/runs/{runId}"
+      }
+    },
+    "/personal/v1/agent/runs/{runId}/commands": {
+      "post": {
+        "operationId": "submitPersonalControl",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/RunCommandReceipt"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/RunCommandReceipt"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/RunCommandRequest"
+              }
+            }
+          }
+        },
+        "x-acs-source-path": "/api/v2/runs/{runId}/commands"
+      },
+      "get": {
+        "operationId": "listPersonalControls",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/RunCommandPage"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/runs/{runId}/commands"
+      }
+    },
+    "/personal/v1/agent/runs/{runId}/commands/{commandId}": {
+      "get": {
+        "operationId": "readPersonalControl",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source result; acceptance is not execution proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/RunCommandReceipt"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "commandId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/runs/{runId}/commands/{commandId}"
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/messages": {
+      "get": {
+        "operationId": "readPersonalHistory",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/messages",
+        "responses": {
+          "200": {
+            "description": "Original bounded source read, source revision and completeness retained",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/SessionMessagePageResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendPersonalSessionMessage",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Requires independent INTERACT. Frozen source SessionMessageRequest, exact original receipt semantics. Message-only bounded request budget derives from source InputLimits (capped at 16MiB); other routes retain 64KiB.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/SessionMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Source accepted response"
+          },
+          "202": {
+            "description": "Source acceptance; execution is separate"
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/summary": {
+      "get": {
+        "operationId": "readPersonalSummary",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-acs-source-path": "/api/v2/sessions/{sessionId}/summary",
+        "responses": {
+          "200": {
+            "description": "Original bounded source read, source revision and completeness retained",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/SessionSummaryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/operations/lookup": {
+      "post": {
+        "operationId": "lookupPersonalMessageReceipt",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "description": "Read-only lookup. Only operation=session.message, resourceId must be an OBSERVE-authorized session. Idempotency-Key matches idempotencyKey.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/OperationLookupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Original operation receipt"
+          },
+          "404": {
+            "description": "Unknown; never resubmit on read"
+          }
+        }
+      }
+    },
+    "/api/v2/personal-access/devices/{deviceId}/scope": {
+      "put": {
+        "operationId": "updatePersonalDeviceScope",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact recorded grant revision and scope"
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeUpdate"
+              }
+            }
+          }
+        },
+        "description": "Owner only, CAS by expectedGrantRevision; exact requestId replay is durable. Source sessions must exist. Unsupported actions denied."
+      }
+    },
+    "/personal/v1/input-capabilities": {
+      "get": {
+        "operationId": "getPersonalInputCapabilities",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "description": "Current grant and source image limits; independently configured fixed FunASR offline transcription, disabled when unconfigured. Does not call a model.",
+        "responses": {
+          "200": {
+            "description": "Source input capability projection"
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/messages/{messageId}/attachments/{attachmentId}/bytes": {
+      "get": {
+        "operationId": "getPersonalAttachmentBytes",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "OBSERVE on root session; source validates message/attachment relationship. Bounded bytes, actual source MIME; no arbitrary file or URL access.",
+        "responses": {
+          "200": {
+            "description": "Original attachment bytes",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/messages/{messageId}/attachments/{attachmentId}/content": {
+      "get": {
+        "operationId": "getPersonalAttachmentContent",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "OBSERVE on root session; source validates message/attachment relationship. Bounded bytes, actual source MIME; no arbitrary file or URL access.",
+        "responses": {
+          "200": {
+            "description": "Original attachment bytes",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/operations/{receiptId}": {
+      "get": {
+        "operationId": "getPersonalMessageReceipt",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "receiptId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Read only session.message receipt, resolving resourceId back to an OBSERVE-authorized Session before any result is released.",
+        "responses": {
+          "200": {
+            "description": "Original receipt"
+          }
+        }
+      }
+    },
+    "/api/v2/personal-access/capabilities": {
+      "get": {
+        "operationId": "getPersonalOwnerCapabilities",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CodeAgent-Client-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Actual loopback peer and registered local owner only; origin, store, certificate public identity and action availability. Network reachability is separately qualified.",
+        "responses": {
+          "200": {
+            "description": "Owner diagnostics; never contains owner credentials"
+          }
+        }
+      }
+    },
+    "/personal/v1/transcriptions": {
+      "post": {
+        "operationId": "submitPersonalTranscription",
+        "description": "INTERACT scope. One fixed owner-configured FunASR offline provider. Strict 44-byte PCM16 mono 16000Hz WAV, 0.2-60 seconds, at most 1920044 bytes. No client URL, filenames or provider credentials. Persist original key/hash before dispatch; no automatic provider retry.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "metadata",
+                  "audio"
+                ],
+                "properties": {
+                  "metadata": {
+                    "$ref": "#/components/schemas/TranscriptionMetadata"
+                  },
+                  "audio": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "metadata": {
+                  "contentType": "application/json"
+                },
+                "audio": {
+                  "contentType": "audio/wav"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Original request fact only. A transcription never sends a session message. UNKNOWN is not permission to retry the provider. Text expires after 24 hours.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Original key payload mismatch"
+          },
+          "422": {
+            "description": "Invalid WAV format or duration"
+          },
+          "429": {
+            "description": "Bounded queue/history full"
+          },
+          "503": {
+            "description": "Host transcription not configured"
+          }
+        }
+      }
+    },
+    "/personal/v1/transcriptions/{requestKey}": {
+      "get": {
+        "operationId": "readPersonalTranscription",
+        "description": "OBSERVE on original device/session. Reads never dispatch a provider or send a message.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "requestKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original request fact only. A transcription never sends a session message. UNKNOWN is not permission to retry the provider. Text expires after 24 hours.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found; do not resubmit"
+          },
+          "410": {
+            "description": "Text expired"
+          }
+        }
+      }
+    },
+    "/personal/v1/transcriptions/{requestKey}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalTranscription",
+        "description": "INTERACT on original device/session. Stops queued or in-flight work best effort; providerMayHaveRun remains truthful.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "requestKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Original request fact only. A transcription never sends a session message. UNKNOWN is not permission to retry the provider. Text expires after 24 hours.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already completed"
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/execution-segments": {
+      "get": {
+        "operationId": "readPersonalExecutionSegments",
+        "description": "Run is resolved to its original authorized Session before dispatch and before returning content. OBSERVE reads; INTERACT submits/cancels boundary inputs. Original key/epoch are never replaced.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source result; PENDING/DELIVERED is not CONSUMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/boundary-requests": {
+      "get": {
+        "operationId": "listPersonalBoundaryInputs",
+        "description": "Run is resolved to its original authorized Session before dispatch and before returning content. OBSERVE reads; INTERACT submits/cancels boundary inputs. Original key/epoch are never replaced.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source result; PENDING/DELIVERED is not CONSUMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "submitPersonalBoundaryInput",
+        "description": "Run is resolved to its original authorized Session before dispatch and before returning content. OBSERVE reads; INTERACT submits/cancels boundary inputs. Original key/epoch are never replaced.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source result; PENDING/DELIVERED is not CONSUMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/BoundaryInputRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/boundary-requests/{bid}": {
+      "get": {
+        "operationId": "readPersonalBoundaryInput",
+        "description": "Run is resolved to its original authorized Session before dispatch and before returning content. OBSERVE reads; INTERACT submits/cancels boundary inputs. Original key/epoch are never replaced.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source result; PENDING/DELIVERED is not CONSUMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/boundary-requests/{bid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalBoundaryInput",
+        "description": "Run is resolved to its original authorized Session before dispatch and before returning content. OBSERVE reads; INTERACT submits/cancels boundary inputs. Original key/epoch are never replaced.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source result; PENDING/DELIVERED is not CONSUMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sessionId}/approvals": {
+      "get": {
+        "operationId": "listPersonalSessionApprovals",
+        "description": "OBSERVE reads original scope; independent APPROVE decides only this concrete approval. Resolve approval Session and Run before dispatch, including BUDGET projections without sessionId. Keep trusted source principal and original version/fingerprint. GET observes current state, not proof of which lost request decided it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source approval projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ApprovalListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/approvals/{approvalId}": {
+      "get": {
+        "operationId": "readPersonalApproval",
+        "description": "OBSERVE reads original scope; independent APPROVE decides only this concrete approval. Resolve approval Session and Run before dispatch, including BUDGET projections without sessionId. Keep trusted source principal and original version/fingerprint. GET observes current state, not proof of which lost request decided it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "approvalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source approval projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ApprovalRequestV2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/approvals/{approvalId}/decisions": {
+      "post": {
+        "operationId": "decidePersonalApproval",
+        "description": "OBSERVE reads original scope; independent APPROVE decides only this concrete approval. Resolve approval Session and Run before dispatch, including BUDGET projections without sessionId. Keep trusted source principal and original version/fingerprint. GET observes current state, not proof of which lost request decided it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "approvalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source approval projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/ApprovalRequestV2"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/context-packages": {
+      "post": {
+        "operationId": "createPersonalContextPackage",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/ContextPackageRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/context-packages/{pid}": {
+      "get": {
+        "operationId": "readPersonalContextPackage",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/context-packages/{pid}/items": {
+      "get": {
+        "operationId": "pagePersonalContextPackage",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/auxiliary-sessions": {
+      "get": {
+        "operationId": "listPersonalAuxiliarySessions",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPersonalAuxiliarySession",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/AuxiliarySessionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/auxiliary-turns": {
+      "get": {
+        "operationId": "listPersonalAuxiliaryTurns",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "submitPersonalAuxiliaryTurn",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/AuxiliaryTurnRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/auxiliary-turns/{tid}": {
+      "get": {
+        "operationId": "readPersonalAuxiliaryTurn",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/auxiliary-turns/{tid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalAuxiliaryTurn",
+        "description": "Authorized MAIN Session or its direct AUXILIARY_READ_ONLY child only; child Session is resolved back to the granted parent before every response. INTERACT required for package/auxiliary/turn writes. IDs do not grant access. GET never advances a question or creates a snapshot.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bounded source result; accepted/queued is not answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/assignment-transitions": {
+      "get": {
+        "operationId": "listPersonalAssignmentTransitions",
+        "description": "Original Run resolves to its authorized Session. ASSIGN is independent of CONTROL/INTERACT/APPROVE. Preflight is read-only; confirmation uses original digest/epoch/run-state/model revision. Only product-code targets. Private instructions/model snapshot are withheld. GET observes original transition and never resubmits.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source proof; accepted is not ACTIVE. Original budget/deadline are not reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "submitPersonalAssignmentTransition",
+        "description": "Original Run resolves to its authorized Session. ASSIGN is independent of CONTROL/INTERACT/APPROVE. Preflight is read-only; confirmation uses original digest/epoch/run-state/model revision. Only product-code targets. Private instructions/model snapshot are withheld. GET observes original transition and never resubmits.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source proof; accepted is not ACTIVE. Original budget/deadline are not reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/AssignmentTransitionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/assignment-transitions/preflight": {
+      "post": {
+        "operationId": "preflightPersonalAssignmentTransition",
+        "description": "Original Run resolves to its authorized Session. ASSIGN is independent of CONTROL/INTERACT/APPROVE. Preflight is read-only; confirmation uses original digest/epoch/run-state/model revision. Only product-code targets. Private instructions/model snapshot are withheld. GET observes original transition and never resubmits.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source proof; accepted is not ACTIVE. Original budget/deadline are not reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/AssignmentTransitionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/assignment-transitions/{tid}": {
+      "get": {
+        "operationId": "readPersonalAssignmentTransition",
+        "description": "Original Run resolves to its authorized Session. ASSIGN is independent of CONTROL/INTERACT/APPROVE. Preflight is read-only; confirmation uses original digest/epoch/run-state/model revision. Only product-code targets. Private instructions/model snapshot are withheld. GET observes original transition and never resubmits.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source proof; accepted is not ACTIVE. Original budget/deadline are not reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/assignment-transitions/{tid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalAssignmentTransition",
+        "description": "Original Run resolves to its authorized Session. ASSIGN is independent of CONTROL/INTERACT/APPROVE. Preflight is read-only; confirmation uses original digest/epoch/run-state/model revision. Only product-code targets. Private instructions/model snapshot are withheld. GET observes original transition and never resubmits.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source proof; accepted is not ACTIVE. Original budget/deadline are not reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/assignment-options": {
+      "get": {
+        "operationId": "readPersonalAssignmentOptions",
+        "description": "OBSERVE on this Session. At most100 profiles/models from actual configured source catalog; public identity/description/revision/alias only. Does not expose profile instructions, provider URL or credentials.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Available source choices; admission is separately checked by ASSIGN preflight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalAssignmentOptions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups": {
+      "get": {
+        "operationId": "listPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteGroupCreateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}": {
+      "get": {
+        "operationId": "getPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/authorizations": {
+      "post": {
+        "operationId": "authorizePersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteGroupAuthorizeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/start": {
+      "post": {
+        "operationId": "startPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteGroupStartRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteActionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/executions": {
+      "get": {
+        "operationId": "listPersonalCollaborationExecutions",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/executions/{eid}": {
+      "get": {
+        "operationId": "getPersonalCollaborationExecution",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "eid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/executions/{eid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalCollaborationExecution",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "eid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteActionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/candidates/{cid}": {
+      "get": {
+        "operationId": "getPersonalCollaborationCandidate",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/candidates/{cid}/files": {
+      "get": {
+        "operationId": "readPersonalCollaborationCandidate",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/selections": {
+      "post": {
+        "operationId": "selectPersonalCollaborationCandidates",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteSelectionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/selections/{selectionId}/previews": {
+      "post": {
+        "operationId": "previewPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selectionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritePreviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/previews/{pid}/files": {
+      "get": {
+        "operationId": "readPersonalCollaborationPreview",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/adoptions": {
+      "get": {
+        "operationId": "listPersonalCollaborationAdoptions",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "adoptPersonalCollaboration",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteAdoptionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/adoptions/{aid}": {
+      "get": {
+        "operationId": "getPersonalCollaborationAdoption",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/CollaborationResource"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/adoptions/{aid}/cancel": {
+      "post": {
+        "operationId": "cancelPersonalCollaborationAdoption",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteActionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-groups/{gid}/adoptions/{aid}/recover": {
+      "post": {
+        "operationId": "recoverPersonalCollaborationAdoption",
+        "description": "Fixed source Run resolves to granted Session. OBSERVE reads; independent COLLABORATE creates/authorizes/starts/cancels children; ADOPT selects/previews/adopts/recovers. Nested entity must belong to this source group. Indexed relative file reads <=65536 bytes. GET never repeats a mutation. Source budget, scope and adoption barrier remain authoritative.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Original source state with gateway-bound runId; file, verification and context effects are independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./business-codeagent-v2.yaml#/components/schemas/WritableCollaborationRecord"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./business-codeagent-v2.yaml#/components/schemas/WriteActionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/sessions/{sid}/messages/{mid}/content": {
+      "get": {
+        "operationId": "getPersonalMessageContent",
+        "description": "Bounded original public message content, including ANSWERED main-report messageId. Session and derived read-only child resolve to original grant. GET does not dispatch a report or model.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded original source facts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/agent/runs/{rid}/collaboration-activity": {
+      "get": {
+        "operationId": "getPersonalCollaborationActivity",
+        "description": "Read-only activity of an authorized original Run.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded original source facts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks": {
+      "get": {
+        "operationId": "listPersonalLocalTasks",
+        "description": "OBSERVE / explicit LAUNCH scopes; exact authorized task references only. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks/{store}/options": {
+      "get": {
+        "operationId": "readPersonalLocalOptions",
+        "description": "Only allowed project/engine pairs; no executable, profile path or source token. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/task-preflights": {
+      "post": {
+        "operationId": "preflightPersonalLocalTask",
+        "description": "LAUNCH for exact store/project/engine; read-only USER_PROFILE, committed baseline and options revision. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeTaskPreflightRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks": {
+      "post": {
+        "operationId": "launchPersonalLocalTask",
+        "description": "LAUNCH; freeze requestKey/projectId/engineId/optionsRevision/instruction <=16KiB. Persist before dispatch; no POST replay on ambiguous reply. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "description": "Must equal immutable requestKey; source key is independently namespaced per paired device."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeTaskLaunchRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks/{store}/task-requests/{key}": {
+      "get": {
+        "operationId": "readPersonalLocalLaunchRequest",
+        "description": "Read original per-device launch; never dispatch. Revocation/scope changes withhold results. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}": {
+      "get": {
+        "operationId": "readPersonalLocalTask",
+        "description": "OBSERVE exact native task; native generation/session/turn/command identity, not an ACS receipt. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/events": {
+      "get": {
+        "operationId": "readPersonalLocalEvents",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/output": {
+      "get": {
+        "operationId": "readPersonalLocalOutput",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/metrics": {
+      "get": {
+        "operationId": "readPersonalLocalMetrics",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/messages": {
+      "get": {
+        "operationId": "readPersonalLocalMessages",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "sendPersonalLocalMessage",
+        "description": "INTERACT; NATIVE_STEER or NATIVE_FOLLOW_UP with original generation/nativeSessionId/nativeTurnId/targetCommandId and immutable requestKey/content. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "description": "Must equal immutable requestKey; source key is independently namespaced per paired device."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeMessageRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/input-requests": {
+      "get": {
+        "operationId": "readPersonalLocalInputRequests",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/artifacts": {
+      "get": {
+        "operationId": "readPersonalLocalArtifacts",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/artifacts/{artifact}": {
+      "get": {
+        "operationId": "readPersonalLocalArtifactsArtifact",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "artifact",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/requests/{key}": {
+      "get": {
+        "operationId": "readPersonalLocalRequestsKey",
+        "description": "OBSERVE exact native task. Bounded public source data; original requests remain source-qualified. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          }
+        ]
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/commands": {
+      "post": {
+        "operationId": "stopPersonalLocalTask",
+        "description": "CONTROL; STOP only; independent key from input. ACCEPTED only proves source-confirmed owned writer exit. No pause or resume. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "description": "Must equal immutable requestKey; source key is independently namespaced per paired device."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeStopRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/personal/v1/local-tasks/{store}/tasks/{task}/input-requests/{question}/responses": {
+      "post": {
+        "operationId": "answerPersonalLocalRequest",
+        "description": "APPROVE; actual pending source request and original guard; finite confirmed/value/decision response. No policy expansion. Loopback source is fixed by owner config, requires store guard HEADER_V1. No remote URL/path/argv/provider credentials accepted. GET/restart never replays native writes.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded source result or original request observation; UNKNOWN is not success."
+          },
+          "403": {
+            "description": "Independent action or exact scope denied"
+          },
+          "409": {
+            "description": "Original binding / version / source store changed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "store",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "question",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "description": "Must equal immutable requestKey; source key is independently namespaced per paired device."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeQuestionResponse"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "InvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "actions"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "sessions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OBSERVE",
+                "CONTROL",
+                "INTERACT",
+                "APPROVE",
+                "ASSIGN",
+                "COLLABORATE",
+                "ADOPT",
+                "LAUNCH"
+              ]
+            }
+          },
+          "resources": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalResource"
+            }
+          },
+          "launchScopes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalLaunchScope"
+            }
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "sessions"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "resources"
+                  ]
+                },
+                {
+                  "required": [
+                    "launchScopes"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "resources"
+            ],
+            "not": {
+              "required": [
+                "sessions"
+              ]
+            }
+          }
+        ],
+        "description": "Resource v2 is canonical. Legacy sessions input migrates to ACS_SESSION only. Empty resources requires an explicit launch scope. LAUNCH never grants observation of other tasks; accepted creation adds only the proven exact task. Old clients cannot overwrite native grants."
+      },
+      "PairingRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pairingRequestId",
+          "inviteId",
+          "inviteSecret",
+          "installationId",
+          "label",
+          "pollingSecretHash"
+        ],
+        "properties": {
+          "pairingRequestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "inviteId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "inviteSecret": {
+            "type": "string"
+          },
+          "installationId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "pollingSecretHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "Decision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approve"
+        ],
+        "properties": {
+          "approve": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Redemption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "redemptionId"
+        ],
+        "properties": {
+          "redemptionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        }
+      },
+      "Refresh": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refreshToken",
+          "refreshRequestId"
+        ],
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          },
+          "refreshRequestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        }
+      },
+      "Invitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "personalHostId",
+          "storeId",
+          "origin",
+          "inviteId",
+          "inviteSecret",
+          "expiresAt",
+          "certificateSha256",
+          "certificatePem"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "enum": [
+              "personal-pairing-invite/1"
+            ]
+          },
+          "personalHostId": {
+            "type": "string"
+          },
+          "storeId": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string",
+            "format": "uri"
+          },
+          "inviteId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "inviteSecret": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "certificateSha256": {
+            "type": "string"
+          },
+          "certificatePem": {
+            "type": "string"
+          }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deviceGrantId",
+          "grantRevision",
+          "accessToken",
+          "refreshToken",
+          "accessExpiresAt"
+        ],
+        "properties": {
+          "deviceGrantId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "grantRevision": {
+            "type": "string"
+          },
+          "accessToken": {
+            "type": "string"
+          },
+          "refreshToken": {
+            "type": "string"
+          },
+          "accessExpiresAt": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PairingView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pairingRequestId",
+          "label",
+          "state",
+          "checkWords",
+          "expiresAt",
+          "sessions",
+          "actions"
+        ],
+        "properties": {
+          "pairingRequestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED",
+              "REDEEMED",
+              "EXPIRED"
+            ]
+          },
+          "checkWords": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OBSERVE",
+                "CONTROL",
+                "INTERACT",
+                "APPROVE",
+                "ASSIGN",
+                "COLLABORATE",
+                "ADOPT",
+                "LAUNCH"
+              ]
+            }
+          },
+          "deviceGrantId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "resources": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalResource"
+            }
+          },
+          "launchScopes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalLaunchScope"
+            }
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "ScopeUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "expectedGrantRevision",
+          "actions"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "expectedGrantRevision": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,18}$"
+          },
+          "sessions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OBSERVE",
+                "CONTROL",
+                "INTERACT",
+                "APPROVE",
+                "ASSIGN",
+                "COLLABORATE",
+                "ADOPT",
+                "LAUNCH"
+              ]
+            }
+          },
+          "resources": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalResource"
+            }
+          },
+          "launchScopes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersonalLaunchScope"
+            }
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "sessions"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "resources"
+                  ]
+                },
+                {
+                  "required": [
+                    "launchScopes"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "resources"
+            ],
+            "not": {
+              "required": [
+                "sessions"
+              ]
+            }
+          }
+        ],
+        "description": "Resource v2 is canonical. Legacy sessions input migrates to ACS_SESSION only. Empty resources requires an explicit launch scope. LAUNCH never grants observation of other tasks; accepted creation adds only the proven exact task. Old clients cannot overwrite native grants."
+      },
+      "TranscriptionMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "sessionId",
+          "audioSha256"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "audioSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto"
+            ],
+            "default": "auto"
+          }
+        }
+      },
+      "TranscriptionResult": {
+        "type": "object",
+        "required": [
+          "requestKey",
+          "sessionId",
+          "audioSha256",
+          "state",
+          "providerBinding",
+          "providerMayHaveRun",
+          "observedAt"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "audioSha256": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "DISPATCHED",
+              "SUCCEEDED",
+              "FAILED",
+              "UNKNOWN",
+              "CANCELLED",
+              "NOT_DISPATCHED",
+              "EXPIRED"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 16000
+          },
+          "code": {
+            "type": "string"
+          },
+          "providerBinding": {
+            "type": "string"
+          },
+          "providerMayHaveRun": {
+            "type": "boolean"
+          },
+          "observedAt": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PersonalAssignmentOptions": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "sessionId",
+          "profiles",
+          "models"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "enum": [
+              "personal-assignment-options/1"
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "profiles": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "models": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "modelAlias": {
+                  "type": "string"
+                },
+                "providerDisplayName": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "PersonalResource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "backendStoreId",
+              "sessionId"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ACS_SESSION"
+                ]
+              },
+              "backendStoreId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+              },
+              "sessionId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "backendStoreId",
+              "taskId"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "WORKER_LOCAL"
+                ]
+              },
+              "backendStoreId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+              },
+              "taskId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+              }
+            }
+          }
+        ]
+      },
+      "PersonalLaunchScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "backendStoreId",
+          "projectId",
+          "engineId"
+        ],
+        "properties": {
+          "backendStoreId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "projectId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "engineId": {
+            "type": "string",
+            "enum": [
+              "pi",
+              "codex"
+            ]
+          }
+        }
+      },
+      "NativeTaskPreflightRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "projectId",
+          "engineId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "engineId": {
+            "type": "string",
+            "enum": [
+              "pi",
+              "codex"
+            ]
+          }
+        }
+      },
+      "NativeTaskLaunchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "projectId",
+          "engineId",
+          "optionsRevision",
+          "instruction"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "projectId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "engineId": {
+            "type": "string",
+            "enum": [
+              "pi",
+              "codex"
+            ]
+          },
+          "optionsRevision": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "UTF-8 payload also limited to16KiB by admission."
+          }
+        }
+      },
+      "NativeMessageRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "generation",
+          "nativeSessionId",
+          "targetCommandId",
+          "kind",
+          "content"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "nativeTurnId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "targetCommandId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "NATIVE_STEER",
+              "NATIVE_FOLLOW_UP"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "UTF-8 payload also limited to16KiB by admission."
+          }
+        }
+      },
+      "NativeStopRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "generation",
+          "nativeSessionId",
+          "targetCommandId",
+          "intent"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "nativeTurnId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "targetCommandId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "STOP"
+            ]
+          }
+        }
+      },
+    "NativeQuestionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "generation",
+          "nativeSessionId",
+          "targetCommandId",
+          "response"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "nativeTurnId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "targetCommandId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "response": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "confirmed"
+                ],
+                "properties": {
+                  "confirmed": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "decline",
+                      "cancel"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "InboxItemSubject": {
+      "type":"object","additionalProperties":true,"required":["type"],
+      "properties":{"type":{"type":"string","enum":["APPROVAL","MESSAGE","RUN","INPUT_REQUEST","NATIVE_TASK","NATIVE_STATE"]},"approvalId":{"type":"string"},"messageId":{"type":"string"},"runId":{"type":"string"},"sessionId":{"type":"string"},"inputRequestId":{"type":"string"},"taskId":{"type":"string"},"generation":{"type":"string"},"nativeSessionId":{"type":"string"},"nativeTurnId":{"type":"string"},"targetCommandId":{"type":"string"},"currentCommandId":{"type":"string"},"requestVersion":{"type":"string"},"contentRevision":{"type":"string"},"decisionStatus":{"type":"string"},"state":{"type":"string"},"stateVersion":{"type":"string"},"sourceStatus":{"type":"string"},"reasonCode":{"type":"string"},"quiescent":{"type":"boolean"}}
+    },
+    "InboxItem": {
+      "type":"object","additionalProperties":false,"required":["itemId","kind","resource","subject","sourceRevision","observedAt","sourceAvailable","coverage"],
+      "properties":{"itemId":{"type":"string"},"kind":{"type":"string","enum":["NEEDS_INPUT","RESULT_READY","ATTENTION_REQUIRED"]},"resource":{"$ref":"#/components/schemas/PersonalResource"},"subject":{"$ref":"#/components/schemas/InboxItemSubject"},"sourceRevision":{"type":"string"},"title":{"type":"string","maxLength":128},"observedAt":{"type":"integer","format":"int64"},"expiresAt":{"type":"integer","format":"int64"},"sourceAvailable":{"type":"boolean"},"coverage":{"type":"string","enum":["CURRENT_STATE","PARTIAL","PARTIAL_RESULT","KIND_UNVERIFIED","NOT_SCANNED"]}}
+    },
+    "InboxItemDetail": {
+      "allOf":[{"$ref":"#/components/schemas/InboxItem"},{"type":"object","additionalProperties":false,"required":["resolved","grantRevision"],"properties":{"resolved":{"type":"boolean"},"grantRevision":{"type":"string"},"currentSourceRevision":{"type":"string"},"currentKind":{"type":"string","enum":["NEEDS_INPUT","RESULT_READY","ATTENTION_REQUIRED"]},"currentStateUnknown":{"type":"boolean"}}}]
+    },
+    "InboxSource": {
+      "type":"object","additionalProperties":false,"required":["resource","coverage"],
+      "properties":{"resource":{"$ref":"#/components/schemas/PersonalResource"},"lastAttemptAt":{"type":"integer","format":"int64"},"lastSuccessfulAt":{"type":"integer","format":"int64"},"available":{"type":"boolean"},"coverage":{"type":"string"},"reasonCode":{"type":"string"},"truncated":{"type":"boolean"},"unverifiedKinds":{"type":"array","items":{"type":"string","enum":["NEEDS_INPUT","RESULT_READY","ATTENTION_REQUIRED"]}}}
+    },
+    "InboxList": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","items","sources","coverage","grantRevision","listRevision","truncated","sourcesTruncated"],
+      "properties":{"schemaVersion":{"type":"string","enum":["personal-inbox/1"]},"items":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/InboxItem"}},"nextCursor":{"type":"string"},"sources":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/InboxSource"}},"coverage":{"type":"string"},"grantRevision":{"type":"string"},"listRevision":{"type":"string"},"truncated":{"type":"boolean"},"sourcesTruncated":{"type":"boolean"}}
+    }
+  },
+  "x-protocol": "personal-agent-access/1",
+  "x-sync": "foreground-bounded-history-summary-foundation-polling",
+  "x-not-supported": [
+    "SSE",
+    "PUSH",
+    "PAC-B",
+    "PAC-C",
+    "embedded-runtime"
+  ]
+}

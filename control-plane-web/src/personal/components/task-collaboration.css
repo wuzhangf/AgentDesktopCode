@@ -1,0 +1,11 @@
+.personal-collaboration { min-width: 0; }
+.personal-collaboration .writable-collaboration-panel > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.personal-collaboration fieldset { min-width: 0; border: 1px solid var(--border, #334155); border-radius: 8px; margin: 12px 0; padding: 12px; }
+.personal-collaboration label { display: block; margin: 8px 0; overflow-wrap: anywhere; }
+.personal-collaboration input:not([type=checkbox]), .personal-collaboration textarea, .personal-collaboration select { display: block; max-width: 100%; width: 100%; box-sizing: border-box; background: var(--surface, #16202f); color: inherit; border: 1px solid var(--border, #475569); border-radius: 5px; padding: 8px; margin-top: 4px; }
+.personal-collaboration textarea { min-height: 72px; resize: vertical; }
+.personal-collaboration button { margin: 4px 8px 4px 0; }
+.personal-collaboration table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.personal-collaboration td, .personal-collaboration th { text-align: left; vertical-align: top; padding: 8px; overflow-wrap: anywhere; border-bottom: 1px solid var(--border, #334155); }
+.personal-collaboration pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
+.personal-collaboration input:disabled, .personal-collaboration textarea:disabled, .personal-collaboration select:disabled { opacity: .65; }

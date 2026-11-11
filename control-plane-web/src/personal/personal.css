@@ -1,0 +1,37 @@
+/* PAE P6 个人管理面 — 少量补充样式；主题令牌与卡片/表格/抽屉沿用 global.css。 */
+
+/* 环境操作进度条（progress 为 null 时页面显示「进度未知」而非伪造） */
+.p6-progress {
+  height: 6px; border-radius: 3px; background: var(--surface-raised);
+  overflow: hidden; margin: 8px 0;
+}
+.p6-progress > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+[data-motion='off'] .p6-progress > i { transition: none; }
+
+/* 操作事件流（原操作恢复用，行高紧凑） */
+.p6-events { display: flex; flex-direction: column; }
+.p6-events article {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--border-soft);
+}
+.p6-events article:last-child { border-bottom: none; }
+
+/* 试跑回执：与「保存成功」分行呈现（E05） */
+.p6-receipt {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  background: var(--accent-soft); font-size: 12px;
+}
+
+/* 任务启动所需能力检查清单 */
+.p6-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.p6-checks li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.p6-checks li[data-state='blocked'] { color: var(--warning); }
+.p6-checks li[data-state='unknown'] { color: var(--unknown); }
+.p6-checks li[data-state='not-required'] { color: var(--text-faint); }
+
+/* 窄屏（手机式窄接口展示）：内容区收紧，待处理卡片全宽（§9.6 / E35） */
+@media (max-width: 768px) {
+  .content { padding: 12px; }
+  .grid.cols-12 > * { grid-column: span 12 !important; }
+}

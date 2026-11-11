@@ -1,0 +1,48 @@
+/* Settings Center responsive rules (settings design §5.3).
+ * Widths are CSS pixels; Windows 150%/200% DPI flows through naturally
+ * because nothing here fixes page height or uses device pixels. */
+
+@media (max-width: 1179px) {
+  .settings-layout { grid-template-columns: 192px minmax(0, 1fr); }
+  .settings-content-inner { max-width: none; }
+}
+
+@media (max-width: 839px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-nav {
+    position: fixed;
+    inset: 52px 0 auto 0;
+    bottom: 0;
+    z-index: 30;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    transform: translateY(calc(100% + 60px));
+    transition: transform 160ms ease;
+  }
+  .settings-drawer-open .settings-nav { transform: translateY(0); }
+  .settings-drawer-toggle { display: inline-flex; }
+  .settings-content { padding: 14px 14px 96px; }
+}
+
+@media (max-width: 639px) {
+  .setting-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .setting-row-control { min-height: 44px; }
+  .settings-save-bar { flex-direction: column; align-items: stretch; }
+  .settings-save-actions { justify-content: flex-end; }
+  .settings-save-bar button { min-height: 44px; }
+  .knowledge-columns { grid-template-columns: 1fr; }
+  .settings-field-grid { grid-template-columns: 1fr; }
+  .settings-dialog { max-height: 92vh; }
+  .settings-dialog-header, .settings-dialog-body { padding-left: 12px; padding-right: 12px; }
+}
+
+/* Reduced motion: honour the OS preference via data attribute or media query. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-skeleton-row { animation: none; }
+  .settings-nav { transition: none; }
+}
+[data-reduce-motion='ON'] .settings-skeleton-row { animation: none; }
+[data-reduce-motion='ON'] .settings-nav { transition: none; }
+[data-reduce-motion='ON'] button,
+[data-reduce-motion='ON'] .setting-toggle input[type='checkbox'] { transition: none; }
