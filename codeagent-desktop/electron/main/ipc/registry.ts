@@ -1259,7 +1259,7 @@ export const runActivitiesDefinition: IpcDefinition<{ runId: string; afterCursor
     const out: { runId: string; afterCursor: number; limit: number } = {
       runId: runId.value,
       afterCursor: typeof afterCursor === 'number' && afterCursor >= 0 ? Math.floor(afterCursor) : 0,
-      limit: typeof limit === 'number' && limit >= 1 ? Math.min(500, Math.floor(limit)) : 0
+      limit: typeof limit === 'number' && limit >= 1 ? Math.min(20000, Math.floor(limit)) : 0
     };
     return { ok: true, value: out };
   }

@@ -128,7 +128,7 @@ export function createWorkerControlServer(options: Options) {
           if (!validCollaborationOperation(p.operation)) reject();
           result = await browser.client.collaboration(p.operation); break;
         case 'CAPABILITIES': exact(p, ['action']); result = await browser.client.getCapabilities(); break;
-        case 'ACTIVITIES': exact(p, ['action', 'id']); result = await browser.client.getRunActivities(id(p.id), { limit: 50 }); break;
+        case 'ACTIVITIES': exact(p, ['action', 'id']); result = await browser.client.getRunActivities(id(p.id), { limit: 20000 }); break;
         case 'DIFF': exact(p, ['action', 'id']); result = await browser.client.getRunDiff(id(p.id)); break;
         case 'SNAPSHOT':
         case 'SNAPSHOT_ITEMS':
