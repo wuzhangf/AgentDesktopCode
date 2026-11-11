@@ -237,7 +237,7 @@ export interface GatewayApprovals {
   poll(approvalId: string): MaybePromise<JsonObject>;
   cancel(approvalId: string): MaybePromise<JsonObject>;
   pending(): MaybePromise<JsonObject>;
-  list(device: Device): MaybePromise<JsonObject>;
+  list(device: Device, waitMillis?: number): MaybePromise<JsonObject>;
   decide(device: Device, approvalId: string, body: unknown): MaybePromise<JsonObject>;
 }
 

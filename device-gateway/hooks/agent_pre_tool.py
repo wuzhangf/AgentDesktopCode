@@ -106,6 +106,42 @@ def block_out(agent: str, reason: str) -> str:
     return json.dumps({"decision": "block", "reason": reason})
 
 
+# Fields the phone needs to decide — everything else (file bodies, patches,
+# env blobs) stays on the Mac instead of riding the relay to the phone.
+SAFE_INPUT_KEYS = {"file_path", "path", "command", "url", "query", "pattern",
+                   "notebook_path", "old_path", "new_path"}
+INPUT_VALUE_LIMIT = 500
+# "Allow this session" flags are session-scoped, not forever — expire them.
+AUTO_MARKER_TTL_S = 24 * 3600
+
+
+def safe_input(tool_input: dict) -> dict:
+    if not isinstance(tool_input, dict):
+        return {}
+    out = {}
+    for key in SAFE_INPUT_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, list):
+            value = " ".join(str(v) for v in value)
+        if value is not None:
+            out[key] = str(value)[:INPUT_VALUE_LIMIT]
+    return out
+
+
+def prune_markers() -> None:
+    try:
+        root = Path.home() / ".agent-gateway"
+        cutoff = time.time() - AUTO_MARKER_TTL_S
+        for flag in root.glob("auto-*"):
+            try:
+                if flag.stat().st_mtime < cutoff:
+                    flag.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def question_for(tool: str, tool_input: dict) -> str:
     path = tool_input.get("file_path") or tool_input.get("path") or ""
     cmd = tool_input.get("command") or ""
@@ -151,6 +187,7 @@ def main() -> int:
     except ValueError:
         return 0  # not a payload we understand — desktop flow
 
+    prune_markers()
     tool = payload.get("tool_name") or payload.get("toolName") or ""
     tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
     session_id = payload.get("session_id") or payload.get("conversation_id") or ""
@@ -188,7 +225,7 @@ def main() -> int:
         "approvalId": approval_id,
         "agent": agent,
         "toolName": tool,
-        "toolInput": tool_input if isinstance(tool_input, dict) else {},
+        "toolInput": safe_input(tool_input),
         "question": question_for(tool, tool_input if isinstance(tool_input, dict) else {}),
         "options": ["允许一次", "本会话允许", "拒绝"],
         "projectDir": cwd,

@@ -157,8 +157,25 @@ export class GatewayApprovals {
     });
   }
 
-  /** Phone side: pending asks plus decisions made in the last hour. */
-  async list(_device: Device): Promise<JsonObject> {
+  /**
+   * Phone side: pending asks plus decisions made in the last hour.
+   * waitMillis > 0 turns the read into a short long-poll: hold the request
+   * until a PENDING ask appears or the budget runs out, so a connected phone
+   * sees a new card within ~0.4s instead of on its next poll tick. Callers on
+   * serialized transports (PAC relay lanes) must not use it — a held request
+   * occupies the lane.
+   */
+  async list(_device: Device, waitMillis = 0): Promise<JsonObject> {
+    const deadline = this.now() + Math.max(0, Math.min(15_000, waitMillis));
+    for (;;) {
+      const page = this.page();
+      const hasPending = (page.items as JsonObject[]).some((i) => i.state === 'PENDING');
+      if (hasPending || this.now() >= deadline) return page;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+
+  private page(): JsonObject {
     return this.store.transaction(() => {
       const horizon = this.now() - KEEP_DECIDED_MS;
       const items = this.store.list<Approval>(APPROVAL_KIND)

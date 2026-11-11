@@ -21,6 +21,12 @@ SCRIPT = Path(__file__).resolve().parent / "agent_pre_tool.py"
 MARKER = "agent_pre_tool.py"
 PRE_TOOL_TIMEOUT = 360  # hook blocks up to ~290s polling; 60s would kill it
 CONFIG_DIR = Path.home() / ".agent-gateway"
+# The global agent configs must never reference a repo checkout — a split,
+# archive or move leaves every tool call spawning a missing script. Stage the
+# hook under ~/.agent-gateway and register that stable path; the shebang +
+# stdlib-only script keeps it free of any interpreter path too.
+STAGED = CONFIG_DIR / "hooks" / "agent_pre_tool.py"
+INSTALLER_STAGED = CONFIG_DIR / "hooks" / "install.py"
 
 
 def read_json(path: Path) -> dict:
@@ -51,8 +57,26 @@ def write_json(path: Path, data: dict) -> None:
         raise
 
 
+def stage() -> Path:
+    """Copy the hook and this installer into ~/.agent-gateway/hooks; refresh on
+    every install so upstream fixes propagate to already-registered configs
+    and the installer itself survives repo moves."""
+    if not SCRIPT.exists():
+        sys.exit(f"hook source missing: {SCRIPT}")
+    STAGED.parent.mkdir(parents=True, exist_ok=True)
+    for src, dst in [(SCRIPT, STAGED),
+                     (Path(__file__).resolve(), INSTALLER_STAGED)]:
+        if src.resolve() == dst.resolve():
+            continue
+        tmp = dst.with_suffix(".tmp")
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+        dst.chmod(0o755)
+    return STAGED
+
+
 def hook_command(agent: str) -> str:
-    return f'"{sys.executable}" "{SCRIPT}" {agent}'
+    return f'"{STAGED}" {agent}'
 
 
 AGENTS = {
@@ -115,10 +139,11 @@ def main() -> int:
     if args.uninstall:
         for agent in agents:
             uninstall(AGENTS[agent])
-        try:
-            (CONFIG_DIR / "hooks.json").unlink()
-        except OSError:
-            pass
+        for gone in [STAGED, INSTALLER_STAGED, CONFIG_DIR / "hooks.json"]:
+            try:
+                gone.unlink()
+            except OSError:
+                pass
         return 0
 
     if not args.port or not args.token_file:
@@ -127,6 +152,7 @@ def main() -> int:
     if not Path(args.token_file).exists():
         sys.exit(f"token file not found: {args.token_file}")
 
+    stage()
     for agent in agents:
         install(agent, AGENTS[agent])
     if "codex" in agents:

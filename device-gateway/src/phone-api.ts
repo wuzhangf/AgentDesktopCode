@@ -422,7 +422,10 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/approvals' && method === 'GET') {
     if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
-    const page = await ctx.approvals.list(device);
+    const query = boundedQuery(req, ['waitMillis']);
+    const waitRaw = query.get('waitMillis');
+    if (waitRaw !== undefined && !/^[0-9]{1,5}$/.test(waitRaw)) fail('INVALID_REQUEST', 400);
+    const page = await ctx.approvals.list(device, waitRaw === undefined ? 0 : Number.parseInt(waitRaw, 10));
     if ((await ctx.auth.authenticate(token)).revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
     return { status: 200, body: page };
   }
