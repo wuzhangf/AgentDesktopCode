@@ -20,8 +20,7 @@ import {
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'cli-sup-'));
 
 const fakeChild = (): ChildProcess => {
-  const emitter = new EventEmitter();
-  const child = emitter as unknown as ChildProcess & { killed?: string };
+  const child = new EventEmitter() as unknown as ChildProcess;
   child.stdout = new EventEmitter() as never;
   child.stderr = new EventEmitter() as never;
   child.kill = () => true;

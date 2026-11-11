@@ -440,6 +440,17 @@ export class GatewayStore implements ConnectionRegistry {
     return this.getConnection(input.connectionId)!;
   }
 
+  /**
+   * Managed rows (cli-supervisor) rebind to a fresh loopback port every spawn —
+   * unlike fixed env connections they must be re-pointable after a restart.
+   */
+  updateConnectionBaseUrl(connectionId: string, baseUrl: string): void {
+    this.db.prepare(`UPDATE registry_connections
+        SET base_url=?, updated_at=?, revision=revision+1
+      WHERE connection_id=?`)
+      .run(baseUrl, new Date().toISOString(), connectionId);
+  }
+
   getConnection(connectionId: string): ConnectionRow | undefined {
     const row = this.db.prepare('SELECT * FROM registry_connections WHERE connection_id=?')
       .get(connectionId) as ConnectionDbRow | undefined;

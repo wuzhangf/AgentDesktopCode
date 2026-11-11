@@ -492,7 +492,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         ...(opts.cliBridge.engines !== undefined ? { engines: opts.cliBridge.engines } : {}),
       },
       {
-        upsertConnection: (row) => { store.upsertConnection(row); },
+        // upsertConnection is register-once; supervisor rows get a fresh port
+        // per spawn, so re-point the row when it already exists.
+        upsertConnection: (row) => {
+          store.upsertConnection(row);
+          if (row.baseUrl !== undefined) {
+            store.updateConnectionBaseUrl(row.connectionId, row.baseUrl);
+          }
+        },
         tokens: extraTokens,
         log: (event, fields) => console.log(JSON.stringify({ listener: 'cli-supervisor', event, ...fields })),
       },
