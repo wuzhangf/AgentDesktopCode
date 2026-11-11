@@ -298,8 +298,8 @@ export class PersonalTasks {
     if(this.native.is(id)){const q=new URLSearchParams(query);if(q.has('afterCursor')){q.set('cursor',q.get('afterCursor')!);q.delete('afterCursor');}return this.native.read(id,kind==='activities'?'events':'output',q);}
     if ([...query.keys()].some(k => !['afterCursor', 'limit', 'runId'].includes(k))) return invalid();
     const afterCursor = query.has('afterCursor') ? Number(query.get('afterCursor')) : undefined;
-    const limit = Number(query.get('limit') ?? 50);
-    if ((afterCursor !== undefined && (!Number.isSafeInteger(afterCursor) || afterCursor < 0)) || !Number.isInteger(limit) || limit < 1 || limit > 100) return invalid();
+    const limit = Number(query.get('limit') ?? 20000);
+    if ((afterCursor !== undefined && (!Number.isSafeInteger(afterCursor) || afterCursor < 0)) || !Number.isInteger(limit) || limit < 1 || limit > 20000) return invalid();
     const f = this.facts(this.row(id));
     if (!f?.session) return { status: 200, body: this.envelope(null) };
     const selected = await this.selectRun(f, ctx, query.get('runId') ?? undefined);
