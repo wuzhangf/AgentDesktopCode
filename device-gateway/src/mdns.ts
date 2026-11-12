@@ -82,7 +82,9 @@ const a = (name: string, ip: string): Buffer =>
   rr(name, TYPE.A, TTL_S, Buffer.from(ip.split('.').map(Number)), true);
 
 const pickAddress = (hint?: string): string | undefined => {
-  if (hint !== undefined && /^(\d{1,3}\.){3}\d{1,3}$/.test(hint)) return hint;
+  // A wildcard bind (0.0.0.0/::) is a listen-any instruction, not an
+  // address a phone can dial — fall through to the interface pick.
+  if (hint !== undefined && /^(\d{1,3}\.){3}\d{1,3}$/.test(hint) && !hint.split('.').every((p) => p === '0')) return hint;
   for (const list of Object.values(os.networkInterfaces())) {
     for (const iface of list ?? []) {
       if (iface.family === 'IPv4' && !iface.internal) return iface.address;

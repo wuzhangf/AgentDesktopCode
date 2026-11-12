@@ -131,18 +131,18 @@ export function validateScope(sessions: string[] | undefined, actions: string[] 
 }
 
 /**
- * Java PersonalAccessService.validateResourceActions:
- * resources or launch scopes must be non-empty; actions must contain OBSERVE
- * and stay inside the twelve-action set; GRAPHICS_ACT requires CONTROL;
- * LAUNCH is present iff launch scopes are non-empty.
+ * Java PersonalAccessService.validateResourceActions, amended: an empty
+ * resource+launch scope is a valid connection-only grant — pairing a phone
+ * must not require a live agent source. Actions must contain OBSERVE and
+ * stay inside the twelve-action set; GRAPHICS_ACT requires CONTROL; LAUNCH
+ * is present iff launch scopes are non-empty.
  */
 export function validateResourceActions(
   resources: Resource[],
   launches: LaunchScope[],
   actions: string[] | undefined,
 ): void {
-  if ((resources.length === 0 && launches.length === 0)
-    || actions == null
+  if (actions == null
     || !actions.includes('OBSERVE')
     || !actions.every((a) => ACTION_SET.has(a))
     || (actions.includes('GRAPHICS_ACT') && !actions.includes('CONTROL'))

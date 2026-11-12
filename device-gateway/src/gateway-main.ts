@@ -30,7 +30,7 @@
  *                                  {url,token,connectionId} loopback worker-local
  *                                  sources — one per extra engine host
  *   PERSONAL_ENV_URL|PERSONAL_ENV_TOKEN     secondary 'env' connection row
- *   DEVICE_GATEWAY_TLS_DIR|TLS_CN|TLS_DAYS  provisioning knobs
+ *   DEVICE_GATEWAY_TLS_DIR|TLS_CN|TLS_DAYS|TLS_EXTRA_NAMES  provisioning knobs
  *   DEVICE_GATEWAY_TLS_KEY|TLS_CERT|TLS_CA  inline PEM (or file paths)
  *   DEVICE_GATEWAY_DISPLAY_NAME|DEVICE_GATEWAY_VERSION   log metadata
  *   DEVICE_GATEWAY_MAX_RAW_BODY        listener drain cap bytes (default 16MiB)
@@ -49,6 +49,7 @@ import type { GatewayContext, GatewayConfig } from './context.js';
 import { createGatewayListener, createHooksListener, createOwnerListener, createRelayListener } from './http.js';
 import { certificateInfo, fingerprintOfCertPem, provisionTlsMaterial, type TlsMaterial } from './tls.js';
 import { startMdns } from './mdns.js';
+import { tailscaleNames } from './tailscale.js';
 import { fail, GatewayError } from './protocol.js';
 import type { Device, Resource } from './protocol.js';
 import { GatewayStore } from './store.js';
@@ -242,6 +243,8 @@ export interface GatewayBootstrapOptions {
   allowUnlicensedDevelopment?: boolean;
   localCliOnly?: boolean;
   pairingAutoApprove?: boolean;
+  /** Extra dialable origins (e.g. Tailscale) phones may probe after origin. */
+  alternateOrigins?: string[];
 }
 
 export const readEnvConfig = (): GatewayBootstrapOptions => {
@@ -265,6 +268,10 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
   const ownerBind = env('DEVICE_GATEWAY_OWNER_BIND') ?? '127.0.0.1';
   const commonName = env('DEVICE_GATEWAY_TLS_CN') ?? hostname();
   const tlsDir = resolve(env('DEVICE_GATEWAY_TLS_DIR') ?? join(dataDir, 'tls'));
+  // Detected once per boot: tailnet IPv4 + MagicDNS name feed both the cert
+  // SANs (provisioned certs only — existing material is reused untouched) and
+  // the alternate origins phones probe when the primary LAN origin fails.
+  const tailscale = tailscaleNames();
 
   const inlineKey = pemFromEnv('DEVICE_GATEWAY_TLS_KEY');
   const inlineCert = pemFromEnv('DEVICE_GATEWAY_TLS_CERT');
@@ -292,11 +299,21 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
       if (raw === undefined) return undefined;
       try { return new URL(raw).hostname; } catch { return undefined; }
     })();
+    // DEVICE_GATEWAY_TLS_EXTRA_NAMES — comma-separated extra SANs so one
+    // certificate covers every address the phone may dial. The BYO-network
+    // story needs this: a Tailscale/WireGuard name or IP alongside the LAN
+    // bind, letting a paired host switch origin without re-pairing.
+    const extraNames = (env('DEVICE_GATEWAY_TLS_EXTRA_NAMES') ?? '')
+      .split(',').map((n) => n.trim()).filter((n) => n !== '');
+    // Self-detected tailnet names ride along in the cert SANs so the
+    // advertised alternate origins pass hostname verification too.
+    extraNames.push(...tailscale);
     tls = provisionTlsMaterial(tlsDir, {
       commonName,
       days: intEnv('DEVICE_GATEWAY_TLS_DAYS', 825, 1, 8250),
-      extraNames: [bind, originHost].filter(
-        (n): n is string => n !== undefined && n !== 'localhost' && n !== commonName),
+      extraNames: [...extraNames, bind, originHost].filter(
+        (n): n is string => n !== undefined && n !== 'localhost' && n !== commonName
+          && n !== '0.0.0.0' && n !== '::'),
       rsa: env('DEVICE_GATEWAY_PROFILE') === 'LOCAL_CLI',
     });
   }
@@ -385,6 +402,8 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     acsStoreId: env('DEVICE_GATEWAY_ACS_STORE_ID') ?? env('ACS_STORE_ID'),
     acsUrl,
     origin: env('DEVICE_GATEWAY_ORIGIN'),
+    alternateOrigins: tailscale.length === 0 ? undefined
+      : tailscale.map((name) => `https://${name}:${port}`),
     workerLocal,
     extraWorkerLocals,
     cliBridge,
@@ -439,7 +458,7 @@ export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
 function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore): BuiltGateway {
   const origin = opts.origin ?? `https://${env('DEVICE_GATEWAY_TLS_CN') ?? hostname()}:${opts.port}`;
   // Devices implements the full GatewayAuth surface; origin feeds ownerStatus().
-  const devices = new Devices(store, () => opts.storeKey, () => opts.previousStoreKey, undefined, origin, undefined, opts.pairingAutoApprove === true);
+  const devices = new Devices(store, () => opts.storeKey, () => opts.previousStoreKey, undefined, origin, undefined, opts.pairingAutoApprove === true, opts.alternateOrigins ?? []);
   devices.keyCheckOk(); // throws GatewayError('STORE_KEY_INVALID', 500) on mismatch
   const host = devices.hostRecord();
 
@@ -723,6 +742,8 @@ export async function main(): Promise<void> {
       host: built.config.personalHostId ?? '',
       store: built.config.storeId,
       cert: opts.tls.fingerprints.certSha256,
+      ...(opts.alternateOrigins === undefined || opts.alternateOrigins.length === 0 ? {}
+        : { alts: opts.alternateOrigins.map((o) => new URL(o).host).join(',') }),
     },
     log: (event, fields) => console.log(JSON.stringify({ listener: 'mdns', event, ...fields })),
   });

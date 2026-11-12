@@ -214,7 +214,9 @@ const localCatalogScope = async (ctx: GatewayContext): Promise<ScopeRecord> => {
       }
     }
   }
-  const actions = [...ACTION_SET];
+  // An empty catalog still yields a connection-only grant: pairing must not
+  // depend on a live agent source. LAUNCH joins when the scope widens later.
+  const actions = [...ACTION_SET].filter((a) => launches.length > 0 || a !== 'LAUNCH');
   const scope = {
     resources: [],
     launchScopes: checkedLaunchScopes(launches),

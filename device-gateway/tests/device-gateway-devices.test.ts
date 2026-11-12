@@ -209,19 +209,23 @@ describe('invitations', () => {
   });
 
   it('caps pending invites at PAIRING_LIMIT', () => {
-    invite(['s1']);
-    invite(['s2']);
-    invite(['s3']);
-    invite(['s4']);
+    // Unscanned invites are superseded on each mint; only invites bound to a
+    // live pairing hold a slot.
+    for (let i = 0; i < 4; i++) requestPairing(invite([`s${i}`]));
     expectFail(() => invite(['s5']), 'PAIRING_LIMIT', 429);
+  });
+
+  it('supersedes unclaimed invites instead of exhausting the pool', () => {
+    const first = invite(['s1']);
+    let last: Json = first;
+    for (let i = 0; i < 6; i++) last = invite([`s${i}`]);
+    expectFail(() => requestPairing(first), 'PAIRING_EXPIRED', 410);
+    expect(requestPairing(last).state).toBe('PENDING');
   });
 
   it('frees an invitation slot after redemption without making the QR reusable', () => {
     const paired = mintDevice();
-    invite(['s1']);
-    invite(['s2']);
-    invite(['s3']);
-    expect(() => invite(['s4'])).not.toThrow();
+    for (let i = 0; i < 4; i++) requestPairing(invite([`s${i}`]));
     expectFail(() => requestPairing(paired.invite), 'INVITATION_BOUND', 409);
     expectFail(() => invite(['s5']), 'PAIRING_LIMIT', 429);
   });
@@ -256,8 +260,12 @@ describe('invitations', () => {
       () => inviteResources([localRes('t')], [], ['OBSERVE', 'GRAPHICS_ACT']),
       'INVALID_SCOPE', 400,
     );
-    // empty scope
-    expectFail(() => inviteResources([], [], ['OBSERVE']), 'INVALID_SCOPE', 400);
+    // empty scope is a valid connection-only invite — pairing must not
+    // require a live agent source
+    const bare = inviteResources([], [], ['OBSERVE']);
+    expect(bare.inviteSecret).toBeTruthy();
+    // LAUNCH still requires launch scopes
+    expectFail(() => inviteResources([], [], ['OBSERVE', 'LAUNCH']), 'INVALID_SCOPE', 400);
   });
 });
 
@@ -480,10 +488,10 @@ describe('member-attested pairing (relay ingress)', () => {
 });
 
 describe('LAN discovery pairing (Bonjour)', () => {
-  const discoveryPairing = (rid = next('pr'), poll = secret(), label = 'Phone'): Json =>
+  const discoveryPairing = (rid = next('pr'), poll = secret(), label = 'Phone', installation = 'inst-disc-1'): Json =>
     devices.discoveryRequest!({
       pairingRequestId: rid,
-      installationId: 'inst-disc-1',
+      installationId: installation,
       label,
       pollingSecretHash: hash(poll),
       discovery: true,
@@ -516,8 +524,17 @@ describe('LAN discovery pairing (Bonjour)', () => {
   });
 
   it('caps unanswered discovery requests so a hostile LAN cannot flood', () => {
-    for (let i = 0; i < 8; i++) discoveryPairing(next('pr'));
-    expectFail(() => discoveryPairing(next('pr')), 'PAIRING_LIMIT', 429);
+    for (let i = 0; i < 8; i++) discoveryPairing(next('pr'), secret(), 'Phone', `inst-flood-${i}`);
+    expectFail(() => discoveryPairing(next('pr'), secret(), 'Phone', 'inst-flood-9'), 'PAIRING_LIMIT', 429);
+  });
+
+  it('supersedes a retried discovery request from the same installation', () => {
+    const poll1 = secret();
+    const rid1 = next('pr');
+    discoveryPairing(rid1, poll1);
+    discoveryPairing(next('pr'));
+    expectFail(() => devices.observePairing(rid1, poll1), 'PAIRING_EXPIRED', 410);
+    for (let i = 0; i < 10; i++) discoveryPairing(next('pr'));
   });
 
   it('replays idempotently and mismatches on payload drift', () => {

@@ -320,8 +320,8 @@ describe('scope helpers (Java validators)', () => {
     validateResourceActions([localRes('t')], [], ['OBSERVE']);
     validateResourceActions([], [launch('pi')], ['OBSERVE', 'LAUNCH']);
     validateResourceActions([localRes('t')], [], ['OBSERVE', 'CONTROL', 'GRAPHICS_ACT']);
-    // empty scope entirely
-    expect(() => validateResourceActions([], [], ['OBSERVE'])).toThrowError(/INVALID_SCOPE/);
+    // empty scope is a valid connection-only grant (pair without a live source)
+    validateResourceActions([], [], ['OBSERVE']);
     // missing OBSERVE
     expect(() => validateResourceActions([localRes('t')], [], ['CONTROL'])).toThrowError(/INVALID_SCOPE/);
     // action outside the twelve

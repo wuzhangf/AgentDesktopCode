@@ -92,6 +92,7 @@ export class Devices {
   private readonly previousKeyFn: () => Uint8Array | undefined;
   private readonly clock: () => number;
   private readonly origin: string;
+  private readonly alternateOrigins: string[];
   private readonly expectedStoreId?: string;
   private storeId = '';
 
@@ -109,21 +110,27 @@ export class Devices {
     origin?: string,
     clock?: () => number,
     private readonly pairingAutoApprove = false,
+    alternateOrigins: string[] = [],
   ) {
     this.keyFn = typeof sealKey === 'function' ? sealKey : () => sealKey;
     this.previousKeyFn = typeof previousSealKey === 'function'
       ? previousSealKey
       : () => previousSealKey as Uint8Array | undefined;
     this.clock = clock ?? (() => Date.now());
-    if (origin !== undefined) {
-      const url = new URL(origin);
+    const exactHttps = (value: string): string => {
+      const url = new URL(value);
       if (url.protocol !== 'https:' || url.hostname === '' || url.username !== ''
         || url.password !== '' || url.search !== '' || url.hash !== ''
         || !(url.pathname === '' || url.pathname === '/')) {
         throw new Error('Exact HTTPS origin required');
       }
-    }
-    this.origin = (origin ?? '').replace(/\/$/, '');
+      return value.replace(/\/$/, '');
+    };
+    this.origin = origin === undefined ? '' : exactHttps(origin);
+    // Ordered after the primary origin; phones probe the whole list and use
+    // whichever connects (LAN vs tailnet needs no user decision).
+    this.alternateOrigins = alternateOrigins.map(exactHttps)
+      .filter((o) => o !== this.origin);
     this.expectedStoreId = storeId;
     this.ensureHost();
   }
@@ -294,6 +301,14 @@ export class Devices {
         if (old.expiresAt <= this.now()) fail('PAIRING_EXPIRED', 410);
         return this.unsealJson<Json>(old.envelope!);
       }
+      // A never-claimed invite holds a slot yet proves nothing — supersede it
+      // so a fresh QR always unsticks the owner after abandoned attempts.
+      for (const item of this.store.list<Invite>('invite')) {
+        if (item.requestId == null && item.expiresAt > this.now()) {
+          item.expiresAt = this.now();
+          this.putScope('invite', item.id, item);
+        }
+      }
       let pending = 0;
       for (const item of this.store.list<Invite>('invite')) {
         if (item.expiresAt <= this.now()) continue;
@@ -315,6 +330,8 @@ export class Devices {
       const out: Json = {
         schemaVersion: 'personal-pairing-invite/1',
         origin: this.origin,
+        ...(this.alternateOrigins.length === 0 ? {}
+          : { origins: [this.origin, ...this.alternateOrigins] }),
         personalHostId: host.id,
         storeId: this.storeId,
         inviteId: value.id,
@@ -447,10 +464,18 @@ export class Devices {
         if (fp !== previous.fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
         return this.pairingView(previous);
       }
-      // Cap unanswered discovery asks — a hostile LAN client must not flood
-      // the owner's pending list. Member pairings never sit PENDING.
+      // A retry from the same installation orphans its previous unanswered
+      // ask — expire it so repeated attempts cannot self-lock the owner's
+      // pending list. Cap what remains: a hostile LAN client must not flood.
+      // Member pairings never sit PENDING.
+      for (const p of this.store.list<Pairing>('pairing')) {
+        if (p.state === 'PENDING' && p.inviteId == null && p.installationId === installation && p.id !== rid) {
+          p.expiresAt = this.now();
+          this.putScope('pairing', p.id, p);
+        }
+      }
       const pending = this.store.list<Pairing>('pairing')
-        .filter((p) => p.state === 'PENDING' && p.inviteId == null).length;
+        .filter((p) => p.state === 'PENDING' && p.inviteId == null && p.expiresAt > this.now()).length;
       if (pending >= MAX_PENDING_DISCOVERY) fail('PAIRING_LIMIT', 429);
       const p: Pairing = {
         id: rid,
