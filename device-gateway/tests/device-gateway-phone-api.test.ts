@@ -387,6 +387,51 @@ describe('pairing routes', () => {
     expect(ctx.calls.auth[0]).toEqual(['request', PAIR_BODY]);
   });
 
+  it('public listener + discovery body → auth.discoveryRequest with catalog scope', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    ctx.localTasks!.ownerCatalog = () => ({
+      available: true, backendStoreId: 'local-1',
+      projects: [{ projectId: 'p1' }],
+      engines: [{ engineId: 'macos' }],
+    });
+    let seen: { body: unknown; scope: unknown } | undefined;
+    ctx.auth.discoveryRequest = (body, scope) => {
+      seen = { body, scope };
+      return { pairingRequestId: 'pr-d', state: 'PENDING' };
+    };
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-d', discovery: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }));
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ pairingRequestId: 'pr-d', state: 'PENDING' });
+    const scope = seen?.scope as { launchScopes: unknown[] };
+    expect(scope.launchScopes).toEqual([{ backendStoreId: 'local-1', projectId: 'p1', engineId: 'macos' }]);
+    expect(ctx.calls.auth.filter((c) => c[0] === 'request')).toEqual([]);
+  });
+
+  it('discovery marker on relay ingress → 400 INVALID_REQUEST', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-d', discovery: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }, { relayIngress: true }));
+    expect(res.status).toBe(400);
+    expect((res.body as JsonObject).code).toBe('INVALID_REQUEST');
+    expect(ctx.calls.auth).toEqual([]);
+  });
+
+  it('discovery without localTasks → 409 LOCAL_SOURCE_NOT_CONFIGURED', async () => {
+    const ctx = fakeCtx({ withLocalTasks: false });
+    ctx.auth.discoveryRequest = () => ({ pairingRequestId: 'pr-d', state: 'PENDING' });
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/pairing-requests', {
+      pairingRequestId: 'pr-d', discovery: true, installationId: 'inst-1',
+      label: 'iPhone', pollingSecretHash: 'h'.repeat(64),
+    }));
+    expect(res.status).toBe(409);
+    expect((res.body as JsonObject).code).toBe('LOCAL_SOURCE_NOT_CONFIGURED');
+  });
+
   it('member pairing without local tasks → 409 LOCAL_SOURCE_NOT_CONFIGURED', async () => {
     const ctx = fakeCtx();
     ctx.auth.memberRequest = () => ({});

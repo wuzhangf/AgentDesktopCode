@@ -48,6 +48,7 @@ import { join, resolve } from 'node:path';
 import type { GatewayContext, GatewayConfig } from './context.js';
 import { createGatewayListener, createHooksListener, createOwnerListener, createRelayListener } from './http.js';
 import { certificateInfo, fingerprintOfCertPem, provisionTlsMaterial, type TlsMaterial } from './tls.js';
+import { startMdns } from './mdns.js';
 import { fail, GatewayError } from './protocol.js';
 import type { Device, Resource } from './protocol.js';
 import { GatewayStore } from './store.js';
@@ -709,6 +710,22 @@ export async function main(): Promise<void> {
   if (built.cliSupervisor !== undefined) {
     void built.cliSupervisor.start();
   }
+
+  // Bonjour advertisement — phones discover this host as "_agentlink._tcp".
+  // The advert is public discovery facts only; pairing still needs owner
+  // approval (discovery requests land PENDING). Opt out via env.
+  const mdns = env('DEVICE_GATEWAY_MDNS') === '0' ? { stop: () => {} } : startMdns({
+    instance: env('DEVICE_GATEWAY_MDNS_NAME') ?? hostname(),
+    port: boundPort,
+    address: opts.bind,
+    txt: {
+      v: '1',
+      host: built.config.personalHostId ?? '',
+      store: built.config.storeId,
+      cert: opts.tls.fingerprints.certSha256,
+    },
+    log: (event, fields) => console.log(JSON.stringify({ listener: 'mdns', event, ...fields })),
+  });
 
   const shutdown = (signal: string): void => {
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));

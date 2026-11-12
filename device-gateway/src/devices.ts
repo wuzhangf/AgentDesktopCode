@@ -55,6 +55,7 @@ export const IDLE_TTL = 7 * 86_400_000;
 
 const MAX_ACTIVE_DEVICES = 4;
 const MAX_PENDING_INVITES = 4;
+const MAX_PENDING_DISCOVERY = 8;
 const DEVICE_HISTORY_LIMIT = 128;
 const SCOPE_HISTORY_LIMIT = 128;
 const SCOPE_RESOURCE_LIMIT = 100;
@@ -413,6 +414,53 @@ export class Devices {
         expiresAt: this.now() + INVITE_TTL,
         state: 'APPROVED',
         checkWords: hash(`member:${rid}`).substring(0, 12),
+        recoverUntil: 0,
+        resources: scope.resources ?? [],
+        launchScopes: scope.launchScopes ?? [],
+        actions: sortedActions(scope.actions),
+      };
+      this.store.put('pairing', rid, p);
+      return this.pairingView(p);
+    });
+  }
+
+  /**
+   * LAN discovery pairing — a Bonjour-discovered phone has no sealed invite,
+   * and LAN presence alone proves nothing (shared networks are hostile), so
+   * the request is created PENDING and the owner decides through the normal
+   * pairing-requests surface. Scope is the same local catalog member pairing
+   * grants: the owner's explicit approval is the grant.
+   */
+  discoveryRequest(body: Json, scope: ScopeRecord): Json {
+    const rid = text(body, 'pairingRequestId');
+    const installation = text(body, 'installationId');
+    const label = text(body, 'label');
+    const poll = text(body, 'pollingSecretHash');
+    id(rid);
+    id(installation);
+    if (label.length > 80 || !POLL_PATTERN.test(poll)) fail('INVALID_REQUEST', 400);
+    return this.store.transaction(() => {
+      this.cleanup();
+      const fp = hash(JSON.stringify(['discovery', installation, label, poll]));
+      const previous = this.store.get<Pairing>('pairing', rid);
+      if (previous != null) {
+        if (fp !== previous.fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+        return this.pairingView(previous);
+      }
+      // Cap unanswered discovery asks — a hostile LAN client must not flood
+      // the owner's pending list. Member pairings never sit PENDING.
+      const pending = this.store.list<Pairing>('pairing')
+        .filter((p) => p.state === 'PENDING' && p.inviteId == null).length;
+      if (pending >= MAX_PENDING_DISCOVERY) fail('PAIRING_LIMIT', 429);
+      const p: Pairing = {
+        id: rid,
+        installationId: installation,
+        label,
+        pollHash: poll,
+        fingerprint: fp,
+        expiresAt: this.now() + INVITE_TTL,
+        state: 'PENDING',
+        checkWords: hash(`discovery:${rid}`).substring(0, 12),
         recoverUntil: 0,
         resources: scope.resources ?? [],
         launchScopes: scope.launchScopes ?? [],

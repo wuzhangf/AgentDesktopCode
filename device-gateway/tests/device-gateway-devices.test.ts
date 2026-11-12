@@ -479,6 +479,62 @@ describe('member-attested pairing (relay ingress)', () => {
   });
 });
 
+describe('LAN discovery pairing (Bonjour)', () => {
+  const discoveryPairing = (rid = next('pr'), poll = secret(), label = 'Phone'): Json =>
+    devices.discoveryRequest!({
+      pairingRequestId: rid,
+      installationId: 'inst-disc-1',
+      label,
+      pollingSecretHash: hash(poll),
+      discovery: true,
+    }, {
+      resources: [localRes('task-1')],
+      launchScopes: [launch('macos', 'p1')],
+      actions: ['OBSERVE', 'CONTROL', 'INTERACT', 'LAUNCH'],
+    });
+
+  it('lands PENDING — never auto-approved — then owner approval redeems', () => {
+    const rid = next('pr');
+    const poll = secret();
+    const view = discoveryPairing(rid, poll);
+    expect(view.state).toBe('PENDING');
+    // Owner approval flips it through the same pairing-requests surface as
+    // an unsealed invite.
+    devices.decide(rid, true);
+    const issued = devices.redeem(rid, poll, `red-${rid}`);
+    expect(issued.deviceGrantId).toBeTruthy();
+    const d = deviceRecord(issued.deviceGrantId as string);
+    expect(d.state).toBe('ACTIVE');
+    expect(d.launchScopes).toEqual([launch('macos', 'p1')]);
+  });
+
+  it('rejects unapproved redemption', () => {
+    const rid = next('pr');
+    const poll = secret();
+    discoveryPairing(rid, poll);
+    expectFail(() => devices.redeem(rid, poll, `red-${rid}`), 'PAIRING_NOT_APPROVED', 409);
+  });
+
+  it('caps unanswered discovery requests so a hostile LAN cannot flood', () => {
+    for (let i = 0; i < 8; i++) discoveryPairing(next('pr'));
+    expectFail(() => discoveryPairing(next('pr')), 'PAIRING_LIMIT', 429);
+  });
+
+  it('replays idempotently and mismatches on payload drift', () => {
+    const rid = next('pr');
+    const poll = secret();
+    const first = discoveryPairing(rid, poll);
+    expect(discoveryPairing(rid, poll)).toEqual(first);
+    expectFail(() => discoveryPairing(rid, poll, 'Tablet'), 'IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+  });
+
+  it('hides pairings behind PAIRING_UNAUTHORIZED for wrong polls', () => {
+    const rid = next('pr');
+    discoveryPairing(rid, secret());
+    expectFail(() => devices.observePairing(rid, 'wrong-poll'), 'PAIRING_UNAUTHORIZED', 401);
+  });
+});
+
 describe('decide', () => {
   it('approves and rejects with idempotent same-state replay', () => {
     const inv = invite();

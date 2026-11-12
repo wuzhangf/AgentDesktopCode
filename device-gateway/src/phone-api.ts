@@ -55,7 +55,7 @@ import {
   validLaunchScope,
   validateResourceActions,
 } from './scope.js';
-import { launchScopeKey, type LaunchScope } from './protocol.js';
+import { launchScopeKey, type LaunchScope, type ScopeRecord } from './protocol.js';
 
 // ---------------------------------------------------------------------------
 // Request helpers — Java bearer()/header()/body()/query() equivalents.
@@ -185,9 +185,7 @@ const rate = (ctx: GatewayContext, req: HttpRequest): void => {
  * the complete action set. Launched taskIds self-grant WORKER_LOCAL via
  * appendLaunchedTask; no pre-pinned resources are needed.
  */
-const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonObject> => {
-  if (b.member !== true) fail('INVALID_REQUEST', 400);
-  if (ctx.auth.memberRequest === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+const localCatalogScope = async (ctx: GatewayContext): Promise<ScopeRecord> => {
   if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
   const catalog = await ctx.localTasks.ownerCatalog();
   const launches: LaunchScope[] = [];
@@ -223,7 +221,26 @@ const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonOb
     actions,
   };
   validateResourceActions(scope.resources, scope.launchScopes, actions);
-  return ctx.auth.memberRequest(b, scope);
+  return scope;
+};
+
+const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonObject> => {
+  if (b.member !== true) fail('INVALID_REQUEST', 400);
+  if (ctx.auth.memberRequest === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+  return ctx.auth.memberRequest(b, await localCatalogScope(ctx));
+};
+
+/**
+ * LAN discovery pairing — the Bonjour-discovered phone has no sealed invite.
+ * LAN presence alone is not a grant, so the request is created PENDING and
+ * the owner approves it (Agent Link pairing surface); the approved scope is
+ * the same local catalog. Only the public listener honors `discovery` — the
+ * relay ingress always carries member attestation and rejects it.
+ */
+const discoveryPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonObject> => {
+  if (b.discovery !== true) fail('INVALID_REQUEST', 400);
+  if (ctx.auth.discoveryRequest === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+  return ctx.auth.discoveryRequest(b, await localCatalogScope(ctx));
 };
 
 // ---------------------------------------------------------------------------
@@ -316,14 +333,20 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   if (path === '/personal/v1/pairing-requests' && method === 'POST') {
     rate(ctx, req);
     const b = exact(jsonBody(req),
-      'pairingRequestId', 'inviteId', 'inviteSecret', 'installationId', 'label', 'pollingSecretHash', 'member');
+      'pairingRequestId', 'inviteId', 'inviteSecret', 'installationId', 'label', 'pollingSecretHash', 'member', 'discovery');
     // Member-attested pairing: reaching the relay listener at all means the
     // member service authenticated the caller and routed it to this bound
     // host, so the channel itself is the grant — no sealed invitation. The
     // member marker is meaningless on the public listener and rejected there.
     if (b.member !== undefined && req.relayIngress !== true) fail('INVALID_REQUEST', 400);
+    // Discovery pairing is the LAN inverse: no attestation, always PENDING.
+    // It is meaningless via relay (member attestation already applies).
+    if (b.discovery !== undefined && req.relayIngress === true) fail('INVALID_REQUEST', 400);
     if (req.relayIngress === true && b.inviteId === undefined) {
       return { status: 202, body: await memberPairing(ctx, b) };
+    }
+    if (b.discovery === true) {
+      return { status: 202, body: await discoveryPairing(ctx, b) };
     }
     return { status: 202, body: await ctx.auth.request(b) };
   }

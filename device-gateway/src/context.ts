@@ -87,6 +87,8 @@ export interface GatewayAuth {
    * absent implementations fail closed.
    */
   memberRequest?(body: JsonObject, scope: ScopeRecord): MaybePromise<JsonObject>;
+  /** LAN Bonjour-discovered pairing — always PENDING until owner approval. */
+  discoveryRequest?(body: JsonObject, scope: ScopeRecord): MaybePromise<JsonObject>;
   /** GET /personal/v1/pairing-requests/{id} (bearer = polling secret). */
   observePairing(rid: string, poll: string): MaybePromise<JsonObject>;
   /** POST /pairing-requests/{id}/redemptions → issued credentials object. */
