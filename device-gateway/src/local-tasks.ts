@@ -541,7 +541,7 @@ export class LocalTaskAccess {
     const engines: Json[] = [];
     for (const e of (Array.isArray(engineFeed.items) ? engineFeed.items : [])) {
       if (engines.length >= 10) break;
-      engines.push(LocalTaskAccess.fields(e, ['engineId', 'engineVersion', 'version', 'profileId', 'capabilities', 'available', 'availability', 'reasonCode']));
+      engines.push(LocalTaskAccess.fields(e, ['engineId', 'engineVersion', 'version', 'profileId', 'capabilities', 'available', 'availability', 'reasonCode', 'sourceKind']));
     }
     const tasks: Json[] = [];
     for (const request of this.store.list<DeviceRequest>(LAUNCH)) {

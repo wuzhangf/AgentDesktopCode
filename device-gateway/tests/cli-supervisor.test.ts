@@ -1,0 +1,250 @@
+/**
+ * CliSupervisor: whitelist detection, per-engine bridge spawn args, runtime
+ * connection registration, token map wiring, and failure isolation.
+ * spawn/fetch are faked — the real bridge path is exercised e2e separately.
+ */
+import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
+import {
+  CliSupervisor,
+  cliPresent,
+  cliTokenRef,
+  detectLocalClis,
+  type ConnectionUpsert,
+} from '../src/cli-supervisor';
+
+const tmp = (): string => mkdtempSync(join(tmpdir(), 'cli-sup-'));
+
+const fakeChild = (): ChildProcess => {
+  const child = new EventEmitter() as unknown as ChildProcess;
+  child.stdout = new EventEmitter() as never;
+  child.stderr = new EventEmitter() as never;
+  child.kill = () => true;
+  return child;
+};
+
+describe('cli presence detection', () => {
+  it('finds engines whose binaries exist in the scanned dirs', () => {
+    const dir = tmp();
+    try {
+      const names = process.platform === 'win32' ? ['pi.cmd', 'codex.cmd'] : ['pi', 'codex'];
+      for (const name of names) writeFileSync(join(dir, name), 'x');
+      expect(detectLocalClis(['pi', 'codex', 'claude'], [dir])).toEqual(['pi', 'codex']);
+      expect(cliPresent('claude', [dir])).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty list when nothing is installed', () => {
+    const dir = tmp();
+    // The npm-shim dir and vendor installer roots on this machine may
+    // genuinely hold whitelisted CLIs — isolate the scan from %APPDATA%,
+    // %LOCALAPPDATA% and %USERPROFILE% for the "nothing installed" case.
+    const oldAppdata = process.env.APPDATA;
+    const oldLocal = process.env.LOCALAPPDATA;
+    const oldUser = process.env.USERPROFILE;
+    delete process.env.APPDATA;
+    delete process.env.LOCALAPPDATA;
+    delete process.env.USERPROFILE;
+    try {
+      expect(detectLocalClis(['pi', 'codex', 'claude'], [dir])).toEqual([]);
+    } finally {
+      if (oldAppdata !== undefined) process.env.APPDATA = oldAppdata;
+      if (oldLocal !== undefined) process.env.LOCALAPPDATA = oldLocal;
+      if (oldUser !== undefined) process.env.USERPROFILE = oldUser;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects codex under the OpenAI installer root on Windows', () => {
+    if (process.platform !== 'win32') return;
+    const local = tmp();
+    const dir = tmp();
+    mkdirSync(join(local, 'OpenAI', 'Codex', 'bin', 'hash1'), { recursive: true });
+    writeFileSync(join(local, 'OpenAI', 'Codex', 'bin', 'hash1', 'codex.exe'), 'x');
+    const oldLocal = process.env.LOCALAPPDATA;
+    const oldAppdata = process.env.APPDATA;
+    process.env.LOCALAPPDATA = local;
+    delete process.env.APPDATA;
+    try {
+      expect(detectLocalClis(['pi', 'codex', 'claude'], [dir])).toEqual(['codex']);
+    } finally {
+      process.env.LOCALAPPDATA = oldLocal;
+      if (oldAppdata !== undefined) process.env.APPDATA = oldAppdata;
+      rmSync(local, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('CliSupervisor.start', () => {
+  const setup = () => {
+    const rows: ConnectionUpsert[] = [];
+    const tokens = new Map<string, string>();
+    const spawned: { cmd: string; args: string[]; env: Record<string, string | undefined> }[] = [];
+    const logs: { event: string; fields: Record<string, unknown> }[] = [];
+    const stateRoot = tmp();
+    const projectDir = tmp();
+    const fetchFn = async (url: string | URL) =>
+      new Response('{}', { status: String(url).endsWith('/local/v1/identity') ? 200 : 404 });
+    const deps = {
+      upsertConnection: (row: ConnectionUpsert) => rows.push(row),
+      tokens,
+      log: (event: string, fields: Record<string, unknown>) => logs.push({ event, fields }),
+      fetchFn: fetchFn as typeof fetch,
+      spawnChild: ((cmd: string, args: string[], opts: { env: Record<string, string | undefined> }) => {
+        spawned.push({ cmd, args, env: opts.env });
+        return fakeChild();
+      }) as typeof import('node:child_process').spawn,
+    };
+    return { rows, tokens, spawned, logs, stateRoot, projectDir, deps };
+  };
+
+  it('spawns a bridge per detected engine and registers worker-local rows', async () => {
+    const { rows, tokens, spawned, stateRoot, projectDir, deps } = setup();
+    const binDir = tmp();
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'pi.cmd' : 'pi'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir, projectId: 'demo', engines: ['pi'] },
+        deps,
+      );
+      // Restrict detection to engines present in binDir by stubbing PATH.
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      const children = await supervisor.start();
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+
+      expect(children).toHaveLength(1);
+      expect(spawned).toHaveLength(1);
+      const call = spawned[0]!;
+      expect(call.args.slice(0, 3)).toEqual(['/b/host.mjs', 'serve', '--engine']);
+      expect(call.args).toContain('pi');
+      expect(call.args).toContain('demo');
+      expect(call.args).toContain('--project-id');
+      const token = call.env['WORKER_LOCAL_TOKEN'];
+      expect(typeof token).toBe('string');
+      expect(token!.length).toBeGreaterThanOrEqual(24);
+
+      expect(rows).toHaveLength(1);
+      const row = rows[0]!;
+      expect(row.kind).toBe('worker-local');
+      expect(row.connectionId).toBe('cli:pi');
+      expect(row.tokenRef).toBe(cliTokenRef('pi'));
+      expect(row.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      // Token resolves through the shared map the gateway tokenResolver uses.
+      expect(tokens.get('cli:pi')).toBe(token);
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a crashed healthy bridge respawns on backoff and re-registers', async () => {
+    const { rows, spawned, stateRoot, projectDir, deps } = setup();
+    const binDir = tmp();
+    const firstChild = fakeChild();
+    let calls = 0;
+    const record = deps.spawnChild!.bind(deps);
+    deps.spawnChild = ((cmd: string, args: string[], opts: object) => {
+      record(cmd, args, opts as never);
+      return calls++ === 0 ? firstChild : fakeChild();
+    }) as never;
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'pi.cmd' : 'pi'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir,
+          engines: ['pi'], restartBaseDelayMillis: 20 },
+        deps,
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      await supervisor.start();
+
+      expect(spawned).toHaveLength(1);
+      expect(rows).toHaveLength(1);
+      // Crash it — the supervisor must respawn and re-register a fresh port.
+      firstChild.emit('exit', 1);
+      await new Promise((r) => setTimeout(r, 120));
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      expect(spawned).toHaveLength(2);
+      expect(rows).toHaveLength(2);
+      await supervisor.stop();
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('repeated crashes past maxRestarts give up without a restart loop', async () => {
+    const { spawned, logs, stateRoot, projectDir, deps } = setup();
+    const binDir = tmp();
+    const children = [fakeChild(), fakeChild()];
+    let calls = 0;
+    const record = deps.spawnChild!.bind(deps);
+    deps.spawnChild = ((cmd: string, args: string[], opts: object) => {
+      record(cmd, args, opts as never);
+      return children[calls++] ?? fakeChild();
+    }) as never;
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'codex.cmd' : 'codex'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir,
+          engines: ['codex'], restartBaseDelayMillis: 10, maxRestarts: 1 },
+        deps,
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      await supervisor.start();
+
+      children[0]!.emit('exit', 1);       // attempt 1 — allowed
+      await new Promise((r) => setTimeout(r, 80));
+      expect(spawned).toHaveLength(2);
+      children[1]!.emit('exit', 1);       // attempt 2 — over max, give up
+      await new Promise((r) => setTimeout(r, 80));
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      expect(spawned).toHaveLength(2);
+      expect(logs.some((l) => l.event === 'cli-supervisor.engine-gave-up'
+        && l.fields['engineId'] === 'codex')).toBe(true);
+      await supervisor.stop();
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a bridge that never answers identity is killed and skipped', async () => {
+    const { rows, spawned, logs, stateRoot, projectDir, deps } = setup();
+    deps.fetchFn = (async () => { throw new Error('refused'); }) as typeof fetch;
+    const binDir = tmp();
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'codex.cmd' : 'codex'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir, healthTimeoutMillis: 400, engines: ['codex'] },
+        deps,
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      const children = await supervisor.start();
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+
+      expect(children).toHaveLength(0);
+      expect(rows).toHaveLength(0);
+      expect(spawned).toHaveLength(1);
+      expect(logs.some((l) => l.event === 'cli-supervisor.engine-failed'
+        && l.fields['engineId'] === 'codex')).toBe(true);
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});

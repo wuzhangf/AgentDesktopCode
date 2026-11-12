@@ -60,6 +60,7 @@ import { createAcsClient } from './acs.js';
 import { createClientAccess } from './client-access.js';
 import { createInboxSourceReader } from './inbox-source.js';
 import { bindingFor } from './bindings.js';
+import { CliSupervisor } from './cli-supervisor.js';
 import { CommercialAccess } from './commercial.js';
 
 // ---------------------------------------------------------------------------
@@ -217,6 +218,19 @@ export interface GatewayBootstrapOptions {
   workerLocal?: { url: string; token: string; connectionId: string };
   /** Additional loopback worker-local sources (e.g. per-engine companion hosts). */
   extraWorkerLocals?: { url: string; token: string; connectionId: string }[];
+  /**
+   * OC-G free path: scan whitelisted local CLIs (pi/codex/claude), spawn one
+   * cli-bridge host.mjs per detected engine on loopback, and register each as
+   * a worker-local connection — the same source kind WORKER_LOCAL_* produces.
+   */
+  cliBridge?: {
+    bridgePath: string;
+    projectDir: string;
+    stateDir: string;
+    projectId?: string;
+    model?: string;
+    engines?: string[];
+  };
   personalEnv?: { url: string; token: string };
   tls: TlsMaterial;
   displayName?: string;
@@ -269,9 +283,19 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
       },
     };
   } else {
+    // The phone dials the advertised origin (typically a LAN IP), not the
+    // machine hostname — the self-signed SANs must cover the bind address and
+    // the origin host or pairing fails TLS verification on-device.
+    const originHost = (() => {
+      const raw = env('DEVICE_GATEWAY_ORIGIN');
+      if (raw === undefined) return undefined;
+      try { return new URL(raw).hostname; } catch { return undefined; }
+    })();
     tls = provisionTlsMaterial(tlsDir, {
       commonName,
       days: intEnv('DEVICE_GATEWAY_TLS_DAYS', 825, 1, 8250),
+      extraNames: [bind, originHost].filter(
+        (n): n is string => n !== undefined && n !== 'localhost' && n !== commonName),
       rsa: env('DEVICE_GATEWAY_PROFILE') === 'LOCAL_CLI',
     });
   }
@@ -318,6 +342,24 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     });
   }
 
+  const cliBridgeHost = env('CLI_BRIDGE_HOST');
+  let cliBridge: GatewayBootstrapOptions['cliBridge'];
+  if (cliBridgeHost !== undefined) {
+    const project = env('CLI_BRIDGE_PROJECT');
+    if (project === undefined) {
+      configError('CONFIG_MISSING', 'CLI_BRIDGE_PROJECT is required with CLI_BRIDGE_HOST');
+    }
+    cliBridge = {
+      bridgePath: resolve(cliBridgeHost),
+      projectDir: resolve(project!),
+      stateDir: resolve(env('CLI_BRIDGE_STATE_DIR') ?? join(dataDir, 'cli-bridge')),
+      projectId: env('CLI_BRIDGE_PROJECT_ID'),
+      model: env('CLI_BRIDGE_MODEL'),
+      engines: env('CLI_BRIDGE_ENGINES')
+        ?.split(',').map((s) => s.trim()).filter(Boolean),
+    };
+  }
+
   const envUrl = env('PERSONAL_ENV_URL');
   const envToken = env('PERSONAL_ENV_TOKEN');
   const personalEnv = envUrl !== undefined && envToken !== undefined
@@ -344,6 +386,7 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     origin: env('DEVICE_GATEWAY_ORIGIN'),
     workerLocal,
     extraWorkerLocals,
+    cliBridge,
     personalEnv,
     dailyOrigin: checkedDailyOrigin(env('DEVICE_GATEWAY_DAILY_ORIGIN')),
     tls,
@@ -376,6 +419,7 @@ export interface BuiltGateway {
   localTasks?: LocalTaskAccess;
   inbox: PersonalInbox;
   config: GatewayConfig;
+  cliSupervisor?: CliSupervisor;
 }
 
 export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
@@ -444,14 +488,46 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   const tokenResolver = (ref: string): string | undefined => {
     if (ref === 'env:WORKER_LOCAL_TOKEN') return opts.workerLocal?.token;
     if (ref.startsWith('env:WORKER_LOCAL_EXTRA:')) return extraTokens.get(ref.slice('env:WORKER_LOCAL_EXTRA:'.length));
+    if (ref.startsWith('cli-supervisor:')) {
+      return extraTokens.get(`cli:${ref.slice('cli-supervisor:'.length)}`);
+    }
     if (ref === 'env:PERSONAL_ENV_TOKEN') return opts.personalEnv?.token;
     return undefined;
   };
   let localTasks: LocalTaskAccess | undefined;
-  if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0) {
+  if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
+      || opts.cliBridge !== undefined) {
     const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
     localTasks = new LocalTaskAccess(devices, transport, store);
   }
+
+  // OC-G: the supervisor's spawned bridges register into the same connection
+  // store + token map LocalTransport reads — runtime rows are picked up on the
+  // next request; no restart needed. start() runs after listeners are up.
+  const cliSupervisor = opts.cliBridge !== undefined
+    ? new CliSupervisor(
+      {
+        bridgePath: opts.cliBridge.bridgePath,
+        stateRoot: opts.cliBridge.stateDir,
+        projectDir: opts.cliBridge.projectDir,
+        ...(opts.cliBridge.projectId !== undefined ? { projectId: opts.cliBridge.projectId } : {}),
+        ...(opts.cliBridge.model !== undefined ? { model: opts.cliBridge.model } : {}),
+        ...(opts.cliBridge.engines !== undefined ? { engines: opts.cliBridge.engines } : {}),
+      },
+      {
+        // upsertConnection is register-once; supervisor rows get a fresh port
+        // per spawn, so re-point the row when it already exists.
+        upsertConnection: (row) => {
+          store.upsertConnection(row);
+          if (row.baseUrl !== undefined) {
+            store.updateConnectionBaseUrl(row.connectionId, row.baseUrl);
+          }
+        },
+        tokens: extraTokens,
+        log: (event, fields) => console.log(JSON.stringify({ listener: 'cli-supervisor', event, ...fields })),
+      },
+    )
+    : undefined;
 
   const certInfo = certificateInfo(opts.tls.cert.toString('utf8'));
   const config: GatewayConfig = {
@@ -528,7 +604,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     activeDevices: () => devices.activeDevices().filter((device) => device.actions?.includes('APPROVE')),
   } : devices);
 
-  return { ctx, store, devices, localTasks, inbox, config };
+  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,7 +701,14 @@ export async function main(): Promise<void> {
     localTasks: built.localTasks !== undefined,
     acs: built.ctx.acs !== undefined,
     ownerApi: true,
+    cliSupervisor: built.cliSupervisor !== undefined,
   }));
+
+  // OC-G: scan + spawn detected local-CLI bridges now that the HTTPS listener
+  // accepts traffic; bridge rows land in the live connection registry.
+  if (built.cliSupervisor !== undefined) {
+    void built.cliSupervisor.start();
+  }
 
   const shutdown = (signal: string): void => {
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));
@@ -633,6 +716,7 @@ export async function main(): Promise<void> {
     let pending = listeners.length;
     const done = (): void => {
       if (--pending === 0) {
+        void built.cliSupervisor?.stop();
         built.store.close();
         process.exit(0);
       }
