@@ -12,6 +12,15 @@ export interface PairingRequest {
   sessions: string[]; actions: string[];
   resources?:DeviceResource[];launchScopes?:DeviceLaunchScope[];
 }
+/** One reachable worker-local backend catalog (projects × engines). The
+ * cli-supervisor registers each detected stock CLI as its own backend, so
+ * `sourceKind:'cli'` distinguishes the free path from managed workers. */
+export interface LocalSourceBackend {
+  backendStoreId:string;
+  projects:{projectId:string;displayName:string;headRevision:string;hasUncommittedChanges:boolean}[];
+  engines:{engineId:import('../../../codeagent-desktop/packages/protocol/src/native-task').NativeEngineId;version:string;sourceKind?:string}[];
+  tasks?:{kind:'WORKER_LOCAL';backendStoreId:string;taskId:string;displayName:string}[];
+}
 export interface DeviceCapabilities {
   origin: string; storeId: string; enabled: boolean; supportedActions?: string[];
   certificateNotAfter: number; certificateSha256: string;
@@ -19,7 +28,9 @@ export interface DeviceCapabilities {
   sessions: { sessionId: string; title: string }[];
   resourceScopeVersion?:number;
   localTasks?:{kind:'WORKER_LOCAL';backendStoreId:string;taskId:string;displayName:string}[];
-  localSource?:{available:boolean;reasonCode?:string;backendStoreId:string;projects:{projectId:string;displayName:string;headRevision:string;hasUncommittedChanges:boolean}[];engines:{engineId:import('../../../codeagent-desktop/packages/protocol/src/native-task').NativeEngineId;version:string}[]};
+  /** Top-level fields mirror the first reachable backend; additional backends
+   * (e.g. `cli:pi` alongside the worker) arrive in `backends`. */
+  localSource?:LocalSourceBackend&{available:boolean;reasonCode?:string;backends?:LocalSourceBackend[]};
 }
 export type NotificationState = 'UNCONFIGURED'|'DISABLED'|'READY'|'DEGRADED'|'ERROR'|'REVOKED' | (string & {});
 /** Safe provider projection. Credential refs and publish secrets never cross this type. */

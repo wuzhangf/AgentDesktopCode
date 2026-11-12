@@ -71,7 +71,15 @@ export function DeviceAccessPanel() {
   const toggle = (rows: string[], value: string) => rows.includes(value) ? rows.filter(r => r !== value) : [...rows, value];
   const network=caps?deviceNetworkFacts(caps):undefined;
   const native=caps?.localSource;
-  const launchScopes=(native?.projects??[]).flatMap(p=>(native?.engines??[]).flatMap(e=>launchKeys.includes(`${p.projectId}:${e.engineId}`)?[{backendStoreId:native!.backendStoreId,projectId:p.projectId,engineId:e.engineId}]:[]));
+  // Every reachable worker-local backend gets a launch row, not just the one
+  // mirrored at the top level — cli-supervisor registers each detected stock
+  // CLI as its own backend (`cli:pi`, `cli:codex`, …) in `backends[]`.
+  const localBackends=native?.available?[native,...(native.backends??[])]:[];
+  const launchRowKey=(b:string,p:string,e:string)=>`${b}:${p}:${e}`;
+  const launchScopes=localBackends.flatMap(b=>(b.projects??[]).flatMap(p=>(b.engines??[]).flatMap(e=>launchKeys.includes(launchRowKey(b.backendStoreId,p.projectId,e.engineId))?[{backendStoreId:b.backendStoreId,projectId:p.projectId,engineId:e.engineId}]:[])));
+  const cliBackends=localBackends.filter(b=>(b.engines??[]).length>0&&b.engines.every(e=>e.sourceKind==='cli'));
+  const managedBackends=localBackends.filter(b=>!cliBackends.includes(b));
+  const projectName=(backendStoreId:string,projectId:string)=>localBackends.find(b=>b.backendStoreId===backendStoreId)?.projects.find(p=>p.projectId===projectId)?.displayName??projectId;
   const scopeFields=()=>caps?.resourceScopeVersion===2?{resources:[
     ...sessions.map(sessionId=>({kind:'ACS_SESSION',backendStoreId:caps.storeId,sessionId})),
     ...(caps.localTasks??[]).filter(t=>nativeTasks.includes(`${t.backendStoreId}:${t.taskId}`)).map(({kind,backendStoreId,taskId})=>({kind,backendStoreId,taskId})),
@@ -125,10 +133,13 @@ export function DeviceAccessPanel() {
           {caps.sessions.map(s => <label key={s.sessionId} style={{display: 'block'}}><input type="checkbox" checked={sessions.includes(s.sessionId)} onChange={() => setSessions(toggle(sessions, s.sessionId))}/>{s.title}</label>)}
           {!caps.sessions.length && <p>{native?.available&&caps.resourceScopeVersion===2?'暂无可授予的 ACS 会话；可以在下方选择原生项目的启动范围。':'先在电脑创建任务；当前来源尚未开放手机从零启动授权。'}</p>}
         </fieldset>
-        {native?.available&&caps.resourceScopeVersion===2&&<fieldset disabled={busy||!!intent}><legend>本机 Pi／Codex 的明确范围</legend>
+        {native?.available&&caps.resourceScopeVersion===2&&<fieldset disabled={busy||!!intent}><legend>本机 worker 与已装 CLI 的明确范围</legend>
           {(caps.localTasks??[]).map(t=><label key={`${t.backendStoreId}:${t.taskId}`} style={{display:'block'}}><input type="checkbox" checked={nativeTasks.includes(`${t.backendStoreId}:${t.taskId}`)} onChange={()=>setNativeTasks(toggle(nativeTasks,`${t.backendStoreId}:${t.taskId}`))}/>已有原生任务：{t.displayName}</label>)}
           <p>创建权限只限所选项目与 engine；不会开放该项目的全部既有任务。创建受理后仅追加原请求产生的任务。</p>
-          {native.projects.flatMap(p=>native.engines.map(e=><label key={`${p.projectId}:${e.engineId}`} style={{display:'block'}}><input type="checkbox" checked={launchKeys.includes(`${p.projectId}:${e.engineId}`)} onChange={()=>setLaunchKeys(toggle(launchKeys,`${p.projectId}:${e.engineId}`))}/>{p.displayName} · {e.engineId} {e.version} · 按来源登记配置与预检策略{p.hasUncommittedChanges?'（当前有未提交修改，不会自动带入）':''}</label>))}
+          {managedBackends.length>0&&<p><b>托管 worker</b></p>}
+          {managedBackends.flatMap(b=>b.projects.flatMap(p=>b.engines.map(e=><label key={launchRowKey(b.backendStoreId,p.projectId,e.engineId)} style={{display:'block'}}><input type="checkbox" checked={launchKeys.includes(launchRowKey(b.backendStoreId,p.projectId,e.engineId))} onChange={()=>setLaunchKeys(toggle(launchKeys,launchRowKey(b.backendStoreId,p.projectId,e.engineId)))}/>{p.displayName} · {e.engineId} {e.version} · 按来源登记配置与预检策略{p.hasUncommittedChanges?'（当前有未提交修改，不会自动带入）':''}</label>)))}
+          {cliBackends.length>0&&<><p><b>已装 CLI</b></p><p>扫描到的本机原装 CLI；发起走你自己的 CLI 订阅与模型配置，不走托管 worker。</p></>}
+          {cliBackends.flatMap(b=>b.projects.flatMap(p=>b.engines.map(e=><label key={launchRowKey(b.backendStoreId,p.projectId,e.engineId)} style={{display:'block'}}><input type="checkbox" checked={launchKeys.includes(launchRowKey(b.backendStoreId,p.projectId,e.engineId))} onChange={()=>setLaunchKeys(toggle(launchKeys,launchRowKey(b.backendStoreId,p.projectId,e.engineId)))}/>{p.displayName} · {e.engineId} {e.version} · 已装 CLI{p.hasUncommittedChanges?'（当前有未提交修改，不会自动带入）':''}</label>)))}
         </fieldset>}
         {native&&!native.available&&<p>原生宿主暂不可用：{native.reasonCode}。现有 ACS 授权仍可使用。</p>}
         <fieldset disabled={busy || !!intent}><legend>动作范围</legend>
@@ -154,7 +165,7 @@ export function DeviceAccessPanel() {
           <b>{r.label}</b><p>两端校验词：{r.checkWords}</p>
           <p>任务：{r.sessions.map(id => caps.sessions.find(s => s.sessionId === id)?.title ?? '已授权任务').join('、')} · 动作：{r.actions.join('、')}</p>
           {r.resources?.filter(v=>v.kind==='WORKER_LOCAL').map(v=><p key={`${v.backendStoreId}:${v.taskId}`}>原生任务：{caps.localTasks?.find(t=>t.backendStoreId===v.backendStoreId&&t.taskId===v.taskId)?.displayName??v.taskId}</p>)}
-          {r.launchScopes?.map(s=><p key={`${s.backendStoreId}:${s.projectId}:${s.engineId}`}>创建范围：{native?.projects?.find(p=>p.projectId===s.projectId)?.displayName??s.projectId} · {s.engineId}</p>)}
+          {r.launchScopes?.map(s=><p key={`${s.backendStoreId}:${s.projectId}:${s.engineId}`}>创建范围：{projectName(s.backendStoreId,s.projectId)} · {s.engineId}</p>)}
           {[true, false].map(approve => <button key={String(approve)} disabled={busy || !!intent} onClick={() => void run({connection, operation: 'decide', target: r.pairingRequestId, body: {requestKey: crypto.randomUUID(), approve}})}>{approve ? '已核对，批准' : '拒绝'}</button>)}
         </div>)}
         {devices.map(d => <div key={d.deviceGrantId}><b>{d.label}</b><p>{d.state} · 授权版本 {d.grantRevision} · {d.actions.join('、')}</p>
