@@ -104,6 +104,10 @@ export interface ProvisionOptions {
   commonName: string;
   /** Validity in days; defaults to 825. */
   days?: number;
+  /** Additional SAN identities (IPs or DNS names the phone will dial, e.g. the
+   * LAN bind address and the public origin host). Without them the generated
+   * cert only covers the CN and clients fail hostname verification. */
+  extraNames?: string[];
 }
 
 /**
@@ -128,7 +132,14 @@ export function provisionTlsMaterial(dir: string, opts: ProvisionOptions): TlsMa
   const keyPath = join(dir, TLS_KEY_FILE);
   const certPath = join(dir, TLS_CERT_FILE);
   const days = Math.floor(opts.days ?? 825);
-  const san = `${isIP(opts.commonName) ? 'IP' : 'DNS'}:${opts.commonName},DNS:localhost,IP:127.0.0.1,IP:0:0:0:0:0:0:0:1`;
+  const nameEntry = (name: string): string => {
+    if (isIP(name) !== 0) return `IP:${name}`;
+    if (/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(name)) return `DNS:${name}`;
+    throw new Error(`provisionTlsMaterial: invalid SAN name ${JSON.stringify(name)}`);
+  };
+  const names = [opts.commonName, ...(opts.extraNames ?? [])];
+  const deduped = names.filter((n, i) => names.indexOf(n) === i);
+  const san = `${deduped.map(nameEntry).join(',')},DNS:localhost,IP:127.0.0.1,IP:0:0:0:0:0:0:0:1`;
   try {
     execFileSync('openssl', [
       'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',

@@ -282,9 +282,19 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
       },
     };
   } else {
+    // The phone dials the advertised origin (typically a LAN IP), not the
+    // machine hostname — the self-signed SANs must cover the bind address and
+    // the origin host or pairing fails TLS verification on-device.
+    const originHost = (() => {
+      const raw = env('DEVICE_GATEWAY_ORIGIN');
+      if (raw === undefined) return undefined;
+      try { return new URL(raw).hostname; } catch { return undefined; }
+    })();
     tls = provisionTlsMaterial(tlsDir, {
       commonName,
       days: intEnv('DEVICE_GATEWAY_TLS_DAYS', 825, 1, 8250),
+      extraNames: [bind, originHost].filter(
+        (n): n is string => n !== undefined && n !== 'localhost' && n !== commonName),
     });
   }
 
