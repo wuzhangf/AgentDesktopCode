@@ -207,6 +207,11 @@ const fakeCtx = (opts: {
         calls.acs.push({ method, path, body, key, binding, maxReply });
         const hit = fake.acsReplies.get(`${method} ${path}`) ?? fake.acsReplies.get(`${method} *`);
         if (hit !== undefined) return hit;
+        // Device bindings register on first use (Java binding(device)); the
+        // fixture answers 201 so tests can keep asserting binding tokens.
+        if (method === 'POST' && path === '/api/v2/client-sessions') {
+          return jsonReply(201, { clientSessionId: 'cs-1', clientSessionToken: 'binding-tok', remainingTtlMillis: 90000 });
+        }
         return jsonReply(404, { code: 'NOT_FOUND' });
       },
       callJson: (device, method, path, body, key) => {
@@ -595,8 +600,8 @@ describe('input capabilities + transcriptions', () => {
     expect(body.images).toMatchObject({ available: true, reason: 'MODEL_SUPPORT_MUST_BE_CHECKED', limits: { maxBytes: 1024 } });
     expect(body.messageRequestMaxBytes).toBe(16 * 1024 * 1024);
     expect(body.transcription).toMatchObject({ available: false, reason: 'TRANSCRIPTION_NOT_CONFIGURED', mediaType: 'audio/wav', maxAudioBytes: 1920044 });
-    expect(ctx.calls.acs[0].path).toBe('/api/v2/capabilities');
-    expect(ctx.calls.acs[0].binding).toBeTypeOf('string');
+    const capCall = ctx.calls.acs.find((c) => c.path === '/api/v2/capabilities')!;
+    expect(capCall.binding).toBe('binding-tok');
   });
 
   it('capabilities non-200 → 503 SOURCE_NOT_READY', async () => {
@@ -746,6 +751,7 @@ describe('device + sessions + execution-policy', () => {
     const res = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1/execution-policy-defaults', authed()));
     expect(res.status).toBe(200);
     expect(ctx.calls.acs.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /api/v2/client-sessions',
       'GET /api/v2/sessions/s1/execution-policy',
       'GET /api/v2/projects/proj-9/execution-policy-defaults',
     ]);
@@ -806,10 +812,9 @@ describe('assignment-options + agent proxy', () => {
     const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions/s1/messages',
       { content: 'hi' }, authed({ idempotencyKey: 'k-9', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(200);
-    const call = ctx.calls.acs.find((c) => c.method === 'POST')!;
-    expect(call.path).toBe('/api/v2/sessions/s1/messages');
+    const call = ctx.calls.acs.find((c) => c.method === 'POST' && c.path === '/api/v2/sessions/s1/messages')!;
     expect(call.key).toBe('k-9');
-    expect(call.binding).toBeTypeOf('string');
+    expect(call.binding).toBe('binding-tok');
     expect(JSON.parse(Buffer.from(call.body!).toString('utf8'))).toEqual({ content: 'hi' });
     expect(ctx.calls.auth).toContainEqual(['authorize', 'tok', 's1', 'INTERACT']);
   });
@@ -829,6 +834,7 @@ describe('assignment-options + agent proxy', () => {
       { approve: true }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(200);
     expect(ctx.calls.acs.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /api/v2/client-sessions',
       'GET /api/v2/approvals/a-1',
       'POST /api/v2/approvals/a-1/decisions',
     ]);
@@ -842,7 +848,7 @@ describe('assignment-options + agent proxy', () => {
       { operation: 'session.message', resourceId: 's1', idempotencyKey: 'key-1' },
       authed({ idempotencyKey: 'key-1', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(200);
-    const call = ctx.calls.acs.find((c) => c.method === 'POST')!;
+    const call = ctx.calls.acs.find((c) => c.method === 'POST' && c.path === '/api/v2/operations/lookup')!;
     expect(JSON.parse(Buffer.from(call.body!).toString('utf8')))
       .toEqual({ operation: 'session.message', resourceId: 's1', idempotencyKey: 'key-1' });
   });
@@ -908,6 +914,7 @@ describe('assignment-options + agent proxy', () => {
       { intent: 'STOP' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(200);
     expect(ctx.calls.acs.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /api/v2/client-sessions',
       'GET /api/v2/runs/r-1',
       'POST /api/v2/runs/r-1/commands',
     ]);

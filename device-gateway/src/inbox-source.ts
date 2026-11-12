@@ -19,8 +19,9 @@ export interface InboxSourceDeps {
   acs?: GatewayAcs;
   localTasks?: GatewayLocalTasks;
   auth: Pick<GatewayAuth, 'authorizeDevice'>;
-  /** Java binding(device) — per-device client-session token or undefined. */
-  binding: (device: Device) => string | undefined;
+  /** Java binding(device) — per-device client-session token or undefined;
+   * may resolve asynchronously (first call registers the session upstream). */
+  binding: (device: Device) => string | undefined | Promise<string | undefined>;
 }
 
 const TERMINAL_STATUSES = new Set([
@@ -54,7 +55,7 @@ export function createInboxSourceReader(deps: InboxSourceDeps): InboxSourceReade
     if (deps.acs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
     const remaining = deadlineMillis - Date.now();
     if (remaining <= 0) fail('SCAN_TIME_BUDGET_EXCEEDED', 503);
-    const reply = await deps.acs.call(method, path, undefined, undefined, deps.binding(device), 1_048_576);
+    const reply = await deps.acs.call(method, path, undefined, undefined, await deps.binding(device), 1_048_576);
     return { status: reply.status, body: parseJson(reply.body) };
   };
 

@@ -32,8 +32,9 @@ export interface AcsClientOptions {
   origin: string;
   /** Owner bearer sent to the upstream on every call. */
   ownerToken: string;
-  /** Binding resolver — Java binding(device); wiring installs bindings.ts. */
-  binding?: (device: Device) => string | undefined;
+  /** Binding resolver — Java binding(device); wiring installs bindings.ts.
+   * May return a promise (first call registers the client session upstream). */
+  binding?: (device: Device) => string | undefined | Promise<string | undefined>;
   fetchImpl?: typeof fetch;
 }
 
@@ -145,7 +146,7 @@ export function createAcsClient(opts: AcsClientOptions): GatewayAcs {
         method, path,
         body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
         key,
-        opts.binding?.(device),
+        await opts.binding?.(device),
         CLIENT_MAX_REPLY,
       );
     } catch (error) {

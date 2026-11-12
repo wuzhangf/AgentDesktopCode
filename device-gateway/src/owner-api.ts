@@ -123,8 +123,15 @@ const launchScopes = async (ctx: GatewayContext, value: unknown): Promise<Launch
   if (value === 'detected') {
     if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
     const catalog = await ctx.localTasks.ownerCatalog();
+    // ownerCatalog() mirrors the top-level backend inside backends[] — dedupe
+    // by backendStoreId or checkedLaunchScopes rejects the double entry.
+    const seen = new Set<string>();
     const catalogs = [catalog,
-      ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])];
+      ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])]
+      .filter((c) => {
+        const b = typeof c.backendStoreId === 'string' ? c.backendStoreId : '';
+        return b !== '' && !seen.has(b) && seen.add(b);
+      });
     const refs: LaunchScope[] = [];
     for (const c of catalogs) {
       const backend = typeof c.backendStoreId === 'string' ? c.backendStoreId : undefined;
@@ -298,7 +305,7 @@ export async function handleOwnerRoute(
 
     if (parts.length === 6 && parts[4] === 'devices' && method === 'DELETE') {
       await ctx.auth.revoke(parts[5]);
-      releaseBinding(ctx, parts[5]);
+      await releaseBinding(ctx, parts[5]);
       return { status: 204, body: null };
     }
 

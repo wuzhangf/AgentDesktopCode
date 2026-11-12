@@ -25,8 +25,8 @@
  * Documented deviations from the Java source (all flagged inline):
  *  - ctx.acs undefined → UPSTREAM_UNAVAILABLE 503 (Java's IOException path);
  *  - ctx.clientAccess undefined → SOURCE_NOT_CONFIGURED 503;
- *  - per-device client-session bindings are opaque tokens from bindings.ts
- *    (no registry heartbeat/expiry — release() drops and re-mints);
+ *  - per-device client-session bindings are registered upstream by
+ *    bindings.ts (register once, heartbeat on reuse, revoke on release);
  *  - fetch timeout ≈ Java connect+read deadlines collapsed to 15s.
  */
 import { randomUUID } from 'node:crypto';
@@ -320,11 +320,22 @@ import { requiresCommercialAccess } from './commercial.js';
 
 export async function handlePhoneRoute(ctx: GatewayContext, req: HttpRequest): Promise<HttpResponse> {
   try {
-    return await route(ctx, req);
+    const out = await route(ctx, req);
+    logRequest(req, out);
+    return out;
   } catch (error) {
-    return phoneProblem(req.path, error);
+    const out = phoneProblem(req.path, error);
+    logRequest(req, out);
+    return out;
   }
 }
+
+/** DEVICE_GATEWAY_LOG_REQUESTS=1 — method/path/status/code per request; never bodies or tokens. */
+const logRequest = (req: HttpRequest, out: HttpResponse): void => {
+  if (process.env.DEVICE_GATEWAY_LOG_REQUESTS !== '1') return;
+  const code = isRecord(out.body) && typeof out.body.code === 'string' ? out.body.code : '';
+  console.log(JSON.stringify({ listener: 'phone-api', method: req.method, path: req.path, status: out.status, code }));
+};
 
 const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpResponse> => {
   const { path, method } = req;
@@ -508,7 +519,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/device' && method === 'DELETE') {
     await ctx.auth.revoke(device.id);
-    releaseBinding(ctx, device.id);
+    await releaseBinding(ctx, device.id);
     return { status: 204, body: null };
   }
 
@@ -531,7 +542,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 const inputCapabilities = async (
   ctx: GatewayContext, req: HttpRequest, token: string, device: Device,
 ): Promise<HttpResponse> => {
-  const source = await acsCall(ctx, 'GET', '/api/v2/capabilities', undefined, undefined, bindingFor(ctx, device));
+  const source = await acsCall(ctx, 'GET', '/api/v2/capabilities', undefined, undefined, await bindingFor(ctx, device));
   if (source.status !== 200) fail('SOURCE_NOT_READY', 503);
   const actions = new Set(device.actions ?? []);
   const image: JsonObject = { available: false, reason: 'SOURCE_IMAGE_INPUT_UNAVAILABLE' };
@@ -667,7 +678,7 @@ const sessionList = async (ctx: GatewayContext, token: string, device: Device): 
   const sessions = device.sessions ?? [];
   for (const sid of sessions) {
     await ctx.auth.authorize(token, sid, 'OBSERVE');
-    const binding = bindingFor(ctx, device);
+    const binding = await bindingFor(ctx, device);
     const r = await acsCall(ctx, 'GET', `/api/v2/sessions/${sid}/foundation`, undefined, undefined, binding);
     if (r.status === 404) continue;
     if (r.status !== 200) fail('UPSTREAM_UNAVAILABLE', 503);
@@ -714,7 +725,7 @@ const assignmentOptions = async (
 ): Promise<HttpResponse> => {
   id(sid);
   await ctx.auth.authorize(token, sid, 'OBSERVE');
-  const binding = bindingFor(ctx, device);
+  const binding = await bindingFor(ctx, device);
   const profiles = await acsCall(ctx, 'GET', '/api/v2/agent-profiles', undefined, undefined, binding);
   const models = await acsCall(ctx, 'GET', '/api/v2/model-catalog', undefined, undefined, binding);
   if (profiles.status !== 200 || models.status !== 200) fail('SOURCE_NOT_READY', 503);
@@ -766,7 +777,7 @@ const executionPolicy = async (
   let routePath = `/api/v2/sessions/${sid}/execution-policy`;
   let resolvedProject: string | null = null;
   if (parts[6] === 'execution-policy-defaults') {
-    const current = await acsCall(ctx, 'GET', routePath, undefined, undefined, bindingFor(ctx, device));
+    const current = await acsCall(ctx, 'GET', routePath, undefined, undefined, await bindingFor(ctx, device));
     if (current.status !== 200) {
       return { status: current.status, body: acsJson(current) };
     }
@@ -797,7 +808,7 @@ const executionPolicy = async (
     payload = new Uint8Array(Buffer.from(JSON.stringify(forwarded), 'utf8'));
   }
   await ctx.auth.authorize(token, sid, action);
-  const result = await acsCall(ctx, method, routePath, payload, key, bindingFor(ctx, device));
+  const result = await acsCall(ctx, method, routePath, payload, key, await bindingFor(ctx, device));
   await ctx.auth.authorize(token, sid, action);
   return { status: result.status, body: acsJson(result) };
 };
@@ -875,13 +886,13 @@ const agentProxy = async (
     }
     if (!read && !write) fail('OPERATION_NOT_ALLOWED', 403);
     for (let i = 6; i < p.length; i++) id(p[i]);
-    const lookup = await acsCall(ctx, 'GET', `/api/v2/runs/${rid}`, undefined, undefined, bindingFor(ctx, device));
+    const lookup = await acsCall(ctx, 'GET', `/api/v2/runs/${rid}`, undefined, undefined, await bindingFor(ctx, device));
     if (lookup.status !== 200) fail('NOT_FOUND', 404);
     sid = asText(asObj(acsJson(lookup)).sessionId);
     await ctx.auth.authorize(token, sid, action);
     if (collaborationRoute && p.length >= 7) {
       const group = await acsCall(ctx, 'GET', `/api/v2/runs/${rid}/collaboration-groups/${p[6]}`,
-        undefined, undefined, bindingFor(ctx, device));
+        undefined, undefined, await bindingFor(ctx, device));
       if (group.status !== 200) fail('NOT_FOUND', 404);
       const value = asObj(acsJson(group));
       if (asText(value.entityId) !== p[6]) fail('DEVICE_SCOPE_DENIED', 403);
@@ -903,7 +914,7 @@ const agentProxy = async (
       action = 'APPROVE';
       if (!(device.actions ?? []).includes(action)) fail('DEVICE_SCOPE_DENIED', 403);
     }
-    const lookup = await acsCall(ctx, 'GET', `/api/v2/approvals/${p[4]}`, undefined, undefined, bindingFor(ctx, device));
+    const lookup = await acsCall(ctx, 'GET', `/api/v2/approvals/${p[4]}`, undefined, undefined, await bindingFor(ctx, device));
     if (lookup.status !== 200) fail('NOT_FOUND', 404);
     sid = await approvalSession(ctx, asObj(acsJson(lookup)), device);
   } else if (p[3] === 'operations' && p.length === 5) {
@@ -926,7 +937,7 @@ const agentProxy = async (
       prepared = bytes;
     } else if (method === 'GET') {
       id(p[4]);
-      const lookup = await acsCall(ctx, 'GET', upstreamRoute, undefined, undefined, bindingFor(ctx, device));
+      const lookup = await acsCall(ctx, 'GET', upstreamRoute, undefined, undefined, await bindingFor(ctx, device));
       if (lookup.status !== 200) fail('NOT_FOUND', 404);
       const receipt = asObj(acsJson(lookup));
       if (asText(receipt.operation) !== 'session.message') fail('OPERATION_NOT_ALLOWED', 403);
@@ -969,7 +980,7 @@ const agentProxy = async (
   // An already admitted operation may execute; recheck below withholds its result.
   await ctx.auth.authorize(token, sid, action);
   const reply = await acsCall(ctx, method, upstreamRoute + (query === null ? '' : `?${query}`),
-    payload, key, bindingFor(ctx, device), attachment ? messageBudget() : undefined);
+    payload, key, await bindingFor(ctx, device), attachment ? messageBudget() : undefined);
 
   let replyBody: Uint8Array = reply.body;
   if (collaborationRoute && reply.status >= 200 && reply.status < 300) {
@@ -1012,7 +1023,7 @@ const agentProxy = async (
 const auxiliaryRoot = async (
   ctx: GatewayContext, child: string, device: Device, allowDelegatedRead: boolean,
 ): Promise<string> => {
-  const lookup = await acsCall(ctx, 'GET', `/api/v2/sessions/${child}`, undefined, undefined, bindingFor(ctx, device));
+  const lookup = await acsCall(ctx, 'GET', `/api/v2/sessions/${child}`, undefined, undefined, await bindingFor(ctx, device));
   if (lookup.status === 404) fail('DEVICE_SCOPE_DENIED', 403);
   if (lookup.status !== 200) fail('UPSTREAM_UNAVAILABLE', 503);
   const value = asObj(acsJson(lookup));
@@ -1037,7 +1048,7 @@ const approvalSession = async (
   if (sid === '' && asText(approval.kind) !== 'BUDGET') fail('APPROVAL_BINDING_MISMATCH', 403);
   if (rid !== '') {
     id(rid);
-    const run = await acsCall(ctx, 'GET', `/api/v2/runs/${rid}`, undefined, undefined, bindingFor(ctx, device));
+    const run = await acsCall(ctx, 'GET', `/api/v2/runs/${rid}`, undefined, undefined, await bindingFor(ctx, device));
     if (run.status !== 200) fail('NOT_FOUND', 404);
     const owner = asText(asObj(acsJson(run)).sessionId);
     id(owner);
