@@ -42,14 +42,41 @@ describe('cli presence detection', () => {
 
   it('returns an empty list when nothing is installed', () => {
     const dir = tmp();
-    // The npm-shim dir on this machine may genuinely hold whitelisted CLIs —
-    // isolate the scan from %APPDATA% for the "nothing installed" case.
+    // The npm-shim dir and vendor installer roots on this machine may
+    // genuinely hold whitelisted CLIs — isolate the scan from %APPDATA%,
+    // %LOCALAPPDATA% and %USERPROFILE% for the "nothing installed" case.
     const oldAppdata = process.env.APPDATA;
+    const oldLocal = process.env.LOCALAPPDATA;
+    const oldUser = process.env.USERPROFILE;
     delete process.env.APPDATA;
+    delete process.env.LOCALAPPDATA;
+    delete process.env.USERPROFILE;
     try {
       expect(detectLocalClis(['pi', 'codex', 'claude'], [dir])).toEqual([]);
     } finally {
       if (oldAppdata !== undefined) process.env.APPDATA = oldAppdata;
+      if (oldLocal !== undefined) process.env.LOCALAPPDATA = oldLocal;
+      if (oldUser !== undefined) process.env.USERPROFILE = oldUser;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects codex under the OpenAI installer root on Windows', () => {
+    if (process.platform !== 'win32') return;
+    const local = tmp();
+    const dir = tmp();
+    mkdirSync(join(local, 'OpenAI', 'Codex', 'bin', 'hash1'), { recursive: true });
+    writeFileSync(join(local, 'OpenAI', 'Codex', 'bin', 'hash1', 'codex.exe'), 'x');
+    const oldLocal = process.env.LOCALAPPDATA;
+    const oldAppdata = process.env.APPDATA;
+    process.env.LOCALAPPDATA = local;
+    delete process.env.APPDATA;
+    try {
+      expect(detectLocalClis(['pi', 'codex', 'claude'], [dir])).toEqual(['codex']);
+    } finally {
+      process.env.LOCALAPPDATA = oldLocal;
+      if (oldAppdata !== undefined) process.env.APPDATA = oldAppdata;
+      rmSync(local, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });

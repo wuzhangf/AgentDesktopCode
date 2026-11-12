@@ -100,6 +100,28 @@ const candidateNames = (bin: string): string[] =>
     ? [bin, `${bin}.exe`, `${bin}.cmd`, `${bin}.bat`]
     : [bin];
 
+/** Vendor installer roots that never land on PATH or npm's shim dir —
+ * OpenAI Codex: %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe;
+ * Anthropic Claude native: %USERPROFILE%\.local\bin\claude.exe. */
+const wellKnownCliPaths = (bin: string): string[] => {
+  if (process.platform !== 'win32') return [];
+  const out: string[] = [];
+  if (bin === 'codex' && process.env.LOCALAPPDATA) {
+    const root = join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
+    try {
+      for (const e of readdirSync(root, { withFileTypes: true })) {
+        const p = join(root, e.name, 'codex.exe');
+        if (e.isDirectory() && existsSync(p)) out.push(p);
+      }
+    } catch { /* unreadable root — skip */ }
+  }
+  if (bin === 'claude' && process.env.USERPROFILE) {
+    const p = join(process.env.USERPROFILE, '.local', 'bin', 'claude.exe');
+    if (existsSync(p)) out.push(p);
+  }
+  return out;
+};
+
 /** True when a whitelisted CLI binary is resolvable on this machine. */
 export const cliPresent = (bin: string, dirs = listPathEntries()): boolean => {
   const names = new Set(candidateNames(bin));
@@ -111,7 +133,7 @@ export const cliPresent = (bin: string, dirs = listPathEntries()): boolean => {
       for (const entry of readdirSync(dir)) if (names.has(entry)) return true;
     } catch { /* unreadable dir — skip */ }
   }
-  return false;
+  return wellKnownCliPaths(bin).length > 0;
 };
 
 /** Scan the whitelist; returns the engine ids whose binaries exist. */
