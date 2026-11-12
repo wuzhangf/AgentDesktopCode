@@ -119,6 +119,81 @@ describe('CliSupervisor.start', () => {
     }
   });
 
+  it('a crashed healthy bridge respawns on backoff and re-registers', async () => {
+    const { rows, spawned, stateRoot, projectDir, deps } = setup();
+    const binDir = tmp();
+    const firstChild = fakeChild();
+    let calls = 0;
+    const record = deps.spawnChild!.bind(deps);
+    deps.spawnChild = ((cmd: string, args: string[], opts: object) => {
+      record(cmd, args, opts as never);
+      return calls++ === 0 ? firstChild : fakeChild();
+    }) as never;
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'pi.cmd' : 'pi'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir,
+          engines: ['pi'], restartBaseDelayMillis: 20 },
+        deps,
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      await supervisor.start();
+
+      expect(spawned).toHaveLength(1);
+      expect(rows).toHaveLength(1);
+      // Crash it — the supervisor must respawn and re-register a fresh port.
+      firstChild.emit('exit', 1);
+      await new Promise((r) => setTimeout(r, 120));
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      expect(spawned).toHaveLength(2);
+      expect(rows).toHaveLength(2);
+      await supervisor.stop();
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('repeated crashes past maxRestarts give up without a restart loop', async () => {
+    const { spawned, logs, stateRoot, projectDir, deps } = setup();
+    const binDir = tmp();
+    const children = [fakeChild(), fakeChild()];
+    let calls = 0;
+    const record = deps.spawnChild!.bind(deps);
+    deps.spawnChild = ((cmd: string, args: string[], opts: object) => {
+      record(cmd, args, opts as never);
+      return children[calls++] ?? fakeChild();
+    }) as never;
+    try {
+      writeFileSync(join(binDir, process.platform === 'win32' ? 'codex.cmd' : 'codex'), 'x');
+      const supervisor = new CliSupervisor(
+        { bridgePath: '/b/host.mjs', stateRoot, projectDir,
+          engines: ['codex'], restartBaseDelayMillis: 10, maxRestarts: 1 },
+        deps,
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = binDir;
+      await supervisor.start();
+
+      children[0]!.emit('exit', 1);       // attempt 1 — allowed
+      await new Promise((r) => setTimeout(r, 80));
+      expect(spawned).toHaveLength(2);
+      children[1]!.emit('exit', 1);       // attempt 2 — over max, give up
+      await new Promise((r) => setTimeout(r, 80));
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      expect(spawned).toHaveLength(2);
+      expect(logs.some((l) => l.event === 'cli-supervisor.engine-gave-up'
+        && l.fields['engineId'] === 'codex')).toBe(true);
+      await supervisor.stop();
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('a bridge that never answers identity is killed and skipped', async () => {
     const { rows, spawned, logs, stateRoot, projectDir, deps } = setup();
     deps.fetchFn = (async () => { throw new Error('refused'); }) as typeof fetch;

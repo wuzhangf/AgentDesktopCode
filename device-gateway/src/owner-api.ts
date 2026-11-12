@@ -114,8 +114,31 @@ const resourceRefs = async (ctx: GatewayContext, value: unknown): Promise<Resour
   return checkedResources(store, refs);
 };
 
-/** Java launchScopes(): optional array ≤100 of exact {backendStoreId,projectId,engineId}. */
-const launchScopes = (value: unknown): LaunchScope[] => {
+/** Java launchScopes(): optional array ≤100 of exact {backendStoreId,projectId,engineId}.
+ * Node extension: the literal string "detected" expands to every
+ * (project × engine) pair in the live localSource catalog — the
+ * "grant all detected CLIs" owner-facing convenience for the OC-G free
+ * path. Explicit arrays keep the Java contract unchanged. */
+const launchScopes = async (ctx: GatewayContext, value: unknown): Promise<LaunchScope[]> => {
+  if (value === 'detected') {
+    if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
+    const catalog = await ctx.localTasks.ownerCatalog();
+    const catalogs = [catalog,
+      ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])];
+    const refs: LaunchScope[] = [];
+    for (const c of catalogs) {
+      const backend = typeof c.backendStoreId === 'string' ? c.backendStoreId : undefined;
+      if (backend === undefined) continue;
+      for (const p of Array.isArray(c.projects) ? c.projects : []) {
+        if (!isRecord(p) || typeof p.projectId !== 'string') continue;
+        for (const e of Array.isArray(c.engines) ? c.engines : []) {
+          if (!isRecord(e) || typeof e.engineId !== 'string') continue;
+          refs.push({ backendStoreId: backend, projectId: p.projectId, engineId: e.engineId });
+        }
+      }
+    }
+    return checkedLaunchScopes(refs);
+  }
   const refs: LaunchScope[] = [];
   if (value !== undefined && value !== null) {
     if (!Array.isArray(value) || value.length > 100) fail('INVALID_SCOPE', 400);
@@ -211,7 +234,7 @@ export async function handleOwnerRoute(
       if (b.resources !== undefined) {
         if (b.sessions !== undefined) fail('INVALID_SCOPE', 400);
         const resources = await resourceRefs(ctx, b.resources);
-        const launches = launchScopes(b.launchScopes);
+        const launches = await launchScopes(ctx, b.launchScopes);
         await verifyOwnerScopes(ctx, resources, launches);
         const invitation = await ctx.auth.invitationResources(
           rid, resources, launches, sortedSet(strings(b.actions)), ctx.config.certificateSha256 ?? '');
@@ -252,7 +275,7 @@ export async function handleOwnerRoute(
       if (b.resources !== undefined) {
         if (b.sessions !== undefined) fail('INVALID_SCOPE', 400);
         const resources = await resourceRefs(ctx, b.resources);
-        const launches = launchScopes(b.launchScopes);
+        const launches = await launchScopes(ctx, b.launchScopes);
         await verifyOwnerScopes(ctx, resources, launches);
         return {
           status: 200,

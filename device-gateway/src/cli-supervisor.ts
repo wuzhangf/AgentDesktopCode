@@ -55,6 +55,12 @@ export interface CliSupervisorOptions {
   engines?: readonly string[];
   /** Health-check deadline per spawned bridge (ms). */
   healthTimeoutMillis?: number;
+  /** Max consecutive restarts after a crash; counter resets when a bridge
+   * stays up for `stableUptimeMillis` (default 5 / 60s). */
+  maxRestarts?: number;
+  stableUptimeMillis?: number;
+  /** Backoff base for restarts (default 1000ms; tests shrink it). */
+  restartBaseDelayMillis?: number;
 }
 
 export interface CliSupervisorDeps {
@@ -156,9 +162,52 @@ export class CliSupervisor {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    for (const timer of this.restartTimers.splice(0)) clearTimeout(timer);
     for (const entry of this.children.splice(0)) {
       entry.child.kill();
     }
+  }
+
+  /**
+   * Crash restart: a healthy bridge that later exits is respawned on a new
+   * port/token after `min(2^n, 30s)` backoff; the connection row is re-pointed
+   * by the same upsert path (LocalTransport keeps routing). Consecutive
+   * crashes past `maxRestarts` give up — the stale row just looks offline.
+   */
+  private readonly restartTimers: ReturnType<typeof setTimeout>[] = [];
+  private readonly restartState = new Map<string, { attempts: number; since: number }>();
+
+  private watchExit(engineId: string, child: ChildProcess, healthyAt: number): void {
+    child.on('exit', (code) => {
+      const index = this.children.findIndex((e) => e.child === child);
+      if (index >= 0) this.children.splice(index, 1);
+      if (this.stopped) return;
+      const stable = this.opts.stableUptimeMillis ?? 60_000;
+      const state = this.restartState.get(engineId) ?? { attempts: 0, since: 0 };
+      const attempts = Date.now() - healthyAt >= stable ? 1 : state.attempts + 1;
+      const max = this.opts.maxRestarts ?? 5;
+      if (attempts > max) {
+        this.restartState.delete(engineId);
+        this.deps.log?.('cli-supervisor.engine-gave-up', { engineId, code, attempts });
+        return;
+      }
+      state.attempts = attempts;
+      this.restartState.set(engineId, state);
+      const base = this.opts.restartBaseDelayMillis ?? 1_000;
+      const delay = Math.min(base * 2 ** (attempts - 1), 30_000);
+      this.deps.log?.('cli-supervisor.engine-restart', { engineId, code, attempts, delay });
+      const timer = setTimeout(() => {
+        this.restartTimers.splice(this.restartTimers.indexOf(timer), 1);
+        void this.startEngine(engineId).catch((error) => {
+          this.deps.log?.('cli-supervisor.engine-failed', {
+            engineId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, delay);
+      timer.unref?.();
+      this.restartTimers.push(timer);
+    });
   }
 
   private async startEngine(engineId: string): Promise<CliChild | undefined> {
@@ -213,6 +262,7 @@ export class CliSupervisor {
           const entry: CliChild = { engineId, connectionId, port, child };
           this.children.push(entry);
           this.deps.log?.('cli-supervisor.engine-ready', { engineId, connectionId, port });
+          this.watchExit(engineId, child, Date.now());
           return entry;
         }
       } catch { /* bridge still booting — retry below */ }
