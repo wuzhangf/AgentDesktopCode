@@ -6,7 +6,7 @@ import { fail, isRecord } from './protocol.js';
 import type { GatewayConfig, HttpRequest, JsonObject } from './context.js';
 
 /** Explicit safety/read exceptions. Unknown mutations require online rights. */
-export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'body'|'rawBody'>): boolean {
+export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'body'|'rawBody'>, localCliOnly = false): boolean {
   if (req.method === 'GET' || req.method === 'HEAD') return false;
   if (req.method === 'DELETE' && req.path === '/personal/v1/device') return false;
   if (req.method === 'POST' && req.path.endsWith('/receipts/lookup')) return false;
@@ -16,6 +16,11 @@ export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'
   }
   if (req.method === 'POST' && /\/(commands|control)$/.test(req.path)
       && isRecord(body) && body.intent === 'STOP') return false;
+  if (localCliOnly && req.method === 'POST') {
+    const id = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}';
+    if (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|tasks/${id}/messages)$`).test(req.path)
+        || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path)) return false;
+  }
   return true;
 }
 

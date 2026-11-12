@@ -104,6 +104,8 @@ export interface ProvisionOptions {
   commonName: string;
   /** Validity in days; defaults to 825. */
   days?: number;
+  /** Apple trust accepts a pinned RSA leaf for the standalone Mac package. */
+  rsa?: boolean;
 }
 
 /**
@@ -128,16 +130,17 @@ export function provisionTlsMaterial(dir: string, opts: ProvisionOptions): TlsMa
   const keyPath = join(dir, TLS_KEY_FILE);
   const certPath = join(dir, TLS_CERT_FILE);
   const days = Math.floor(opts.days ?? 825);
-  const san = `${isIP(opts.commonName) ? 'IP' : 'DNS'}:${opts.commonName},DNS:localhost,IP:127.0.0.1,IP:0:0:0:0:0:0:0:1`;
+  const san = [...new Set([`${isIP(opts.commonName) ? 'IP' : 'DNS'}:${opts.commonName}`, 'DNS:localhost', 'IP:127.0.0.1', 'IP:0:0:0:0:0:0:0:1'])].join(',');
+  const keyArgs = opts.rsa ? ['-newkey', 'rsa:2048'] : ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256'];
   try {
     execFileSync('openssl', [
-      'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+      'req', '-x509', ...keyArgs,
       '-nodes', '-keyout', keyPath, '-out', certPath,
       '-days', String(days), '-subj', `/CN=${opts.commonName}`,
       '-addext', `subjectAltName=${san}`,
       '-addext', 'extendedKeyUsage=serverAuth',
       '-addext', 'basicConstraints=critical,CA:FALSE',
-      '-addext', 'keyUsage=critical,digitalSignature',
+      '-addext', opts.rsa ? 'keyUsage=critical,digitalSignature,keyEncipherment' : 'keyUsage=critical,digitalSignature',
     ], { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (error) {
     throw new Error(`provisionTlsMaterial: openssl certificate generation failed: ${

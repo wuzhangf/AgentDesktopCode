@@ -225,6 +225,7 @@ export interface GatewayBootstrapOptions {
   dailyOrigin?: string;
   dailyCA?: string;
   allowUnlicensedDevelopment?: boolean;
+  localCliOnly?: boolean;
   pairingAutoApprove?: boolean;
 }
 
@@ -271,6 +272,7 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     tls = provisionTlsMaterial(tlsDir, {
       commonName,
       days: intEnv('DEVICE_GATEWAY_TLS_DAYS', 825, 1, 8250),
+      rsa: env('DEVICE_GATEWAY_PROFILE') === 'LOCAL_CLI',
     });
   }
 
@@ -350,6 +352,7 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     maxRawBody: env('DEVICE_GATEWAY_MAX_RAW_BODY') !== undefined
       ? intEnv('DEVICE_GATEWAY_MAX_RAW_BODY', 16 * 1024 * 1024, 65_536, 64 * 1024 * 1024)
       : undefined,
+    localCliOnly: env('DEVICE_GATEWAY_PROFILE') === 'LOCAL_CLI',
     // Loopback development/e2e escape hatch: skips the Daily commercial
     // control-grant gate for mutations. Never set in deployed configurations.
     allowUnlicensedDevelopment: env('DEVICE_GATEWAY_ALLOW_UNLICENSED_DEVELOPMENT') === '1'
@@ -376,6 +379,9 @@ export interface BuiltGateway {
 }
 
 export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
+  if (opts.localCliOnly && (opts.acsUrl || opts.personalEnv || opts.allowUnlicensedDevelopment)) {
+    configError('CONFIG_INVALID', 'LOCAL_CLI cannot combine with ACS, PERSONAL_ENV or the development bypass');
+  }
   const store = new GatewayStore(opts.dataDir);
   try {
     return buildStoredContext(opts, store);
@@ -392,24 +398,28 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   devices.keyCheckOk(); // throws GatewayError('STORE_KEY_INVALID', 500) on mismatch
   const host = devices.hostRecord();
 
-  // Fixed upstream connections are register-once into registry_connections.
+  // Legacy gateways keep the persisted registry. Agent Link assigns fresh
+  // loopback endpoints on restart and uses only this boot's registrations.
+  const configuredWorkers = new Map<string, ConnectionRowLite>();
   if (opts.workerLocal) {
-    store.upsertConnection({
-      connectionId: opts.workerLocal.connectionId,
-      kind: 'worker-local',
-      baseUrl: opts.workerLocal.url,
-      tokenRef: 'env:WORKER_LOCAL_TOKEN',
+    const row = {
+      connectionId: opts.workerLocal.connectionId, kind: 'worker-local',
+      baseUrl: opts.workerLocal.url, tokenRef: 'env:WORKER_LOCAL_TOKEN',
       displayName: 'worker-local',
-    });
+    };
+    if (opts.localCliOnly) configuredWorkers.set(row.connectionId, row);
+    else store.upsertConnection(row);
   }
   for (const extra of opts.extraWorkerLocals ?? []) {
-    store.upsertConnection({
+    const row = {
       connectionId: extra.connectionId,
       kind: 'worker-local',
       baseUrl: extra.url,
       tokenRef: `env:WORKER_LOCAL_EXTRA:${extra.connectionId}`,
       displayName: `worker-local:${extra.connectionId}`,
-    });
+    };
+    if (opts.localCliOnly) configuredWorkers.set(row.connectionId, row);
+    else store.upsertConnection(row);
   }
   if (opts.personalEnv) {
     store.upsertConnection({
@@ -423,7 +433,10 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
 
   // LocalTaskAccess is wired only when a loopback worker-local source is
   // registered (Java: localTasks == null → LOCAL_SOURCE_NOT_CONFIGURED).
-  const registry = {
+  const registry = opts.localCliOnly ? {
+    getConnection: (connectionId: string) => configuredWorkers.get(connectionId),
+    listConnections: () => [...configuredWorkers.values()],
+  } : {
     getConnection: (connectionId: string): ConnectionRowLite | undefined => store.getConnection(connectionId),
     listConnections: (): ConnectionRowLite[] => store.listConnections(),
   };
@@ -444,6 +457,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   const config: GatewayConfig = {
     personalHostId:host.id,
     allowUnlicensedDevelopment:opts.allowUnlicensedDevelopment === true,
+    localCliOnly:opts.localCliOnly === true,
     storeId: host.storeId,
     acsStoreId: opts.acsStoreId ?? host.storeId,
     bootId: randomUUID(),
@@ -510,7 +524,9 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     { storeId: host.storeId, refresher: (task) => queueMicrotask(task) },
   );
   ctx.inbox = inbox;
-  ctx.approvals = new GatewayApprovals(store, devices);
+  ctx.approvals = new GatewayApprovals(store, opts.localCliOnly ? {
+    activeDevices: () => devices.activeDevices().filter((device) => device.actions?.includes('APPROVE')),
+  } : devices);
 
   return { ctx, store, devices, localTasks, inbox, config };
 }

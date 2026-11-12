@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import shutil
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -34,12 +35,14 @@ def read_json(path: Path) -> dict:
         return {}
     try:
         data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            sys.exit(f"{path} must contain a JSON object")
+        return data
     except ValueError:
         backup = path.with_name(path.name + ".corrupt.bak")
         shutil.copy2(path, backup)
         print(f"{path} is not valid JSON, backed up to {backup.name}", file=sys.stderr)
-        return {}
+        sys.exit(f"Repair {path} before installing or removing the hook")
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -76,7 +79,7 @@ def stage() -> Path:
 
 
 def hook_command(agent: str) -> str:
-    return f'"{STAGED}" {agent}'
+    return f'{shlex.quote(sys.executable)} {shlex.quote(str(STAGED))} {agent}'
 
 
 AGENTS = {
@@ -92,37 +95,44 @@ def install(agent: str, settings_path: Path) -> None:
     entry = {"matcher": "*",
              "hooks": [{"type": "command", "command": hook_command(agent),
                         "timeout": PRE_TOOL_TIMEOUT}]}
-    for i, group in enumerate(event):
-        cmds = [h.get("command") or "" for h in group.get("hooks") or [] if isinstance(h, dict)]
-        if any(MARKER in c for c in cmds):
-            event[i] = entry
-            break
-    else:
-        event.append(entry)
+    event = without_our_hooks(event)
+    event.append(entry)
     hooks["PreToolUse"] = event
     settings["hooks"] = hooks
     write_json(settings_path, settings)
     print(f"installed: {settings_path} -> PreToolUse {hook_command(agent)}")
 
 
+def without_our_hooks(event: list) -> list:
+    kept = []
+    for group in event:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            kept.append(group)
+            continue
+        original = group["hooks"]
+        remaining = [h for h in original
+                     if not isinstance(h, dict) or MARKER not in str(h.get("command", ""))]
+        if remaining == original:
+            kept.append(group)
+        elif remaining:
+            kept.append({**group, "hooks": remaining})
+    return kept
+
+
 def uninstall(settings_path: Path) -> None:
     settings = read_json(settings_path)
-    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    event = hooks.get("PreToolUse")
-    if isinstance(event, list):
-        kept = [g for g in event
-                if not any(MARKER in (h.get("command") or "")
-                           for h in (g.get("hooks") or []) if isinstance(h, dict))]
-        if kept != event:
-            if kept:
-                hooks["PreToolUse"] = kept
-            else:
-                hooks.pop("PreToolUse", None)
-            settings["hooks"] = hooks
-            write_json(settings_path, settings)
-            print(f"removed our hook from {settings_path}")
-            return
-    print("nothing to remove")
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse"), list):
+        return
+    event = hooks["PreToolUse"]
+    kept = without_our_hooks(event)
+    if kept == event:
+        return
+    if kept:
+        hooks["PreToolUse"] = kept
+    else:
+        hooks.pop("PreToolUse")
+    write_json(settings_path, settings)
 
 
 def main() -> int:
@@ -139,11 +149,7 @@ def main() -> int:
     if args.uninstall:
         for agent in agents:
             uninstall(AGENTS[agent])
-        for gone in [STAGED, INSTALLER_STAGED, CONFIG_DIR / "hooks.json"]:
-            try:
-                gone.unlink()
-            except OSError:
-                pass
+        # Keep the shared script/config for other agents and in-flight calls.
         return 0
 
     if not args.port or not args.token_file:

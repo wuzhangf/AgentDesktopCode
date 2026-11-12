@@ -93,17 +93,19 @@ def call(cfg: dict, token: str, method: str, path: str,
 
 
 def approve_out(agent: str) -> str:
+    # Codex PreToolUse can block. A positive response leaves sandbox and
+    # permission evaluation to Codex.
     if agent == "codex":
-        return json.dumps({"hookSpecificOutput": {"permissionDecision": "approve"}})
-    return json.dumps({"decision": "approve"})  # Claude Code dialect
+        return "{}"
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "allow"}})
 
 
 def block_out(agent: str, reason: str) -> str:
-    if agent == "codex":
-        return json.dumps({"hookSpecificOutput": {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason}})
-    return json.dumps({"decision": "block", "reason": reason})
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason}})
 
 
 # Fields the phone needs to decide — everything else (file bodies, patches,

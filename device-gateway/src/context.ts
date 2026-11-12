@@ -288,6 +288,8 @@ export interface GatewayConfig {
   personalHostId?: string;
   /** Only explicitly opted-in development/fixture contexts may omit rights. */
   allowUnlicensedDevelopment?: boolean;
+  /** Dedicated Agent Link gateway with only owner-registered stock CLI sources. */
+  localCliOnly?: boolean;
   /** This gateway's own store id (PersonalAccessService `storeId`). */
   storeId: string;
   /** ACS store id ACS_SESSION resources bind to. */

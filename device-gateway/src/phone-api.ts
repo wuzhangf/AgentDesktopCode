@@ -361,7 +361,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     if (!ctx.commercial) fail('DAILY_SERVICE_NOT_CONFIGURED',503);
     return {status:200,body:await ctx.commercial.attach(device,exact(jsonBody(req),'controlToken'))};
   }
-  if (requiresCommercialAccess(req)) {
+  if (requiresCommercialAccess(req, ctx.config.localCliOnly)) {
     if (ctx.commercial) await ctx.commercial.authorize(device,req);
     else if (ctx.config.allowUnlicensedDevelopment !== true) fail('ENTITLEMENT_CHECK_REQUIRED',503);
   }
@@ -394,7 +394,8 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/host' && method === 'GET') {
     const view = await ctx.auth.host(device, ctx.config.bootId);
-    view.commercial = {required:ctx.config.allowUnlicensedDevelopment !== true,dailyOrigin:ctx.commercial?.dailyOrigin ?? null};
+    view.commercial = {required:ctx.config.allowUnlicensedDevelopment !== true && ctx.config.localCliOnly !== true,
+      dailyOrigin:ctx.commercial?.dailyOrigin ?? null};
     const capabilities = asObj(view.capabilities);
     capabilities.executionPolicy = true;
     capabilities.manageExecutionPolicy = actions.has('POLICY');
@@ -422,6 +423,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/approvals' && method === 'GET') {
     if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
+    if (ctx.config.localCliOnly && !actions.has('APPROVE')) fail('DEVICE_SCOPE_DENIED', 403);
     const query = boundedQuery(req, ['waitMillis']);
     const waitRaw = query.get('waitMillis');
     if (waitRaw !== undefined && !/^[0-9]{1,5}$/.test(waitRaw)) fail('INVALID_REQUEST', 400);
@@ -432,6 +434,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (/^\/personal\/v1\/approvals\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/decision$/.test(path) && method === 'POST') {
     if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
+    if (ctx.config.localCliOnly && !actions.has('APPROVE')) fail('DEVICE_SCOPE_DENIED', 403);
     const approvalId = path.split('/')[4];
     const out = await ctx.approvals.decide(device, approvalId, jsonBody(req));
     return { status: 200, body: out };
