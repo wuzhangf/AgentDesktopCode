@@ -992,16 +992,34 @@ export class LocalTaskAccess {
 
   private async launch(token: string, backend: string, body: unknown, key: string | null): Promise<LocalResult> {
     const office = isRecord(body) && 'nativeWorkSpec' in body;
+    // model/effort are optional per-task selections; exact() is strict both
+    // ways, so they ride alongside the required envelope and forward verbatim
+    // — the worker validates the ref against its advertised catalog.
+    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, ...r }) => r)(body) : body;
     let parsed: Json;
     if (office) {
-      parsed = exact(body, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction', 'nativeWorkSpec');
+      parsed = exact(rest, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction', 'nativeWorkSpec');
       try {
         validateNativeWorkSpec(parsed.nativeWorkSpec);
       } catch {
         fail('INVALID_NATIVE_WORK_SPEC', 400);
       }
     } else {
-      parsed = exact(body, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction');
+      parsed = exact(rest, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction');
+    }
+    if (isRecord(body)) {
+      if (body.model !== undefined) {
+        if (typeof body.model !== 'string' || Buffer.byteLength(body.model) > 300) fail('INVALID_REQUEST', 400);
+        parsed.model = body.model;
+      }
+      if (body.effort !== undefined) {
+        if (typeof body.effort !== 'string' || Buffer.byteLength(body.effort) > 30) fail('INVALID_REQUEST', 400);
+        parsed.effort = body.effort;
+      }
+      if (body.context !== undefined) {
+        if (typeof body.context !== 'number' || !Number.isInteger(body.context) || body.context <= 0 || body.context > 4000000) fail('INVALID_REQUEST', 400);
+        parsed.context = body.context;
+      }
     }
     id(key);
     if (key !== text(parsed, 'requestKey')) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
@@ -1281,10 +1299,30 @@ export class LocalTaskAccess {
   ): Promise<LocalResult> {
     const stop = p.length === 4 && p[3] === 'commands';
     const response = p.length === 6;
-    const parsed = exact(body,
+    // model/effort may ride on follow-up messages (mid-task model switch);
+    // they sit outside exact() like on launch and forward verbatim — the
+    // worker validates the ref against its advertised catalog.
+    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, ...r }) => r)(body) : body;
+    const parsed = exact(rest,
       ...(stop ? ['requestKey', 'intent', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId', 'sealedUploadKeys']
         : response ? ['requestKey', 'response', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']
         : ['requestKey', 'kind', 'content', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']));
+    if (isRecord(body) && !stop && !response) {
+      if (body.model !== undefined) {
+        if (typeof body.model !== 'string' || Buffer.byteLength(body.model) > 300) fail('INVALID_REQUEST', 400);
+        parsed.model = body.model;
+      }
+      if (body.effort !== undefined) {
+        if (typeof body.effort !== 'string' || Buffer.byteLength(body.effort) > 30) fail('INVALID_REQUEST', 400);
+        parsed.effort = body.effort;
+      }
+      if (body.context !== undefined) {
+        if (typeof body.context !== 'number' || !Number.isInteger(body.context) || body.context <= 0 || body.context > 4000000) fail('INVALID_REQUEST', 400);
+        parsed.context = body.context;
+      }
+    } else if (isRecord(body) && (body.model !== undefined || body.effort !== undefined || body.context !== undefined)) {
+      fail('INVALID_REQUEST', 400);
+    }
     id(key);
     if (key !== text(parsed, 'requestKey')) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
     const operation = stop ? text(parsed, 'intent') : response ? 'INPUT_RESPONSE' : text(parsed, 'kind');

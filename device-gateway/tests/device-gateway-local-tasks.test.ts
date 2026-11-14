@@ -579,6 +579,22 @@ describe('LocalTaskAccess launches', () => {
     expect(store.launches().length).toBe(1);
   });
 
+  it('forwards model/effort selections to the worker and keys drift on them', async () => {
+    const { access } = harness();
+    const out = await remote(access, 'POST', `${ROOT}/${STORE}/tasks`,
+      { ...launchBody, model: 'mimo-v2.6', effort: 'high' }, 'key-1');
+    expect(out.status).toBe(200);
+    const posted = fx.posts('/local/v1/tasks').at(-1)!.body as Record<string, unknown>;
+    expect(posted.model).toBe('mimo-v2.6');
+    expect(posted.effort).toBe('high');
+    // Replaying the same key with a changed model must not reuse the receipt.
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks`,
+      { ...launchBody, model: 'mimo-v2.6-flash', effort: 'high' }, 'key-1')))
+      .toEqual({ code: 'IDEMPOTENCY_PAYLOAD_MISMATCH', status: 409 });
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks`,
+      { ...launchBody, model: 42 }, 'key-9'))).toEqual({ code: 'INVALID_REQUEST', status: 400 });
+  });
+
   it('requires Idempotency-Key == requestKey and a launch scope', async () => {
     const { access } = harness();
     expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks`, launchBody, 'other-key')))
@@ -751,6 +767,23 @@ describe('LocalTaskAccess inputs', () => {
       inputBody({ requestKey: 'c-1', intent: 'STOP' }), 'c-1');
     expect(replay.body).toEqual(first.body);
     expect(fx.posts('/local/v1/tasks/native-t1/commands').length).toBe(posts);
+  });
+
+  it('forwards model/effort on follow-up messages and keys drift on them', async () => {
+    const { access } = harness();
+    const out = await remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/messages`,
+      inputBody({ requestKey: 'm-sw', kind: 'NATIVE_STEER', content: 'switch up', model: 'mimo-v2.6-pro', effort: 'high' }), 'm-sw');
+    expect(out.status).toBe(200);
+    const posted = fx.posts('/local/v1/tasks/native-t1/messages').at(-1)!.body as Record<string, unknown>;
+    expect(posted.model).toBe('mimo-v2.6-pro');
+    expect(posted.effort).toBe('high');
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/messages`,
+      inputBody({ requestKey: 'm-sw', kind: 'NATIVE_STEER', content: 'switch up', model: 'other' }), 'm-sw')))
+      .toEqual({ code: 'IDEMPOTENCY_PAYLOAD_MISMATCH', status: 409 });
+    // Commands and input responses do not carry a model selection.
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/commands`,
+      inputBody({ requestKey: 'c-m', intent: 'STOP', model: 'x' }), 'c-m')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
   });
 
   it('sends NATIVE_STEER messages when the task advertises steer', async () => {
