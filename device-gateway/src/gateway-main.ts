@@ -247,6 +247,33 @@ export interface GatewayBootstrapOptions {
   alternateOrigins?: string[];
 }
 
+/** Routable LAN IPv4s become dial candidates: multicast may be filtered
+ *  between a wired Mac and a wireless phone while plain TCP still works.
+ *  169.254 link-local and 198.18/15 (proxy TUN fake-ip) are never dialable. */
+const lanIPv4Addresses = (): string[] => {
+  const out: string[] = [];
+  for (const list of Object.values(networkInterfaces())) {
+    for (const iface of list ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal
+          && !iface.address.startsWith('169.254.') && !/^198\.1[89]\./.test(iface.address)
+          && !out.includes(iface.address)) {
+        out.push(iface.address);
+      }
+    }
+  }
+  return out;
+};
+
+/** The dial candidate set, best-first: the Bonjour name survives DHCP
+ *  renumbering, LAN IPv4s cover the same-subnet case, tailnet names cover
+ *  off-LAN. Recomputed at boot and periodically — tailnet join/leave and
+ *  lease changes are runtime facts, not boot constants. */
+const alternateOriginList = (port: number): string[] => [
+  `https://${hostname()}:${port}`,
+  ...lanIPv4Addresses().map((ip) => `https://${ip}:${port}`),
+  ...tailscaleNames().map((name) => `https://${name}:${port}`),
+];
+
 export const readEnvConfig = (): GatewayBootstrapOptions => {
   const dataDir = resolve(env('DEVICE_GATEWAY_DATA_DIR') ?? './.device-gateway');
   const port = requiredPort('DEVICE_GATEWAY_PORT');
@@ -268,25 +295,10 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
   const ownerBind = env('DEVICE_GATEWAY_OWNER_BIND') ?? '127.0.0.1';
   const commonName = env('DEVICE_GATEWAY_TLS_CN') ?? hostname();
   const tlsDir = resolve(env('DEVICE_GATEWAY_TLS_DIR') ?? join(dataDir, 'tls'));
-  // Detected once per boot: tailnet IPv4 + MagicDNS name feed both the cert
-  // SANs (provisioned certs only — existing material is reused untouched) and
-  // the alternate origins phones probe when the primary LAN origin fails.
+  // Detected once per boot for cert SANs (existing material is reused
+  // untouched); the periodic refresh in main() keeps live alternates honest.
   const tailscale = tailscaleNames();
-  // LAN IPv4s become dial candidates too: multicast may be filtered between
-  // a wired Mac and a wireless phone while plain TCP still works — the
-  // invite and the advert then carry a route that never needed mDNS.
-  const lanIPv4: string[] = [];
-  for (const list of Object.values(networkInterfaces())) {
-    for (const iface of list ?? []) {
-      if (iface.family === 'IPv4' && !iface.internal
-          // 169.254 link-local and 198.18/15 (proxy TUN fake-ip range) are
-          // never dialable from a phone — keep them out of SANs/adverts.
-          && !iface.address.startsWith('169.254.') && !/^198\.1[89]\./.test(iface.address)
-          && !lanIPv4.includes(iface.address)) {
-        lanIPv4.push(iface.address);
-      }
-    }
-  }
+  const lanIPv4 = lanIPv4Addresses();
 
   const inlineKey = pemFromEnv('DEVICE_GATEWAY_TLS_KEY');
   const inlineCert = pemFromEnv('DEVICE_GATEWAY_TLS_CERT');
@@ -418,17 +430,7 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     acsStoreId: env('DEVICE_GATEWAY_ACS_STORE_ID') ?? env('ACS_STORE_ID'),
     acsUrl,
     origin: env('DEVICE_GATEWAY_ORIGIN'),
-    alternateOrigins: (() => {
-      const candidates = [
-        // The Bonjour name first — DHCP renumbering never invalidates it, and
-        // paired phones absorb it through discovery so a stale numeric primary
-        // can heal without re-pairing.
-        `https://${hostname()}:${port}`,
-        ...lanIPv4.map((ip) => `https://${ip}:${port}`),
-        ...tailscale.map((name) => `https://${name}:${port}`),
-      ];
-      return candidates.length === 0 ? undefined : candidates;
-    })(),
+    alternateOrigins: alternateOriginList(port),
     workerLocal,
     extraWorkerLocals,
     cliBridge,
@@ -844,24 +846,49 @@ export async function main(): Promise<void> {
   // Bonjour advertisement — phones discover this host as "_agentlink._tcp".
   // The advert is public discovery facts only; pairing still needs owner
   // approval (discovery requests land PENDING). Opt out via env.
-  const mdns = env('DEVICE_GATEWAY_MDNS') === '0' ? { stop: () => {} } : startMdns({
-    instance: env('DEVICE_GATEWAY_MDNS_NAME') ?? hostname(),
-    port: boundPort,
-    address: opts.bind,
-    txt: {
-      v: '1',
-      host: built.config.personalHostId ?? '',
-      store: built.config.storeId,
-      cert: opts.tls.fingerprints.certSha256,
-      ...(opts.alternateOrigins === undefined || opts.alternateOrigins.length === 0 ? {}
-        : { alts: opts.alternateOrigins.map((o) => new URL(o).host).join(',') }),
-    },
-    log: (event, fields) => console.log(JSON.stringify({ listener: 'mdns', event, ...fields })),
-  });
+  const altsTxt = (origins: string[]): string | undefined =>
+    origins.length === 0 ? undefined : origins.map((o) => new URL(o).host).join(',');
+  const mdns = env('DEVICE_GATEWAY_MDNS') === '0'
+    ? { stop: () => {}, update: () => {} }
+    : startMdns({
+      instance: env('DEVICE_GATEWAY_MDNS_NAME') ?? hostname(),
+      port: boundPort,
+      address: opts.bind,
+      txt: {
+        v: '1',
+        host: built.config.personalHostId ?? '',
+        store: built.config.storeId,
+        cert: opts.tls.fingerprints.certSha256,
+        ...((opts.alternateOrigins ?? []).length === 0 ? {}
+          : { alts: altsTxt(opts.alternateOrigins ?? []) }),
+      },
+      log: (event, fields) => console.log(JSON.stringify({ listener: 'mdns', event, ...fields })),
+    });
+
+  // Live-network refresh: DHCP leases move and the tailnet joins/leaves
+  // without a gateway restart. Recomputing keeps fresh invites, the host
+  // view, and the mDNS alternates honest so late Tailscale setups still
+  // reach already-paired phones.
+  let currentAlternates = [...(opts.alternateOrigins ?? [])];
+  const refreshAlternates = setInterval(() => {
+    try {
+      const origins = alternateOriginList(boundPort);
+      if (origins.join('|') === currentAlternates.join('|')) return;
+      currentAlternates = origins;
+      built.devices.setAlternateOrigins(origins);
+      const lan = lanIPv4Addresses();
+      mdns.update({
+        ...(lan.length === 0 ? {} : { address: lan[0] }),
+        txt: { alts: altsTxt(origins) ?? '' },
+      });
+    } catch { /* interface flap mid-scan — retry next round */ }
+  }, 30_000);
+  refreshAlternates.unref();
 
   const shutdown = (signal: string): void => {
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));
     if (scanTimer !== undefined) clearTimeout(scanTimer);
+    clearInterval(refreshAlternates);
     let pending = listeners.length;
     const done = (): void => {
       if (--pending === 0) {

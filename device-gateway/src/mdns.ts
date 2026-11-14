@@ -104,24 +104,31 @@ const pickAddress = (hint?: string): string | undefined => {
   return lanInterfaces()[0];
 };
 
-export interface MdnsHandle { stop(): void }
+export interface MdnsHandle {
+  stop(): void;
+  /** Re-issue the advert after live facts move: a DHCP lease changes the
+   *  announced A record, and a tailnet join/leave changes the TXT alternates
+   *  phones absorb into their probe sets. */
+  update(fields: { address?: string; txt?: Record<string, string> }): void;
+}
 
 export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
   const log = advert.log ?? (() => {});
-  const ip = pickAddress(advert.address);
+  let ip = pickAddress(advert.address);
   const hostname = `${os.hostname().replace(/\.local$/, '')}.local`;
   const instance = `${advert.instance.replace(/\.local$/, '').replace(/\.$/, '')}.${SERVICE_TYPE}`;
+  let txtFields = { ...advert.txt };
 
   if (ip === undefined) {
     log('mdns.no-address');
-    return { stop: () => {} };
+    return { stop: () => {}, update: () => {} };
   }
 
   const answers = (): Buffer[] => [
     ptr(SERVICE_TYPE, instance),
     srv(instance, advert.port, hostname),
-    txt(instance, advert.txt),
-    a(hostname, ip),
+    txt(instance, txtFields),
+    a(hostname, ip as string),
   ];
 
   const response = (): Buffer => {
@@ -198,6 +205,11 @@ export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
   announce.unref();
 
   return {
+    update: (fields) => {
+      if (fields.address !== undefined) ip = fields.address;
+      if (fields.txt !== undefined) txtFields = { ...txtFields, ...fields.txt };
+      try { burst(); } catch { /* socket closed */ }
+    },
     stop: () => {
       clearInterval(announce);
       try { socket.close(); } catch { /* already closed */ }

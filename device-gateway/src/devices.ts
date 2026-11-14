@@ -87,12 +87,22 @@ const canonical = (value: unknown): unknown => {
 
 const scopeFingerprint = (value: unknown): string => hash(JSON.stringify(canonical(value)));
 
+const exactHttps = (value: string): string => {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.hostname === '' || url.username !== ''
+    || url.password !== '' || url.search !== '' || url.hash !== ''
+    || !(url.pathname === '' || url.pathname === '/')) {
+    throw new Error('Exact HTTPS origin required');
+  }
+  return value.replace(/\/$/, '');
+};
+
 export class Devices {
   private readonly keyFn: () => Uint8Array | undefined;
   private readonly previousKeyFn: () => Uint8Array | undefined;
   private readonly clock: () => number;
   private readonly origin: string;
-  private readonly alternateOrigins: string[];
+  private alternateOrigins: string[];
   private readonly expectedStoreId?: string;
   private storeId = '';
   /** Volatile last-contact per deviceGrantId — online presence is a live
@@ -121,15 +131,6 @@ export class Devices {
       ? previousSealKey
       : () => previousSealKey as Uint8Array | undefined;
     this.clock = clock ?? (() => Date.now());
-    const exactHttps = (value: string): string => {
-      const url = new URL(value);
-      if (url.protocol !== 'https:' || url.hostname === '' || url.username !== ''
-        || url.password !== '' || url.search !== '' || url.hash !== ''
-        || !(url.pathname === '' || url.pathname === '/')) {
-        throw new Error('Exact HTTPS origin required');
-      }
-      return value.replace(/\/$/, '');
-    };
     this.origin = origin === undefined ? '' : exactHttps(origin);
     // Ordered after the primary origin; phones probe the whole list and use
     // whichever connects (LAN vs tailnet needs no user decision).
@@ -137,6 +138,14 @@ export class Devices {
       .filter((o) => o !== this.origin);
     this.expectedStoreId = storeId;
     this.ensureHost();
+  }
+
+  /** Live network facts change after boot: DHCP leases move and tailnet
+   *  joins/leaves at runtime. Refreshing here keeps fresh invites, the
+   *  mDNS alternates, and the host view honest without a gateway restart. */
+  setAlternateOrigins(origins: string[]): void {
+    this.alternateOrigins = origins.map(exactHttps)
+      .filter((o) => o !== this.origin);
   }
 
   private now(): number {
@@ -900,6 +909,7 @@ export class Devices {
         storeId: this.storeId,
         bootId,
         origin: this.origin,
+        alternateOrigins: this.alternateOrigins,
         capabilities: {
           observe: true,
           control: actions.includes('CONTROL'),
