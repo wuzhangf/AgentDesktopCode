@@ -756,14 +756,18 @@ export async function main(): Promise<void> {
     ...(relayServer ? [{ server: relayServer, port: opts.relayPort!, bind: '127.0.0.1' }] : []),
     ...(hooksServer ? [{ server: hooksServer, port: opts.hooksPort!, bind: '127.0.0.1' }] : []),
   ];
+  const startPhoneEnabled = env('DEVICE_GATEWAY_PHONE_START_DISABLED') !== '1';
   try {
-    for (const listener of listeners) await new Promise<void>((resolveListen, rejectListen) => {
+    for (const listener of listeners) {
+      if (listener.server === phoneServer && !startPhoneEnabled) continue;
+      await new Promise<void>((resolveListen, rejectListen) => {
       listener.server.once('error', rejectListen);
       listener.server.listen(listener.port, listener.bind, () => {
         listener.server.removeListener('error', rejectListen);
         resolveListen();
       });
-    });
+      });
+    }
   } catch (error) {
     await Promise.all(listeners.map(({ server }) => new Promise<void>((resolveClose) => {
       if (!server.listening) return resolveClose();
@@ -779,24 +783,29 @@ export async function main(): Promise<void> {
   const phoneSockets = new Set<Socket>();
   phoneServer.on('connection', (s) => { phoneSockets.add(s); s.once('close', () => phoneSockets.delete(s)); });
   phoneServer.on('secureConnection', (s) => { phoneSockets.add(s); s.once('close', () => phoneSockets.delete(s)); });
-  let phoneEnabled = true;
+  let phoneEnabled = startPhoneEnabled;
+  let changeLink = Promise.resolve();
   built.ctx.link = {
     phoneEnabled: () => phoneEnabled,
-    setPhoneEnabled: async (on) => {
-      if (on === phoneEnabled) return;
-      phoneEnabled = on;
-      if (on) {
-        await new Promise<void>((resolveListen, rejectListen) => {
-          phoneServer.once('error', rejectListen);
-          phoneServer.listen(opts.port, opts.bind, () => {
-            phoneServer.removeListener('error', rejectListen);
-            resolveListen();
+    setPhoneEnabled: (on) => {
+      const change = changeLink.then(async () => {
+        if (on === phoneEnabled) return;
+        if (on) {
+          await new Promise<void>((resolveListen, rejectListen) => {
+            phoneServer.once('error', rejectListen);
+            phoneServer.listen(opts.port, opts.bind, () => {
+              phoneServer.removeListener('error', rejectListen);
+              resolveListen();
+            });
           });
-        });
-      } else {
-        for (const s of phoneSockets) s.destroy();
-        if (phoneServer.listening) await new Promise<void>((r) => phoneServer.close(() => r()));
-      }
+        } else {
+          for (const s of phoneSockets) s.destroy();
+          if (phoneServer.listening) await new Promise<void>((r) => phoneServer.close(() => r()));
+        }
+        phoneEnabled = on;
+      });
+      changeLink = change.catch(() => {});
+      return change;
     },
   };
 
@@ -885,10 +894,14 @@ export async function main(): Promise<void> {
   }, 30_000);
   refreshAlternates.unref();
 
+  let shuttingDown = false;
   const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     clearInterval(refreshAlternates);
+    mdns.stop();
     let pending = listeners.length;
     const done = (): void => {
       if (--pending === 0) {
@@ -902,6 +915,10 @@ export async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+  if (env('DEVICE_GATEWAY_STOP_ON_STDIN_END') === '1') {
+    process.stdin.once('end', () => shutdown('parent-stdin-closed'));
+    process.stdin.resume();
+  }
 }
 
 const isMain = process.argv[1] !== undefined

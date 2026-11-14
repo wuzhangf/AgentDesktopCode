@@ -7,25 +7,28 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 
 const CLI_CANDIDATES = [
+  ...(process.platform === 'win32' && process.env.ProgramFiles
+    ? [join(process.env.ProgramFiles, 'Tailscale', 'tailscale.exe')]
+    : []),
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
   '/usr/local/bin/tailscale',
   '/opt/homebrew/bin/tailscale',
   'tailscale',
 ];
 
-const cli = (): string | undefined =>
-  CLI_CANDIDATES.find((p) => !p.includes('/') || existsSync(p));
-
 const run = (args: string[]): string | undefined => {
-  const bin = cli();
-  if (bin === undefined) return undefined;
-  try {
-    return execFileSync(bin, args, { timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim();
-  } catch {
-    return undefined;
+  for (const bin of CLI_CANDIDATES) {
+    if ((isAbsolute(bin) || bin.includes('/')) && !existsSync(bin)) continue;
+    try {
+      return execFileSync(bin, args, {
+        timeout: 1500, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString('utf8').trim();
+    } catch { /* try the next installed candidate */ }
   }
+  return undefined;
 };
 
 /**
