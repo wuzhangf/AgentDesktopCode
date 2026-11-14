@@ -12,6 +12,9 @@ const CLI_CANDIDATES = [
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
   '/usr/local/bin/tailscale',
   '/opt/homebrew/bin/tailscale',
+  // Windows installer drops tailscale.exe under Program Files; the service
+  // CLI answers `ip`/`status` over the tailscaled named pipe unelevated.
+  'C:\\Program Files\\Tailscale\\tailscale.exe',
   'tailscale',
 ];
 
