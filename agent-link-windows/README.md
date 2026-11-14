@@ -20,4 +20,6 @@ The output directory contains the MSI and a manifest of the packaged files. The 
 
 The brand vector master is `src/AgentLink.App/Assets/Brand.xaml`. After editing it, run `powershell.exe -NoProfile -STA -File agent-link-windows/packaging/export-icon.ps1` from the repository root and commit the exported ICO. Its nine native sizes (16–256 px) are shared by the tray, executable, Start shortcut and installed-app entry. Normal builds consume the checked-in ICO and require no image tools.
 
+Keep the three-part product version in `Directory.Build.props` and `AgentLink.wxs` synchronized. PE file versions use `1.<product version>` because the first preview shipped `1.0.0.0`; Windows Installer must see increasing file versions when upgrading that preview. The packaging script checks both versions before producing an MSI.
+
 The preview supports an explicitly attached Worker and direct connectivity. The membership connector, managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

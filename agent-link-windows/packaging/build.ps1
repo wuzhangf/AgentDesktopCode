@@ -9,6 +9,8 @@ $product = Split-Path $PSScriptRoot -Parent
 $repo = Split-Path $product -Parent
 $out = [IO.Path]::GetFullPath($OutputRoot)
 $version = ([xml](Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'AgentLink.wxs'))).Wix.Package.Version
+$managedVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $product 'Directory.Build.props'))).Project.PropertyGroup.Version
+if ($version -ne $managedVersion) { throw 'Installer and managed product versions must match.' }
 if (Test-Path -LiteralPath $out) { throw 'Choose a fresh output directory.' }
 $payload = Join-Path $out 'payload'
 $hostOutput = Join-Path $payload 'host'
@@ -21,6 +23,8 @@ if ($LASTEXITCODE) { throw 'Gateway build failed.' }
 if ($LASTEXITCODE) { throw 'Tray build failed.' }
 & $Dotnet publish (Join-Path $product 'src/AgentLink.Host') -c Release -r win-x64 --self-contained -o $hostOutput
 if ($LASTEXITCODE) { throw 'Host build failed.' }
+$fileVersion = (Get-Item -LiteralPath (Join-Path $payload 'AgentLink.exe')).VersionInfo.FileVersion
+if ([version]$fileVersion -ne [version]"1.$version") { throw 'Unexpected PE file version; preview upgrades must remain above 1.0.0.0.' }
 
 $runtime = (New-Item -ItemType Directory -Path (Join-Path $payload 'runtime')).FullName
 $gatewayOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/gateway')).FullName
@@ -41,6 +45,7 @@ $manifest = [ordered]@{
     schemaVersion = 1
     product = 'Agent Link'
     version = $version
+    fileVersion = $fileVersion
     build = 'windows-lan-preview'
     gatewayBaseRevision = $gatewaySha
     gatewayWorkingTree = [bool](git -C $repo status --porcelain -- device-gateway)
