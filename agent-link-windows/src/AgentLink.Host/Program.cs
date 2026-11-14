@@ -273,8 +273,25 @@ internal sealed class LinkHost : IDisposable
         await RefreshWorkerAsync(cancellation);
         var cap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
         var devices = await OwnerAsync(HttpMethod.Get, "devices", null, cancellation) as JsonArray;
+        var scopesSynced = true;
+        if (enabled)
+        {
+            foreach (var (deviceId, body) in DeviceScopeSync.Changes(cap?["localSource"], devices))
+            {
+                try
+                {
+                    await OwnerAsync(HttpMethod.Put, $"devices/{Uri.EscapeDataString(deviceId)}/scope", body, cancellation);
+                }
+                catch (HttpRequestException)
+                {
+                    // Re-read the catalog and grant revision on the next refresh.
+                    scopesSynced = false;
+                }
+            }
+        }
         var requests = await OwnerAsync(HttpMethod.Get, "pairing-requests", null, cancellation) as JsonArray;
-        status = new(true, enabled ? "后台已就绪" : "手机连接已关闭", computer,
+        var message = !enabled ? "手机连接已关闭" : scopesSynced ? "后台已就绪" : "手机授权同步暂未完成";
+        status = new(true, message, computer,
             LanAddress() is { } ip ? $"https://{ip}:{ports!.Phone}" : cap?["origin"]?.GetValue<string>(),
             devices?.Count(d => d?["state"]?.GetValue<string>() == "ACTIVE") ?? 0,
             requests?.Count(d => d?["state"]?.GetValue<string>() == "PENDING") ?? 0,

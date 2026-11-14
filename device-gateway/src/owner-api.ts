@@ -18,7 +18,7 @@
  * configured owner client token; X-CodeAgent-Client-Token (Java's wire name)
  * is accepted as an alias by the listener.
  */
-import { constantEqual, exact, fail, GatewayError, id, isRecord, text } from './protocol.js';
+import { constantEqual, exact, fail, GatewayError, id, isRecord, resourceKey, text } from './protocol.js';
 import type { LaunchScope, Resource } from './protocol.js';
 import { checkedLaunchScopes, checkedResources } from './scope.js';
 import type {
@@ -320,11 +320,21 @@ export async function handleOwnerRoute(
         if (b.sessions !== undefined) fail('INVALID_SCOPE', 400);
         const resources = await resourceRefs(ctx, b.resources);
         const launches = await launchScopes(ctx, b.launchScopes);
-        await verifyOwnerScopes(ctx, resources, launches);
+        const revision = text(b, 'expectedGrantRevision');
+        const actions = sortedSet(strings(b.actions));
+        // A scope update can carry forward existing task grants even when their
+        // Worker is offline. New resources still need a live binding check.
+        const current = (await ctx.auth.devices()).find(row =>
+          row.deviceGrantId === parts[5] && row.state === 'ACTIVE' && row.grantRevision === revision);
+        const keepsResourceActions = actions.every(action =>
+          action === 'LAUNCH' || (Array.isArray(current?.actions) && current.actions.includes(action)));
+        const retained = new Set((keepsResourceActions && Array.isArray(current?.resources)
+          ? current.resources as Resource[] : []).filter(resource => resource.kind === 'WORKER_LOCAL').map(resourceKey));
+        await verifyOwnerScopes(ctx, resources.filter(resource => !retained.has(resourceKey(resource))), launches);
         return {
           status: 200,
           body: await ctx.auth.updateScopeResources(parts[5], text(b, 'requestId'),
-            text(b, 'expectedGrantRevision'), resources, launches, sortedSet(strings(b.actions))),
+            revision, resources, launches, actions),
         };
       }
       if (b.launchScopes !== undefined) fail('INVALID_SCOPE', 400);

@@ -89,7 +89,7 @@ public partial class LinkWindow : Window
             var reply = await LinkProtocol.CallAsync(new("status"));
             var state = reply.Data?.Deserialize<LinkStatus>(LinkProtocol.Json);
             if (!reply.Ok || state is null) return;
-            Summary.Text = state.Ready ? (state.Enabled ? "手机连接已开启" : "手机连接已关闭") : state.Message;
+            Summary.Text = state.Message == "后台已就绪" ? "手机连接已开启" : state.Message;
             Computer.Text = state.Computer;
             StatusDot.SetResourceReference(ShapeFill, state.Ready && state.Enabled ? "LinkReady" : "LinkSecondary");
             Address.Text = state.Ready ? "局域网连接" : "";

@@ -1147,6 +1147,27 @@ describe('owner routes', () => {
     expect(call[2]).toBe('rq');
   });
 
+  it('preserves an offline task during a launch-scope switch and validates newly granted tasks', async () => {
+    const ctx = fakeCtx({ withLocalTasks: true });
+    const retained = { kind: 'WORKER_LOCAL', backendStoreId: 'offline', taskId: 'old-task' };
+    const added = { kind: 'WORKER_LOCAL', backendStoreId: 'current', taskId: 'new-task' };
+    const scope = { backendStoreId: 'current', projectId: 'project', engineId: 'sage-pi' };
+    ctx.auth.devices = () => [{
+      deviceGrantId: 'dev-1', state: 'ACTIVE', grantRevision: '7',
+      resources: [retained], actions: ['OBSERVE'],
+    }];
+    const res = await handleOwnerRoute(ctx, ownerReq('PUT', '/api/v2/personal-access/devices/dev-1/scope', {
+      rawBody: Buffer.from(JSON.stringify({
+        requestId: 'switch', expectedGrantRevision: '7',
+        resources: [retained, added], launchScopes: [scope], actions: ['LAUNCH', 'OBSERVE'],
+      })),
+    }), creds);
+    expect(res.status).toBe(200);
+    expect(ctx.calls.validateOwner).toEqual([[[added], [scope]]]);
+    const call = ctx.calls.auth.find(([name]) => name === 'updateScopeResources');
+    expect(call?.[4]).toEqual(expect.arrayContaining([retained, added]));
+  });
+
   it('DELETE devices/{id} → revoke + 204', async () => {
     const ctx = fakeCtx();
     const res = await handleOwnerRoute(ctx, ownerReq('DELETE', '/api/v2/personal-access/devices/dev-1'), creds);

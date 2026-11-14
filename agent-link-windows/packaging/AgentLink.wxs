@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Agent Link" Manufacturer="Steercrew" Version="0.1.5"
+  <Package Name="Agent Link" Manufacturer="Steercrew" Version="0.1.6"
            Scope="perUser" UpgradeCode="14F93887-700E-43C5-84BF-55266AA93529">
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="AgentLink.ico" SourceFile="$(IconFile)" />
