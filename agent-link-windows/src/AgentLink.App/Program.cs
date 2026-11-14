@@ -104,8 +104,6 @@ internal static class Program
                     await RefreshMenuAsync();
                     break;
                 case "revokeDevice" when entry.Id is { } deviceId:
-                    if (MessageBox.Show("取消配对后，这台手机需要重新扫码连接。", "取消配对",
-                        MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
                     await CallQuietAsync(new("revokeDevice", deviceId), showPanelOnError: true);
                     await RefreshMenuAsync();
                     break;

@@ -175,7 +175,12 @@ public static class TrayMenuModel
                 Enabled: false, Icon: "phone"),
         };
         if (grant is { Length: > 0 })
-            items.Add(new(TrayMenuEntryKind.Item, "取消配对…", Action: "revokeDevice", Id: grant, Icon: "reject"));
+            items.Add(new(TrayMenuEntryKind.Submenu, "取消配对…", Icon: "reject",
+                Children:
+                [
+                    new(TrayMenuEntryKind.Item, "确认取消配对？需重新扫码连接", Enabled: false, Icon: "phone"),
+                    new(TrayMenuEntryKind.Item, "确认取消配对", Action: "revokeDevice", Id: grant, Icon: "reject"),
+                ]));
         items.Add(new(TrayMenuEntryKind.Separator, ""));
         items.Add(new(TrayMenuEntryKind.Item, "打开面板", Action: "open", Icon: "open"));
         return items;

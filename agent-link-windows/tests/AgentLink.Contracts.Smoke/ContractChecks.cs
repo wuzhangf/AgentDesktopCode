@@ -167,7 +167,9 @@ internal static class ContractChecks
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
         if (phone[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "iPhone-吴", Detail: "在线", DetailAccent: true }
             || phone[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "g2-abcde", Detail: "不可用" }
-            || !phone[0].Children!.Any(e => e is { Action: "revokeDevice", Id: "g1" })
+            || phone[0].Children!.FirstOrDefault(e => e.Text == "取消配对…") is not
+                { Kind: TrayMenuEntryKind.Submenu } revoke
+            || !revoke.Children!.Any(e => e is { Action: "revokeDevice", Id: "g1", Text: "确认取消配对" })
             || Find(phone, "inviteQr")!.Enabled == false || Find(phone, "inviteCopy")!.Enabled == false
             || Find(phone, "togglePhone") is not { Checked: true })
             throw new InvalidOperationException("device rows wrong");

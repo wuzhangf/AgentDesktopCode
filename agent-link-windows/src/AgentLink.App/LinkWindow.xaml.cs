@@ -210,11 +210,29 @@ public partial class LinkWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                 };
                 AutomationProperties.SetName(unpair, $"解除配对 {label}");
+                var confirming = false;
+                var reset = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(3),
+                };
+                reset.Tick += (_, _) =>
+                {
+                    confirming = false;
+                    unpair.Content = "解除";
+                    unpair.ClearValue(ForegroundProperty);
+                    reset.Stop();
+                };
                 unpair.Click += async (_, _) =>
                 {
-                    if (MessageBox.Show($"取消配对 {label}？这台手机需要重新扫码连接。",
-                        "取消配对", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+                    if (!confirming)
+                    {
+                        confirming = true;
+                        unpair.Content = "确认解除？";
+                        unpair.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0x26, 0x26));
+                        reset.Start();
                         return;
+                    }
+                    reset.Stop();
                     await ActAsync(new("revokeDevice", grant));
                 };
                 Grid.SetColumn(unpair, 3);
