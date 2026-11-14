@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using QRCoder;
@@ -12,24 +13,72 @@ namespace AgentLink;
 public partial class LinkWindow : Window
 {
     private readonly DispatcherTimer refresh = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer dismiss = new() { Interval = TimeSpan.FromMilliseconds(160) };
     private bool working;
+    private bool choosingWorker;
     private long inviteExpires;
+    private long dismissedAt = long.MinValue / 2;
+
+    internal bool JustDismissed => Environment.TickCount64 - dismissedAt < System.Windows.Forms.SystemInformation.DoubleClickTime;
 
     public LinkWindow()
     {
         InitializeComponent();
+        ApplyTheme();
         Closing += (_, e) => { e.Cancel = true; Hide(); };
+        Activated += (_, _) => { CancelDismissal(); ApplyTheme(); };
+        Deactivated += (_, _) => { if (!choosingWorker) dismiss.Start(); };
+        dismiss.Tick += (_, _) =>
+        {
+            CancelDismissal();
+            if (!IsActive && !choosingWorker)
+            {
+                dismissedAt = Environment.TickCount64;
+                Hide();
+            }
+        };
         IsVisibleChanged += (_, _) =>
         {
             if (IsVisible) refresh.Start();
-            else { refresh.Stop(); ClearInvite(); }
+            else { refresh.Stop(); CancelDismissal(); ClearInvite(); }
         };
         PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) Hide(); };
         refresh.Tick += async (_, _) => await RefreshAsync();
         UpdateAutostart();
     }
 
-    internal void OpenSettings() => Tabs.SelectedItem = Settings;
+    internal void OpenSettings()
+    {
+        UpdateAutostart();
+        Tabs.SelectedItem = Settings;
+    }
+
+    internal void CancelDismissal() => dismiss.Stop();
+
+    private void ApplyTheme()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+        var dark = key?.GetValue("AppsUseLightTheme") is 0;
+        SetBrush("LinkSurface", dark ? "#202327" : "#FCFCFD", SystemColors.WindowColor);
+        SetBrush("LinkText", dark ? "#F0F2F5" : "#17202E", SystemColors.WindowTextColor);
+        SetBrush("LinkSecondary", dark ? "#B4BFCC" : "#536071", SystemColors.WindowTextColor);
+        SetBrush("LinkLine", dark ? "#434951" : "#DFE4EB", SystemColors.WindowTextColor);
+        SetBrush("LinkSubtle", dark ? "#2B3036" : "#EDF1F6", SystemColors.ControlColor);
+        SetBrush("LinkHover", dark ? "#383F47" : "#E4EBF4", SystemColors.ControlColor);
+        SetBrush("LinkAccent", dark ? "#83B8FF" : "#0863CD", SystemColors.HighlightColor);
+        SetBrush("LinkOnAccent", dark ? "#102841" : "#FFFFFF", SystemColors.HighlightTextColor);
+        SetBrush("LinkReady", dark ? "#75D7AA" : "#13764E", SystemColors.WindowTextColor);
+    }
+
+    private void SetBrush(string key, string color, Color contrastColor)
+    {
+        var value = SystemParameters.HighContrast ? contrastColor : (Color)ColorConverter.ConvertFromString(color);
+        if (Resources[key] is SolidColorBrush previous && previous.Color == value) return;
+        var brush = new SolidColorBrush(value);
+        brush.Freeze();
+        Resources[key] = brush;
+    }
 
     internal async Task RefreshAsync()
     {
@@ -40,9 +89,12 @@ public partial class LinkWindow : Window
             var reply = await LinkProtocol.CallAsync(new("status"));
             var state = reply.Data?.Deserialize<LinkStatus>(LinkProtocol.Json);
             if (!reply.Ok || state is null) return;
-            Summary.Text = state.Message + "  ·  " + state.Computer;
-            Address.Text = state.Origin ?? "";
-            Devices.Text = $"已配对手机  {state.DeviceCount}";
+            Summary.Text = state.Ready ? (state.Enabled ? "手机连接已开启" : "手机连接已关闭") : state.Message;
+            Computer.Text = state.Computer;
+            StatusDot.SetResourceReference(ShapeFill, state.Ready && state.Enabled ? "LinkReady" : "LinkSecondary");
+            Address.Text = state.Ready ? "局域网连接" : "";
+            Address.ToolTip = state.Origin;
+            Devices.Text = state.DeviceCount == 0 ? "尚未配对手机" : $"已配对 {state.DeviceCount} 部手机";
             PhoneEnabled.IsEnabled = state.Ready;
             PhoneEnabled.IsChecked = state.Enabled;
             Invite.IsEnabled = state.Ready && state.Enabled;
@@ -57,6 +109,7 @@ public partial class LinkWindow : Window
         catch (Exception error) when (IsUnavailable(error))
         {
             Summary.Text = "正在连接后台";
+            StatusDot.SetResourceReference(ShapeFill, "LinkSecondary");
             PhoneEnabled.IsEnabled = false;
             Invite.IsEnabled = false;
         }
@@ -78,7 +131,14 @@ public partial class LinkWindow : Window
             var projects = (backend["projects"] as JsonArray)?.Select(p => Text(p, "displayName") ?? Text(p, "projectId"));
             foreach (var engine in engines?.OfType<JsonObject>() ?? [])
             {
-                var name = Text(engine, "engineId") ?? "Agent";
+                var name = Text(engine, "engineId") switch
+                {
+                    "sage-pi" or "pi" => "Sage Pi",
+                    "sage-codex" or "codex" => "Codex",
+                    "claude" => "Claude",
+                    { } id => id,
+                    _ => "Agent",
+                };
                 var current = Text(engine, "availability") == "AVAILABLE" ? "可用" : "需要处理";
                 rows.Add(name + "  ·  " + current + "\n" + string.Join("、", projects ?? []));
             }
@@ -133,7 +193,7 @@ public partial class LinkWindow : Window
             bitmap.Freeze();
             if (!IsVisible) return;
             Qr.Source = bitmap;
-            Qr.Visibility = Visibility.Visible;
+            QrCard.Visibility = Visibility.Visible;
             InviteHelp.Text = "用 iPhone 上的 Control 扫码。请连接同一个局域网。";
         }
         catch (Exception error) when (IsUnavailable(error))
@@ -167,11 +227,18 @@ public partial class LinkWindow : Window
     {
         if (Qr.Source is not null) InviteHelp.Text = "";
         Qr.Source = null;
-        Qr.Visibility = Visibility.Collapsed;
+        QrCard.Visibility = Visibility.Collapsed;
         inviteExpires = 0;
     }
 
-    private async void RefreshAgents_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
+    private static DependencyProperty ShapeFill => System.Windows.Shapes.Shape.FillProperty;
+
+    private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    private async void Tabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsVisible && ReferenceEquals(e.Source, Tabs)) await RefreshAsync();
+    }
 
     private async void ConnectWorker_Click(object sender, RoutedEventArgs e)
     {
@@ -182,7 +249,12 @@ public partial class LinkWindow : Window
         };
         var cards = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agent-gateway", "workers.d");
         if (Directory.Exists(cards)) chooser.InitialDirectory = cards;
-        if (chooser.ShowDialog(this) != true) return;
+        choosingWorker = true;
+        CancelDismissal();
+        bool selected;
+        try { selected = chooser.ShowDialog(this) == true; }
+        finally { choosingWorker = false; }
+        if (!selected) return;
         try
         {
             var reply = await LinkProtocol.CallAsync(new("worker", chooser.FileName));

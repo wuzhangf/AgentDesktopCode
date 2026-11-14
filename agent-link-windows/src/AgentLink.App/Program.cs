@@ -45,31 +45,24 @@ internal static class Program
         using var stopping = new CancellationTokenSource();
         var panel = new LinkWindow();
         using var menu = new Forms.ContextMenuStrip();
-        using var icon = new Forms.NotifyIcon
-        {
-            Icon = System.Drawing.SystemIcons.Application,
-            Text = "Agent Link",
-            ContextMenuStrip = menu,
-            Visible = true,
-        };
+        using var icon = new TrayIcon();
+        panel.SizeChanged += (_, _) => icon.PositionPanel(panel);
         void ShowPanel()
         {
-            if (panel.WindowState == WindowState.Minimized) panel.WindowState = WindowState.Normal;
-            if (!panel.IsVisible)
-            {
-                var area = SystemParameters.WorkArea;
-                panel.Left = Math.Max(area.Left, area.Right - panel.Width - 12);
-                panel.Top = Math.Max(area.Top, area.Bottom - panel.Height - 12);
-                panel.Show();
-            }
-            panel.Activate();
+            panel.CancelDismissal();
+            if (panel.IsVisible) panel.Activate();
+            else icon.ShowPanel(panel);
             _ = panel.RefreshAsync();
         }
-        icon.MouseClick += (_, e) =>
+        icon.ToggleRequested += () =>
         {
-            if (e.Button != Forms.MouseButtons.Left) return;
             if (panel.IsVisible) panel.Hide();
-            else ShowPanel();
+            else if (!panel.JustDismissed) ShowPanel();
+        };
+        icon.MenuRequested += point =>
+        {
+            panel.Hide();
+            menu.Show(point.X, point.Y);
         };
         menu.Items.Add("打开 Agent Link", null, (_, _) => ShowPanel());
         menu.Items.Add("设置", null, (_, _) => { ShowPanel(); panel.OpenSettings(); });
@@ -87,6 +80,7 @@ internal static class Program
         DateTimeOffset retryAt = default;
         health.Tick += async (_, _) =>
         {
+            icon.EnsureRegistered();
             if (checking) return;
             checking = true;
             try

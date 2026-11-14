@@ -53,6 +53,7 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'release-manifest.json') -Encoding utf8
 $msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
-& $Wix build -arch x64 -d "Payload=$payload" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
+$icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
+& $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
 if ($LASTEXITCODE) { throw 'MSI build failed.' }
 Get-FileHash -LiteralPath $msi -Algorithm SHA256

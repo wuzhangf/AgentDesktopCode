@@ -2,9 +2,13 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AssemblyName>AgentLink</AssemblyName>
+    <Title>Agent Link</Title>
     <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/AgentLink.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Resource Include="Assets/AgentLink.ico" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <ProjectReference Include="../AgentLink.Contracts/AgentLink.Contracts.csproj" />
     <PackageReference Include="QRCoder" Version="1.7.0" />
