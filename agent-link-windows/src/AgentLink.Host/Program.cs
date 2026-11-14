@@ -410,15 +410,31 @@ internal sealed class LinkHost : IDisposable
         return card;
     }
 
-    private async Task RegisterWorkerAsync(WorkerCard? card, CancellationToken cancellation)
+    private async Task<(bool Ok, string? Detail)> ProbeWorkerAsync(WorkerCard card, CancellationToken cancellation)
     {
-        if (registered == card) return;
-        if (card is not null)
+        try
         {
             using var probe = new HttpRequestMessage(HttpMethod.Get, new Uri(new Uri(card.Url), "/local/v1/identity"));
             probe.Headers.Authorization = new("Bearer", card.Token);
             using var response = await owner.SendAsync(probe, cancellation);
             response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsStringAsync(cancellation);
+            return (true, body.Length > 512 ? body[..512] : body);
+        }
+        catch (Exception error) when (error is HttpRequestException or IOException or OperationCanceledException
+            && !cancellation.IsCancellationRequested)
+        {
+            return (false, "引擎不可达：" + error.Message);
+        }
+    }
+
+    private async Task RegisterWorkerAsync(WorkerCard? card, CancellationToken cancellation)
+    {
+        if (registered == card) return;
+        if (card is not null)
+        {
+            var (ok, detail) = await ProbeWorkerAsync(card, cancellation);
+            if (!ok) throw new HttpRequestException(detail);
             await OwnerAsync(HttpMethod.Post, "worker-registrations", new
             {
                 card.ConnectionId, card.Url, card.Token,
@@ -493,6 +509,14 @@ internal sealed class LinkHost : IDisposable
                     await RegisterWorkerAsync(card, cancellation);
                     LinkIdentity.SaveAtomic(WorkerPathFile, System.Text.Encoding.UTF8.GetBytes(path));
                     return new(true);
+                case "detachWorker":
+                    if (File.Exists(WorkerPathFile)) File.Delete(WorkerPathFile);
+                    await RegisterWorkerAsync(null, cancellation);
+                    return new(true);
+                case "testWorker" when request.Id is { } testPath:
+                    var tested = await LoadWorkerAsync(testPath, cancellation);
+                    var (ok, detail) = await ProbeWorkerAsync(tested, cancellation);
+                    return ok ? new(true, Data: JsonValue.Create(detail)) : new(false, detail);
                 case "devices":
                     return new(true, Data: await OwnerAsync(HttpMethod.Get, "devices", null, cancellation));
                 case "requests":

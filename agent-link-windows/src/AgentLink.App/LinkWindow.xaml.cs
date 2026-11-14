@@ -68,6 +68,13 @@ public partial class LinkWindow : Window
         ConnectWorker_Click(this, new RoutedEventArgs());
     }
 
+    /// <summary>Shows a one-off result line on the Agent tab (e.g. an engine test outcome).</summary>
+    internal void ShowWorkerNotice(string text)
+    {
+        Tabs.SelectedIndex = 1;
+        WorkerNotice.Text = text;
+    }
+
     internal void CancelDismissal() => dismiss.Stop();
 
     private void ApplyTheme() => LinkTheme.Apply(Resources);

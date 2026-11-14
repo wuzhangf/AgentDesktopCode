@@ -165,7 +165,8 @@ internal static class ContractChecks
             """)!.AsArray();
         var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], null))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
-        if (phone[0].Text != "iPhone-吴 · 在线" || phone[1].Text != "g2-abcde · 不可用"
+        if (phone[0].Text != "iPhone-吴" || phone[0].Detail != "在线" || !phone[0].DetailAccent
+            || phone[1].Text != "g2-abcde" || phone[1].Detail != "不可用" || phone[1].DetailAccent
             || Find(phone, "inviteQr")!.Enabled == false || Find(phone, "inviteCopy")!.Enabled == false
             || Find(phone, "togglePhone") is not { Checked: true })
             throw new InvalidOperationException("device rows wrong");
@@ -177,23 +178,36 @@ internal static class ContractChecks
             || Find(phoneOff, "inviteCopy")!.Enabled || Find(phoneOff, "togglePhone") is not { Checked: false })
             throw new InvalidOperationException("disabled phone wrong");
 
-        // Workers: current on top marked attached, others carry attach action + path.
+        // Workers: each card drills into a per-agent page (CC-style entity rows):
+        // attach/detach, engine test and workspace browse.
         var cards = new List<TrayWorkerCard>
         {
-            new(@"D:\cards\pi.json", "Sage Pi"),
-            new(@"D:\cards\codex.json", "Codex"),
+            new(@"D:\cards\pi.json", "Sage Pi", "sage-pi", "pi-workspace", @"D:\ws\pi"),
+            new(@"D:\cards\codex.json", "Codex", "codex", "codex-proj"),
         };
         var agents = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"d:\CARDS\pi.json"))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
-        if (agents[0].Text != "Sage Pi · 接入中" || agents[1].Text != "Codex · 接入"
-            || agents[1].Action != "attachWorker" || agents[1].Id != @"D:\cards\codex.json"
-            || Find(agents, "workerPick") is null || Find(agents, "openAgents") is null)
-            throw new InvalidOperationException("worker rows wrong");
+        if (agents[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Sage Pi", Detail: "接入中", Tint: "#6366F1" }
+            || agents[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Codex", Detail: "codex · codex-proj" })
+            throw new InvalidOperationException("agent card rows wrong");
+        var sagePage = agents[0].Children!;
+        if (!sagePage.Any(e => e.Action == "detachWorker")
+            || !sagePage.Any(e => e is { Action: "testWorker", Id: @"D:\cards\pi.json" })
+            || !sagePage.Any(e => e is { Action: "browseWorker", Id: @"D:\ws\pi", Enabled: true }))
+            throw new InvalidOperationException("attached agent page wrong");
+        var codexPage = agents[1].Children!;
+        if (!codexPage.Any(e => e is { Action: "attachWorker", Id: @"D:\cards\codex.json" })
+            || codexPage.Any(e => e.Action == "detachWorker")
+            || codexPage.FirstOrDefault(e => e.Action == "browseWorker") is not { Enabled: false })
+            throw new InvalidOperationException("unattached agent page wrong");
+        if (Find(agents, "workerPick") is null || Find(agents, "openAgents") is null)
+            throw new InvalidOperationException("agent section tail wrong");
 
         // Orphan current path still shows an attached row; empty shows the hint.
         var orphan = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"D:\gone\old.json"))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
-        if (!orphan[0].Text.Contains("old") || !orphan[0].Text.Contains("接入中"))
+        if (orphan[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "old", Detail: "接入中" }
+            || !orphan[0].Children!.Any(e => e.Action == "detachWorker"))
             throw new InvalidOperationException("orphan worker row wrong");
         var none = TrayMenuModel.Build(new(true, Status(), null, null, [], null))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;

@@ -12,9 +12,13 @@ public sealed record TrayMenuEntry(
     bool Checked = false,
     bool Enabled = true,
     string? Icon = null,
+    string? Detail = null,
+    bool DetailAccent = false,
+    string? Tint = null,
     IReadOnlyList<TrayMenuEntry>? Children = null);
 
-public sealed record TrayWorkerCard(string Path, string Name);
+public sealed record TrayWorkerCard(
+    string Path, string Name, string? Engine = null, string? ProjectId = null, string? ProjectDir = null);
 
 public sealed record TraySnapshot(
     bool Reachable,
@@ -25,11 +29,12 @@ public sealed record TraySnapshot(
     string? CurrentWorkerPath);
 
 /// <summary>
-/// Builds the tray context menu from a point-in-time snapshot: a status
-/// header, a conditional problem area, pending pairing requests, one submenu
-/// per managed entity (phones, Agents, member account), then the global
-/// actions. Rebuilt on every right-click — the model is pure data so the
-/// contract smoke can assert it.
+/// Builds the tray menu from a point-in-time snapshot: a status header,
+/// conditional problem rows, pending pairing requests, one drill-down section
+/// per managed entity (phones, Agents, member account), then global actions.
+/// Agent cards drill into per-agent actions the same way CC Switch entity
+/// rows drill into provider pages. Rebuilt on every right-click — the model
+/// is pure data so the contract smoke can assert it.
 /// </summary>
 public static class TrayMenuModel
 {
@@ -58,11 +63,17 @@ public static class TrayMenuModel
         var requests = RequestChildren(snapshot);
         if (requests.Count > 0)
             entries.Add(new(TrayMenuEntryKind.Submenu, $"{status.PendingCount} 条配对请求",
-                Icon: "pair", Children: requests));
+                Icon: "pair", Detail: "待处理", DetailAccent: true, Children: requests));
         entries.Add(new(TrayMenuEntryKind.Separator, ""));
-        entries.Add(new(TrayMenuEntryKind.Submenu, "手机连接", Icon: "phone", Children: PhoneChildren(snapshot)));
-        entries.Add(new(TrayMenuEntryKind.Submenu, "Agent", Icon: "agent", Children: AgentChildren(snapshot)));
-        entries.Add(new(TrayMenuEntryKind.Submenu, "会员账号", Icon: "member", Children: MemberChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "手机连接", Icon: "phone",
+            Detail: PhoneDetail(status), DetailAccent: status.Enabled && status.DeviceCount > 0,
+            Children: PhoneChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "Agent", Icon: "agent",
+            Detail: AgentDetail(snapshot), DetailAccent: snapshot.CurrentWorkerPath is not null,
+            Children: AgentChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "会员账号", Icon: "member",
+            Detail: MemberDetail(status), DetailAccent: status.MemberState == "LINKED",
+            Children: MemberChildren(snapshot)));
         entries.Add(new(TrayMenuEntryKind.Separator, ""));
         entries.Add(new(TrayMenuEntryKind.Item, "打开 Agent Link", Action: "open", Icon: "open"));
         entries.Add(new(TrayMenuEntryKind.Item, "刷新", Action: "refresh", Icon: "refresh"));
@@ -78,6 +89,29 @@ public static class TrayMenuModel
             : "局域网";
         return $"{status.Computer} · {lane} · {status.DeviceCount} 台手机";
     }
+
+    private static string PhoneDetail(LinkStatus status) =>
+        !status.Enabled ? "已关闭"
+            : status.DeviceCount > 0 ? $"{status.DeviceCount} 台在线"
+            : "已开启 · 无手机在线";
+
+    private static string AgentDetail(TraySnapshot snapshot)
+    {
+        var current = snapshot.CurrentWorkerPath;
+        if (current is null) return snapshot.Workers.Count > 0 ? $"{snapshot.Workers.Count} 个可接入" : "未接入";
+        var card = snapshot.Workers.FirstOrDefault(c =>
+            string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase));
+        return (card?.Name ?? Path.GetFileNameWithoutExtension(current)) + " · 接入中";
+    }
+
+    private static string MemberDetail(LinkStatus status) => status.MemberState switch
+    {
+        "LINKED" => "已连接",
+        "LINKING" => "等待确认",
+        "CONNECTING" => "连接中",
+        "ERROR" => "需要处理",
+        _ => "未登录",
+    };
 
     private static IReadOnlyList<TrayMenuEntry> RequestChildren(TraySnapshot snapshot)
     {
@@ -115,9 +149,9 @@ public static class TrayMenuModel
             {
                 var active = Text(device, "state") == "ACTIVE";
                 var label = Text(device, "label") ?? Text(device, "deviceGrantId")?[..8] ?? "手机";
-                items.Add(new(TrayMenuEntryKind.Item,
-                    label + (active ? " · 在线" : " · 不可用"),
-                    Action: "open", Icon: active ? "phoneOn" : "phone"));
+                items.Add(new(TrayMenuEntryKind.Item, label,
+                    Action: "open", Icon: "phone",
+                    Detail: active ? "在线" : "不可用", DetailAccent: active));
             }
         }
         items.Add(new(TrayMenuEntryKind.Separator, ""));
@@ -133,20 +167,22 @@ public static class TrayMenuModel
     private static IReadOnlyList<TrayMenuEntry> AgentChildren(TraySnapshot snapshot)
     {
         var items = new List<TrayMenuEntry>();
-        var cards = snapshot.Workers;
         var current = snapshot.CurrentWorkerPath;
-        var currentCard = current is null ? null : cards.FirstOrDefault(c =>
-            string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase));
-        if (currentCard is not null)
-            items.Add(new(TrayMenuEntryKind.Item, currentCard.Name + " · 接入中",
-                Action: "openAgents", Icon: "agentOn"));
-        else if (current is not null)
-            items.Add(new(TrayMenuEntryKind.Item,
-                Path.GetFileNameWithoutExtension(current) + " · 接入中", Action: "openAgents", Icon: "agentOn"));
-        foreach (var card in cards)
+        if (current is not null && snapshot.Workers.All(c =>
+            !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase)))
         {
-            if (card == currentCard) continue;
-            items.Add(new(TrayMenuEntryKind.Item, card.Name + " · 接入", Action: "attachWorker", Id: card.Path, Icon: "agent"));
+            var orphan = new TrayWorkerCard(current, Path.GetFileNameWithoutExtension(current));
+            items.Add(new(TrayMenuEntryKind.Submenu, orphan.Name, Icon: "agent",
+                Detail: "接入中", DetailAccent: true, Tint: EngineTint(orphan.Engine),
+                Children: AgentCardChildren(orphan, current)));
+        }
+        foreach (var card in snapshot.Workers)
+        {
+            var attached = string.Equals(card.Path, current, StringComparison.OrdinalIgnoreCase);
+            items.Add(new(TrayMenuEntryKind.Submenu, card.Name, Icon: "agent",
+                Detail: attached ? "接入中" : CardSubtitle(card),
+                DetailAccent: attached, Tint: EngineTint(card.Engine),
+                Children: AgentCardChildren(card, attached ? current : null)));
         }
         if (items.Count == 0)
             items.Add(new(TrayMenuEntryKind.Item, "尚未接入 Agent", Enabled: false));
@@ -155,6 +191,42 @@ public static class TrayMenuModel
         items.Add(new(TrayMenuEntryKind.Item, "管理 Agent…", Action: "openAgents", Icon: "open"));
         return items;
     }
+
+    private static IReadOnlyList<TrayMenuEntry> AgentCardChildren(TrayWorkerCard card, string? current)
+    {
+        var attached = current is not null;
+        var items = new List<TrayMenuEntry>
+        {
+            new(TrayMenuEntryKind.Item, CardSubtitle(card) + (attached ? " · 接入中" : ""),
+                Enabled: false, Icon: "agent", Tint: EngineTint(card.Engine)),
+        };
+        if (attached)
+            items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Icon: "reject"));
+        else
+            items.Add(new(TrayMenuEntryKind.Item, "接入此 Agent", Action: "attachWorker", Id: card.Path, Icon: "check"));
+        items.Add(new(TrayMenuEntryKind.Item, "测试引擎", Action: "testWorker", Id: card.Path, Icon: "refresh"));
+        items.Add(new(TrayMenuEntryKind.Item, "浏览工作区", Action: "browseWorker", Id: card.ProjectDir,
+            Enabled: card.ProjectDir is { Length: > 0 }, Icon: "open"));
+        items.Add(new(TrayMenuEntryKind.Separator, ""));
+        items.Add(new(TrayMenuEntryKind.Item, "管理 Agent…", Action: "openAgents", Icon: "open"));
+        return items;
+    }
+
+    private static string CardSubtitle(TrayWorkerCard card)
+    {
+        var engine = card.Engine ?? "Worker";
+        return card.ProjectId is { Length: > 0 } project ? engine + " · " + project : engine;
+    }
+
+    private static string? EngineTint(string? engine) => engine switch
+    {
+        { } e when e.Contains("claude") => "#D97757",
+        { } e when e.Contains("codex") => "#10A37F",
+        { } e when e.Contains("pi") => "#6366F1",
+        { } e when e.Contains("gemini") => "#3C7FF5",
+        { } e when e.Contains("grok") => "#1D1D1F",
+        _ => null,
+    };
 
     private static IReadOnlyList<TrayMenuEntry> MemberChildren(TraySnapshot snapshot)
     {

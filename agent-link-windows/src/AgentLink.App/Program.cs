@@ -107,6 +107,34 @@ internal static class Program
                     await CallQuietAsync(new("worker", path), showPanelOnError: true);
                     await RefreshMenuAsync();
                     break;
+                case "detachWorker":
+                    await CallQuietAsync(new("detachWorker"), showPanelOnError: true);
+                    await RefreshMenuAsync();
+                    break;
+                case "testWorker" when entry.Id is { } testPath:
+                    try
+                    {
+                        var reply = await LinkProtocol.CallAsync(new("testWorker", testPath));
+                        var name = WorkerNameFor(testPath);
+                        ShowPanel();
+                        panel.ShowWorkerNotice(reply.Ok
+                            ? $"✓ {name} · 引擎可用"
+                            : $"✗ {name} · {reply.Error ?? "测试失败"}");
+                    }
+                    catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException)
+                    {
+                        ShowPanel();
+                        panel.ShowWorkerNotice("后台暂不可用，无法测试。");
+                    }
+                    break;
+                case "browseWorker" when entry.Id is { } dir:
+                    try
+                    {
+                        if (Path.IsPathFullyQualified(dir) && Directory.Exists(dir))
+                            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{dir}\"") { UseShellExecute = true });
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
+                    break;
                 case "workerPick": ShowPanel(); panel.BeginWorkerPick(); break;
                 case "member" when entry.Id is { } op:
                     await CallQuietAsync(new(op));
@@ -174,6 +202,14 @@ internal static class Program
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
         }
 
+        string? WorkerNameFor(string path) =>
+            EnumerateWorkerCards().FirstOrDefault(c =>
+                string.Equals(c.Path, path, StringComparison.OrdinalIgnoreCase))?.Name
+            ?? Path.GetFileNameWithoutExtension(path);
+
+        static string? CardField(JsonElement card, string name) =>
+            card.TryGetProperty(name, out var value) && value.GetString() is { Length: > 0 } text ? text : null;
+
         static List<TrayWorkerCard> EnumerateWorkerCards()
         {
             var cards = new List<TrayWorkerCard>();
@@ -186,10 +222,13 @@ internal static class Program
                 {
                     using var doc = JsonDocument.Parse(File.ReadAllText(file));
                     var name =
-                        doc.RootElement.TryGetProperty("displayName", out var display) && display.GetString() is { Length: > 0 } shown ? shown :
-                        doc.RootElement.TryGetProperty("connectionId", out var connection) && connection.GetString() is { Length: > 0 } id ? id :
+                        CardField(doc.RootElement, "displayName") ??
+                        CardField(doc.RootElement, "connectionId") ??
                         Path.GetFileNameWithoutExtension(file);
-                    cards.Add(new(Path.GetFullPath(file), name));
+                    cards.Add(new(Path.GetFullPath(file), name,
+                        CardField(doc.RootElement, "engine"),
+                        CardField(doc.RootElement, "projectId"),
+                        CardField(doc.RootElement, "project")));
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
             }

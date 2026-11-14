@@ -155,8 +155,25 @@ public partial class TrayMenuWindow : Window
         if (warning) text.Foreground = (Brush)Resources["LinkWarn"];
         else if (entry.Kind == TrayMenuEntryKind.Item && !entry.Enabled)
             text.Foreground = (Brush)Resources["LinkSecondary"];
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
+        if (entry.Detail is { Length: > 0 } detail)
+        {
+            var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            stack.Children.Add(text);
+            stack.Children.Add(new TextBlock
+            {
+                Text = detail, FontSize = 11, Margin = new Thickness(0, 1, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = entry.DetailAccent
+                    ? (Brush)Resources["LinkAccent"] : (Brush)Resources["LinkSecondary"],
+            });
+            Grid.SetColumn(stack, 1);
+            grid.Children.Add(stack);
+        }
+        else
+        {
+            Grid.SetColumn(text, 1);
+            grid.Children.Add(text);
+        }
         if (entry.Kind == TrayMenuEntryKind.Submenu)
             grid.Children.Add(Glyph("next", 2));
         else if (entry.Kind == TrayMenuEntryKind.CheckItem)
@@ -233,6 +250,12 @@ public partial class TrayMenuWindow : Window
     private void AddIcon(Grid grid, TrayMenuEntry entry, bool warning)
     {
         if (entry.Icon is not { } name || !Icons.TryGetValue(name, out var geometry)) return;
+        var stroke = warning ? (Brush)Resources["LinkWarn"] : (Brush)Resources["LinkSecondary"];
+        if (!warning && entry.Tint is { Length: > 0 } tint)
+        {
+            try { stroke = new SolidColorBrush((Color)ColorConverter.ConvertFromString(tint)); }
+            catch (FormatException) { }
+        }
         var viewbox = new Viewbox
         {
             Width = 15, Height = 15, Margin = new Thickness(1, 0, 10, 0),
@@ -240,7 +263,7 @@ public partial class TrayMenuWindow : Window
             Child = new System.Windows.Shapes.Path
             {
                 Data = geometry,
-                Stroke = warning ? (Brush)Resources["LinkWarn"] : (Brush)Resources["LinkSecondary"],
+                Stroke = stroke,
                 StrokeThickness = 1.5,
                 StrokeLineJoin = PenLineJoin.Round,
                 StrokeStartLineCap = PenLineCap.Round,
