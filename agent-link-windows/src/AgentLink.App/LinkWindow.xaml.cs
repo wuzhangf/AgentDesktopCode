@@ -194,7 +194,7 @@ public partial class LinkWindow : Window
             if (!IsVisible) return;
             Qr.Source = bitmap;
             QrCard.Visibility = Visibility.Visible;
-            InviteHelp.Text = "用 iPhone 上的 Control 扫码。请连接同一个局域网。";
+            InviteHelp.Text = "在 Android 或 iPhone 的 Control 中扫码。请连接同一个局域网。";
         }
         catch (Exception error) when (IsUnavailable(error))
         {

@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <Version>0.1.6</Version>
+    <Version>0.1.7</Version>
     <!-- Early previews shipped PE version 1.0.0.0. Keep MSI file replacement monotonic. -->
     <FileVersion>1.$(Version)</FileVersion>
     <Product>Agent Link</Product>
