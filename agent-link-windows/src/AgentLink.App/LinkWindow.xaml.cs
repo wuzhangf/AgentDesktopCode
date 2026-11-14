@@ -158,7 +158,8 @@ public partial class LinkWindow : Window
             Text = "手机", FontWeight = FontWeights.SemiBold, FontSize = 12,
             Margin = new Thickness(2, 8, 0, 0),
         });
-        var list = devices?.OfType<JsonObject>().ToArray() ?? [];
+        var list = devices?.OfType<JsonObject>()
+            .Where(d => Text(d, "state") != "REVOKED").ToArray() ?? [];
         if (list.Length == 0)
         {
             DeviceList.Children.Add(new TextBlock

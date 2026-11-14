@@ -149,7 +149,9 @@ public static class TrayMenuModel
         {
             foreach (var device in devices)
             {
-                var active = Text(device, "state") == "ACTIVE";
+                var state = Text(device, "state");
+                if (state == "REVOKED") continue;
+                var active = state == "ACTIVE";
                 var grant = Text(device, "deviceGrantId");
                 var label = Text(device, "label") ?? grant?[..8] ?? "手机";
                 items.Add(new(TrayMenuEntryKind.Submenu, label,

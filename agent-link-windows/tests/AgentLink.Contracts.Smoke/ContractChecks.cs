@@ -166,7 +166,7 @@ internal static class ContractChecks
         var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], null))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
         if (phone[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "iPhone-吴", Detail: "在线", DetailAccent: true }
-            || phone[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "g2-abcde", Detail: "不可用" }
+            || phone[1].Kind != TrayMenuEntryKind.Separator
             || phone[0].Children!.FirstOrDefault(e => e.Text == "取消配对…") is not
                 { Kind: TrayMenuEntryKind.Submenu } revoke
             || !revoke.Children!.Any(e => e is { Action: "revokeDevice", Id: "g1", Text: "确认取消配对" })
