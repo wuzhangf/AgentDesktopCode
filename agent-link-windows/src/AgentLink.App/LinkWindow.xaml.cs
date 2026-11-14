@@ -557,10 +557,10 @@ public partial class LinkWindow : Window
             bitmap.Freeze();
             if (!IsVisible) return;
             Qr.Source = bitmap;
-            QrCard.Visibility = Visibility.Visible;
-            InviteHelp.Text = memberPhase == "LINKED"
+            QrHelp.Text = memberPhase == "LINKED"
                 ? "在 Android 或 iPhone 的 Control 中扫码。会员连接可用时支持任意网络。"
                 : "在 Android 或 iPhone 的 Control 中扫码。请连接同一个局域网。";
+            QrOverlay.Visibility = Visibility.Visible;
         }
         catch (Exception error) when (IsUnavailable(error))
         {
@@ -607,11 +607,12 @@ public partial class LinkWindow : Window
         await RefreshAsync();
     }
 
+    private void QrClose_Click(object sender, RoutedEventArgs e) => ClearInvite();
+
     private void ClearInvite()
     {
-        if (Qr.Source is not null) InviteHelp.Text = "";
         Qr.Source = null;
-        QrCard.Visibility = Visibility.Collapsed;
+        QrOverlay.Visibility = Visibility.Collapsed;
         inviteExpires = 0;
     }
 
