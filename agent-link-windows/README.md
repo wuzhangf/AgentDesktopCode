@@ -22,4 +22,14 @@ The brand vector master is `src/AgentLink.App/Assets/Brand.xaml`. After editing 
 
 Keep the three-part product version in `Directory.Build.props` and `AgentLink.wxs` synchronized. PE file versions use `1.<product version>` because the first preview shipped `1.0.0.0`; Windows Installer must see increasing file versions when upgrading that preview. The packaging script checks both versions before producing an MSI.
 
+State-root startup regression checks run without opening a UI or touching user data:
+
+```powershell
+dotnet build agent-link-windows/tests/AgentLink.Contracts.Smoke
+foreach ($case in 'absent','empty','whitespace','explicit') {
+    dotnet run --no-build --project agent-link-windows/tests/AgentLink.Contracts.Smoke -- $case
+    if ($LASTEXITCODE) { throw "State-root case failed: $case" }
+}
+```
+
 The preview supports an explicitly attached Worker and direct connectivity. The membership connector, managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

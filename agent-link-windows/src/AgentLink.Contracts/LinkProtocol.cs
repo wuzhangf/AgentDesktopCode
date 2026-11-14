@@ -15,15 +15,21 @@ public sealed record LinkStatus(bool Ready, string Message, string Computer, str
 public static class LinkProtocol
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    public static string Root { get; } = Path.GetFullPath(
-        Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_STATE") ??
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Steercrew", "AgentLink"));
+    public static string Root { get; } = StateRoot();
 
     public static string Instance { get; } = InstanceId();
     public static string Pipe => "Steercrew.AgentLink." + Instance;
     public static string HostLock => @"Global\Steercrew.AgentLink.Host." + Instance;
     public static string UiLock => @"Local\Steercrew.AgentLink.Tray." + Instance;
     public static string UiPipe => Pipe + ".tray." + System.Diagnostics.Process.GetCurrentProcess().SessionId;
+
+    private static string StateRoot()
+    {
+        var configured = Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_STATE");
+        return Path.GetFullPath(string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Steercrew", "AgentLink")
+            : configured);
+    }
 
     private static string InstanceId()
     {
