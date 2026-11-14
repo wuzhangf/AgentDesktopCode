@@ -260,7 +260,7 @@ function isRevisionChanged(error: unknown): boolean {
  */
 export function useHistorySessionDetail(sessionId: string | null,
     capabilities: DesktopCapabilities | null | undefined,
-    options: { pageSize?: number } = {}): HistorySessionDetailState {
+    options: { pageSize?: number; poll?: boolean } = {}): HistorySessionDetailState {
   const paginated = historyPaginationAvailable(capabilities);
   const pageSize = options.pageSize ?? 30;
   const scope = historyScope(capabilities);
@@ -269,15 +269,12 @@ export function useHistorySessionDetail(sessionId: string | null,
   const [recoveryAnchor, setRecoveryAnchor] = useState<{ sessionId: string | null; anchor: string | null }>(
     { sessionId: null, anchor: null });
 
-  const legacy = useSession(sessionId, { enabled: !paginated });
+  const legacy = useSession(sessionId, { enabled: !paginated, poll: options.poll });
   const metadata = useQuery({
     queryKey: historyKeys.sessionMetadata(scope, sessionId ?? 'none'),
     enabled: paginated && sessionId !== null,
     staleTime: 15_000,
-    // Ordinary chat has no Run and the service commits the turn only after
-    // the synchronous model call returns. The selected detail therefore gets
-    // the same small polling safety net as Run-backed conversations.
-    refetchInterval: sessionId !== null ? 2_000 : false,
+    refetchInterval: sessionId !== null && options.poll ? 5_000 : false,
     refetchOnReconnect: true,
     queryFn: async () => unwrap(await window.codeAgentDesktop.getSessionMetadata(sessionId as string)) as SessionMetadataResponse
   });
@@ -310,10 +307,7 @@ export function useHistorySessionDetail(sessionId: string | null,
     // not through forward paging (§7.3: a plain after-cursor would miss old
     // message edits).
     getNextPageParam: () => undefined,
-    // Poll only the selected conversation. This also covers ordinary chat,
-    // whose model call has no activeRunId and therefore cannot be driven by a
-    // Run transition.
-    refetchInterval: sessionId !== null ? 2_000 : false,
+    refetchInterval: sessionId !== null && options.poll ? 5_000 : false,
     refetchOnReconnect: true,
     staleTime: 30_000
   });

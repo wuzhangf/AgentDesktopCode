@@ -114,7 +114,7 @@ export function toCanonicalSessionContract(
     interactionMode: form.intent === 'PLAN' ? 'SPEC' : 'ACT',
     executionMode: inspectOnly ? 'INSPECT' : 'MODIFY',
     autonomyLevel: inspectOnly ? 'OFF' : form.autonomy,
-    verificationLevel: inspectOnly ? 'NONE' : (form.verification === 'NONE' ? 'VERIFY' : form.verification),
+    verificationLevel: inspectOnly ? 'NONE' : form.verification,
     writeAllow,
     writeForbid: (form.writeForbid ?? []).map((entry) => entry.trim()).filter(Boolean),
     ...(form.policyFingerprint?.trim() ? { policyFingerprint: form.policyFingerprint.trim() } : {}),
@@ -148,7 +148,7 @@ export function intentDescription(intent: SessionIntent): string {
   switch (intent) {
     case 'ASK': return '读取项目、解释代码，不修改工作区';
     case 'PLAN': return '整理目标、范围和步骤，等待确认后再实施';
-    case 'CODE': return '在受控范围内修改代码，并留下验证证据';
+    case 'CODE': return '在受控范围内修改代码';
   }
 }
 

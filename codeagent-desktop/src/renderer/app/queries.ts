@@ -438,15 +438,11 @@ export function useSessions(options?: { enabled?: boolean }) {
   });
 }
 
-export function useSession(sessionId: string | null, options?: { enabled?: boolean }) {
+export function useSession(sessionId: string | null, options?: { enabled?: boolean; poll?: boolean }) {
   return useQuery({
     queryKey: ['sessions', sessionId],
     enabled: (options?.enabled ?? true) && sessionId !== null,
-    // Ordinary chat commits its turn only after the synchronous model call
-    // returns and has no Run to advertise. Keep the selected legacy detail
-    // warm so a missed event cannot leave the transcript stale until the next
-    // navigation.
-    refetchInterval: sessionId !== null ? 2_000 : false,
+    refetchInterval: sessionId !== null && options?.poll ? 5_000 : false,
     refetchOnReconnect: true,
     queryFn: async () => {
       const session = unwrap(await window.codeAgentDesktop.getSession(sessionId as string)) as SessionLike;
@@ -534,21 +530,7 @@ export function useRuns(query: { workspaceAlias?: string; sessionId?: string }, 
       };
       return (response.items ?? []).map(decodeRunLike);
     },
-    // Safety net for a missed durable frame: every non-terminal state must
-    // keep polling, including approval waits.  The previous predicate only
-    // covered RUNNING/QUEUED, so a run could stop refreshing exactly when it
-    // entered WAITING_APPROVAL and leave the composer looking stuck.
-    refetchInterval: (query) => {
-      if (options?.poll) return 2_000;
-      const items = query.state.data ?? [];
-      const hasLive = items.some((run) => [
-        'RUNNING',
-        'QUEUED',
-        'WAITING_APPROVAL',
-        'WAITING_BUDGET_APPROVAL'
-      ].includes(run.state));
-      return hasLive ? 2_000 : false;
-    },
+    refetchInterval: options?.poll ? 5_000 : false,
     refetchOnReconnect: true
   });
 }
@@ -629,12 +611,13 @@ export function useAutomationControl(sessionId: string | null, enabled = true) {
   });
 }
 
-export function useSessionApprovals(sessionId: string | null, enabled = true) {
+export function useSessionApprovals(sessionId: string | null, enabled = true, poll = true) {
   return useQuery({
     queryKey: ['approvals', sessionId],
     enabled: enabled && sessionId !== null && typeof window.codeAgentDesktop.listApprovals === 'function',
     retry: false,
     refetchInterval: (query) => {
+      if (!poll) return false;
       const items = (query.state.data as ApprovalsListResponse | undefined)?.items ?? [];
       // The first request can race the Product's approval creation. Keep a
       // lightweight selected-session poll even when the previous snapshot
@@ -1180,15 +1163,8 @@ export function useRunActivities(runId: string | null, options?: { enabled?: boo
     queryKey: ['activities', runId],
     enabled: (options?.enabled ?? true) && runId !== null,
     retry: 1,
-    // The snapshot is the normal durable fold. While a Run is active, keep a
-    // bounded read-after-write fallback so a temporarily unavailable SSE
-    // stream cannot hide all tool execution from the conversation.  `complete`
-    // means the current snapshot page is complete; it does not mean the Run
-    // is terminal, so an active Run must continue polling for new activities.
-    refetchInterval: (query) => {
-      if (!options?.live) return false;
-      return 2_000;
-    },
+    // Poll only while an active observer lacks a connected event stream.
+    refetchInterval: options?.live ? 2_000 : false,
     refetchOnReconnect: true,
     staleTime: Infinity,
     queryFn: async () => unwrap(await window.codeAgentDesktop.getRunActivities(runId as string)) as RunActivitySnapshot
@@ -1468,6 +1444,7 @@ export function useDurableEvents(
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;
+    const terminalRefreshes = new Map<string | null, number>();
     const unsubscribeEvents = window.codeAgentDesktop.onDurableEvents((frames) => {
       for (const frame of frames) {
         if (sinkRef) {
@@ -1480,22 +1457,23 @@ export function useDurableEvents(
         // only consumers. No history HTTP at any rate (design R-gate G03).
         if (frame.type === 'run.output.append' || frame.type === 'run.reasoning.append') continue;
 
-        // 2. Terminal: version-driven authoritative read (§8.4), preempting
-        // the coalescing window once per terminal transition, plus one
-        // bounded delayed re-sync for post-terminal message persistence.
         if (frame.type === 'run.terminal') {
           coordinator.markDirty({ kind: 'attention' }, 'priority');
-          readAfterTerminal(queryClient, runId, sessionId, aggregateVersion);
-          window.setTimeout(() => {
-            void queryClient.invalidateQueries({ queryKey: ['runs'] });
+          readAfterTerminal(queryClient, runId, aggregateVersion);
+          // The run lifecycle can report terminal before its assistant
+          // message commits. Coalesce the two terminal publishers into
+          // one delayed transcript read for the affected conversation.
+          const pendingRefresh = terminalRefreshes.get(runId);
+          if (pendingRefresh !== undefined) window.clearTimeout(pendingRefresh);
+          terminalRefreshes.set(runId, window.setTimeout(() => {
+            terminalRefreshes.delete(runId);
             refreshSessionScope(queryClient, sessionId);
-            void queryClient.invalidateQueries(
-              runId ? { queryKey: ['activities', runId] } : { queryKey: ['activities'] });
-            void queryClient.invalidateQueries(
-              runId ? { queryKey: ['reasoning', runId] } : { queryKey: ['reasoning'] });
-            void queryClient.invalidateQueries(
-              runId ? { queryKey: ['output', runId] } : { queryKey: ['output'] });
-          }, 800);
+            if (runId) {
+              for (const projection of ['activities', 'reasoning', 'output']) {
+                void queryClient.invalidateQueries({ queryKey: [projection, runId] });
+              }
+            }
+          }, 800));
           continue;
         }
 
@@ -1520,6 +1498,7 @@ export function useDurableEvents(
           continue;
         }
 
+        if (frame.type === 'run.phase.changed') continue;
         if (frame.type.startsWith('run.')) {
           coordinator.markDirty({ kind: 'runs' });
           if (sessionId) coordinator.markDirty({ kind: 'session-detail', sessionId });
@@ -1540,6 +1519,7 @@ export function useDurableEvents(
         // design §8.2); they must never fan out into a global refetch.
         if (frame.type === 'settings.updated') {
           void queryClient.invalidateQueries({ queryKey: settingsKeys.product });
+          void queryClient.invalidateQueries({ queryKey: settingsKeys.modelCatalog });
           continue;
         }
         if (frame.type === 'policy.updated') {
@@ -1550,8 +1530,11 @@ export function useDurableEvents(
         if (frame.type.startsWith('approval.')) {
           // Approval events are projections only; the next query obtains the
           // authoritative version and allowedActions from the service.
-          void queryClient.invalidateQueries({ queryKey: ['approvals'] });
+          void queryClient.invalidateQueries({
+            queryKey: sessionId ? ['approvals', sessionId] : ['approvals']
+          });
           void queryClient.invalidateQueries({ queryKey: ['approval'] });
+          if (sessionId) coordinator.markDirty({ kind: 'session-detail', sessionId }, 'priority');
           coordinator.markDirty({ kind: 'attention' }, 'priority');
           continue;
         }
@@ -1580,13 +1563,17 @@ export function useDurableEvents(
         setState('CONNECTING');
         return;
       }
-      if (status.status === 'CONNECTED') setState('CONNECTED');
+      if (status.status === 'CONNECTED') {
+        coordinator?.setPaused(document.hidden);
+        setState('CONNECTED');
+      }
       else if (status.status === 'RECONNECTING') setState('RECONNECTING');
       else if (status.status === 'DISCONNECTED') setState('DISCONNECTED');
     });
     return () => {
       unsubscribeEvents();
       unsubscribeStatus();
+      for (const timer of terminalRefreshes.values()) window.clearTimeout(timer);
     };
   }, [queryClient, sinkRef, resyncRef]);
 
@@ -1600,15 +1587,15 @@ function refreshSessionScope(
   queryClient: ReturnType<typeof useQueryClient>,
   sessionId: string | null
 ): void {
-  void queryClient.refetchQueries({ queryKey: ['sessions'], exact: true });
+  void queryClient.refetchQueries({ queryKey: ['sessions'], exact: true, type: 'active' });
   if (sessionId != null) {
-    void queryClient.refetchQueries({ queryKey: ['sessions', sessionId], exact: true });
+    void queryClient.refetchQueries({ queryKey: ['sessions', sessionId], exact: true, type: 'active' });
     void queryClient.refetchQueries({
       predicate: (query) => isSessionHistoryQuery(query.queryKey, sessionId),
       type: 'active'
     });
   } else {
-    void queryClient.refetchQueries({ queryKey: ['sessions'] });
+    void queryClient.refetchQueries({ queryKey: ['sessions'], type: 'active' });
   }
 }
 
@@ -1645,51 +1632,22 @@ function isSessionHistoryQuery(queryKey: readonly unknown[], sessionId: string):
 function readAfterTerminal(
   queryClient: ReturnType<typeof useQueryClient>,
   runId: string | null,
-  sessionId: string | null,
   targetVersion: number | null
 ): void {
   void (async () => {
-    try {
-      // No version evidence (older service or flat fixture): one best-effort
-      // refetch plus the session scope, never a loop.
-      if (runId == null || targetVersion == null) {
-        await queryClient.refetchQueries({ queryKey: ['runs'] });
-        refreshSessionScope(queryClient, sessionId);
-        return;
-      }
-      const observed = () => {
-        for (const [, data] of queryClient.getQueriesData<RunLike[]>({ queryKey: ['runs'] })) {
-          const run = data?.find((item) => item.runId === runId);
-          if (run && run.stateVersion >= targetVersion
-            && (run.delivery == null || run.delivery.artifactsReady === true)) {
-            return true; // authoritative state + artifacts readable
-          }
-        }
-        return false;
-      };
-      if (observed()) return;
-      await queryClient.refetchQueries({ queryKey: ['runs'] });
-      // One bounded retry: the terminal intent commits state before this
-      // frame is relayed, but a slow store write can still lose the race once.
-      if (!observed()) await queryClient.refetchQueries({ queryKey: ['runs'] });
-      // The owning session converges precisely; other cached sessions keep
-      // their content (terminal events must not storm every history page).
-      refreshSessionScope(queryClient, sessionId);
-      await queryClient.refetchQueries(
-        runId != null ? { queryKey: ['evidence', runId] } : { queryKey: ['evidence'] });
-      await queryClient.refetchQueries(
-        runId != null ? { queryKey: ['diff', runId] } : { queryKey: ['diff'] });
-      await queryClient.refetchQueries(
-        runId != null ? { queryKey: ['activities', runId] } : { queryKey: ['activities'] });
-      await queryClient.refetchQueries(
-        runId != null ? { queryKey: ['reasoning', runId] } : { queryKey: ['reasoning'] });
-      await queryClient.refetchQueries(
-        runId != null ? { queryKey: ['output', runId] } : { queryKey: ['output'] });
-    } catch {
-      // Refresh is best-effort; a broken refetch must not
-      // wedge the UI in a refresh loop.
+    const observed = () => {
+      if (runId == null || targetVersion == null) return false;
+      return queryClient.getQueriesData<RunLike[]>({ queryKey: ['runs'] }).some(([, runs]) =>
+        runs?.some(run => run.runId === runId && run.stateVersion >= targetVersion));
+    };
+    if (observed()) return;
+    await queryClient.refetchQueries({ queryKey: ['runs'], type: 'active' });
+    if (targetVersion !== null && !observed()) {
+      await queryClient.refetchQueries({ queryKey: ['runs'], type: 'active' });
     }
-  })();
+  })().catch(() => {
+    // A later lifecycle event or reconnect can refresh a failed read.
+  });
 }
 
 // Live output/reasoning folds live in the DOM-free projection module so
@@ -1741,8 +1699,8 @@ export interface RunReasoningSnapshot {
 /**
  * Reasoning snapshot fold. Same gating as activities: historical reasoning
  * loads only when the user expands its entry; while a Run is active a
- * bounded poll covers replay after reconnect, and run.terminal triggers one
- * authoritative refetch through readAfterTerminal.
+ * bounded poll covers event-stream interruption, and run.terminal triggers one
+ * refresh of the affected snapshot.
  */
 export function useRunReasoning(runId: string | null, options?: { enabled?: boolean; live?: boolean }) {
   return useQuery({
@@ -1778,8 +1736,8 @@ export interface RunOutputSnapshot {
 
 /**
  * Output snapshot fold. Same gating as the reasoning snapshot: expanded
- * history loads on demand, live runs poll, and run.terminal triggers one
- * authoritative refetch through readAfterTerminal.
+ * history loads on demand, interrupted streams poll, and run.terminal triggers one
+ * refresh of the affected snapshot.
  */
 export function useRunOutput(runId: string | null, options?: { enabled?: boolean; live?: boolean }) {
   return useQuery({

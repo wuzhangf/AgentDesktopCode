@@ -74,6 +74,8 @@ const api: DesktopApi = {
   getSession: (sessionId) => ipcRenderer.invoke('app/sessions/get', { sessionId }),
   createSession: (body, idempotencyKey) => ipcRenderer.invoke('app/sessions/create', idempotencyKey === undefined ? body : { body, idempotencyKey }),
   patchSession: (sessionId, body) => ipcRenderer.invoke('app/sessions/patch', { sessionId, body }),
+  lookupSessionMessageReceipt: (sessionId, idempotencyKey) =>
+    ipcRenderer.invoke('app/sessions/message-receipt', { sessionId, idempotencyKey }),
   sendSessionMessage: (sessionId, body, idempotencyKey) => ipcRenderer.invoke('app/sessions/message', idempotencyKey === undefined ? { sessionId, body } : { sessionId, body, idempotencyKey }),
   getSessionAttachmentContent: (sessionId, messageId, attachmentId) => ipcRenderer.invoke('app/sessions/attachment-content', { sessionId, messageId, attachmentId }),
   getSessionAttachmentBytes: (sessionId, messageId, attachmentId) => ipcRenderer.invoke('app/sessions/attachment-bytes', { sessionId, messageId, attachmentId }),

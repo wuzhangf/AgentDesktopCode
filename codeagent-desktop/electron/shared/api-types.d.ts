@@ -11,6 +11,7 @@ export interface JsonObject {
 }
 
 import type {
+  OperationReceiptResponse,
   ModelCatalogResponse,
   AgentProfilesResponse,
   PermissionMode,
@@ -834,6 +835,7 @@ export interface DesktopApi {
   getMessageContentPage(sessionId: string, messageId: string, query?: { cursor?: string; maxBytes?: number }): Promise<DesktopResult<MessageContentPageResponse>>;
   createSession(body: SessionCreateRequest, idempotencyKey?: string): Promise<DesktopResult<SessionResponse>>;
   patchSession(sessionId: string, body: SessionPatchRequest): Promise<DesktopResult<SessionResponse>>;
+  lookupSessionMessageReceipt(sessionId: string, idempotencyKey: string): Promise<DesktopResult<OperationReceiptResponse>>;
   sendSessionMessage(sessionId: string, body: SessionMessageRequest, idempotencyKey?: string): Promise<DesktopResult<SessionMessageResponse>>;
   /** 长输入设计 §6.3：已接受附件的内容读取（text/plain；Markdown 不渲染为 HTML）。 */
   getSessionAttachmentContent(sessionId: string, messageId: string, attachmentId: string): Promise<DesktopResult<string>>;

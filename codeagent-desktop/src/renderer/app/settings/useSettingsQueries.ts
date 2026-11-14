@@ -66,7 +66,6 @@ export function useModelCatalog(enabled = true) {
     queryKey: settingsKeys.modelCatalog,
     enabled,
     retry: false,
-    refetchInterval: 2000,
     queryFn: async () => unwrap(await window.codeAgentDesktop.getModelCatalog()) as ModelCatalogResponse
   });
 }
@@ -239,6 +238,7 @@ export function useUpsertModelProvider() {
       unwrap(await window.codeAgentDesktop.upsertModelProvider(input.providerId, input.body)) as ManagedModelProvider,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: settingsKeys.managedModelProviders });
+      void queryClient.invalidateQueries({ queryKey: settingsKeys.modelCatalog });
     }
   });
 }
@@ -251,6 +251,7 @@ export function useDeleteModelProvider() {
         input.providerId, input.expectedRevision, input.replaceDefault)) as ManagedDeleteResponse,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: settingsKeys.managedModelProviders });
+      void queryClient.invalidateQueries({ queryKey: settingsKeys.modelCatalog });
       void queryClient.invalidateQueries({ queryKey: settingsKeys.environmentFeatures });
     }
   });
@@ -263,6 +264,7 @@ export function useUpsertProviderModel() {
       unwrap(await window.codeAgentDesktop.upsertProviderModel(input.providerId, input.modelId, input.body)) as ManagedModel,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: settingsKeys.managedModelProviders });
+      void queryClient.invalidateQueries({ queryKey: settingsKeys.modelCatalog });
     }
   });
 }
@@ -275,6 +277,7 @@ export function useDeleteProviderModel() {
         input.providerId, input.modelId, input.expectedRevision, input.replaceDefault)) as ManagedDeleteResponse,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: settingsKeys.managedModelProviders });
+      void queryClient.invalidateQueries({ queryKey: settingsKeys.modelCatalog });
       void queryClient.invalidateQueries({ queryKey: settingsKeys.environmentFeatures });
     }
   });

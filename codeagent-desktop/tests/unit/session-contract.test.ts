@@ -47,7 +47,7 @@ describe('session contract mapper', () => {
     });
   });
 
-  it('maps Code to a bounded write contract and upgrades unspecified verification', () => {
+  it('maps Code to a bounded write contract with the requested verification', () => {
     expect(toCanonicalSessionContract({
       ...baseForm,
       intent: 'CODE',
@@ -57,7 +57,7 @@ describe('session contract mapper', () => {
       interactionMode: 'ACT',
       executionMode: 'MODIFY',
       autonomyLevel: 'MEDIUM',
-      verificationLevel: 'VERIFY',
+      verificationLevel: 'NONE',
       writeAllow: ['src', 'tests/']
     });
     expect(toCanonicalSessionContract({

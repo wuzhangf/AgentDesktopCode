@@ -584,6 +584,17 @@ export const sessionsPatchDefinition: IpcDefinition<{ sessionId: string; body: R
   }
 };
 
+export const sessionMessageReceiptDefinition: IpcDefinition<{ sessionId: string; idempotencyKey: string }> = {
+  channel: IPC_CHANNELS.sessionMessageReceipt,
+  validate: (payload) => {
+    const session = requireId('sessionMessageReceipt', payload, 'sessionId');
+    if (!session.ok) return session;
+    const key = requireId('sessionMessageReceipt', payload, 'idempotencyKey');
+    if (!key.ok) return key;
+    return { ok: true, value: { sessionId: session.value, idempotencyKey: key.value } };
+  }
+};
+
 export const sessionsMessageDefinition: IpcDefinition<{ sessionId: string; body: Record<string, unknown>; idempotencyKey?: string }> = {
   channel: IPC_CHANNELS.sessionsMessage,
   validate: (payload) => {

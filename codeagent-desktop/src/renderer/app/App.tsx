@@ -119,8 +119,8 @@ import {
 import { runStateIconName, runStateLabel, runStateTone, sessionStatusView } from './sessionStatus';
 import { Popover } from './ui/Popover';
 import { StatusBadge, badgeTone } from './ui/StatusBadge';
-import type { ApprovalsListResponse, DesktopCapabilities, MessageContentPageResponse, PendingSandboxApproval, PendingTerminalApproval, PermissionMode, SessionMessagePageResponse, SessionMessageResponse } from '../../../electron/shared/api-types';
-import type { ModelCatalogResponse, SessionModelSettings } from '../../../packages/protocol/src/index.js';
+import type { ApprovalsListResponse, DesktopCapabilities, MessageContentPageResponse, PendingSandboxApproval, PendingTerminalApproval, PermissionMode, SessionMessageResponse } from '../../../electron/shared/api-types';
+import type { ModelCatalogResponse, OperationReceiptResponse, SessionModelSettings } from '../../../packages/protocol/src/index.js';
 
 /**
  * Session-first desktop workbench (UI Refresh R1-R9).
@@ -1072,10 +1072,9 @@ function HistoricalRunActivity(props: {
 }): React.JSX.Element | null {
   // A finished turn keeps its process panel collapsed — it never degrades to
   // a bare entry button (design 2026-09-19: 终态只折叠不消失). The snapshot
-  // loads when the turn mounts; the virtual window mounts only the visible
-  // band, so reads stay bounded by the viewport instead of fanning out over
-  // the whole history.
-  const query = useRunActivities(props.canRead ? props.runId : null);
+  // loads when the user opens the execution details.
+  const [expanded, setExpanded] = useState(false);
+  const query = useRunActivities(props.canRead && expanded ? props.runId : null);
   const items = props.items && props.items.length > 0
     ? props.items
     : (query.data?.items ?? []);
@@ -1084,7 +1083,7 @@ function HistoricalRunActivity(props: {
   // reasoning snapshots load once the run's activity state is known — cached
   // items prove it immediately; a resolved (even empty) snapshot means the
   // text channels may still carry this run's only content.
-  const wantsRoundData = useRounds && props.canRead && (items.length > 0 || query.data !== undefined);
+  const wantsRoundData = expanded && useRounds && props.canRead && (items.length > 0 || query.data !== undefined);
   const outputQuery = useRunOutput(wantsRoundData ? props.runId : null, { enabled: wantsRoundData });
   const reasoningQuery = useRunReasoning(wantsRoundData ? props.runId : null, { enabled: wantsRoundData });
   useEffect(() => {
@@ -1094,6 +1093,10 @@ function HistoricalRunActivity(props: {
     return props.unavailableReason
       ? <div className="activity-group activity-unavailable" data-testid="activity-unavailable">当前服务未提供执行明细（{props.unavailableReason}）</div>
       : null;
+  }
+  if (!expanded) {
+    return <div className="message-turn-activity"><button type="button" className="secondary-button"
+      onClick={() => setExpanded(true)}>查看执行过程</button></div>;
   }
   const incomplete = query.data && query.data.complete === false
     ? <span className="run-meta">活动快照不完整{query.data.reasonCode ? `（${activityHistoryReasonLabel(query.data.reasonCode)}）` : ''}，仅显示已折叠的有限快照。</span>
@@ -1566,7 +1569,7 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
   const [density, setDensity] = useState<'SUMMARY' | 'STANDARD' | 'DETAILED'>('STANDARD');
   const [selectedWorkspaceAlias, setSelectedWorkspaceAlias] = useState<string | null>(null);
   const [newSessionAgentProfileId, setNewSessionAgentProfileId] = useState('default');
-  const [newSessionReadonlyResearchMode, setNewSessionReadonlyResearchMode] = useState<'AUTO' | 'OFF'>('AUTO');
+  const [newSessionReadonlyResearchMode, setNewSessionReadonlyResearchMode] = useState<'AUTO' | 'OFF'>('OFF');
   const [newSessionModelAlias, setNewSessionModelAlias] = useState<string | null>(null);
   const [newSessionModelTouched, setNewSessionModelTouched] = useState(false);
   const [composerModelAlias, setComposerModelAlias] = useState<string | null>(null);
@@ -1609,13 +1612,6 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
   // and detail routes stay the default until the service capability
   // advertises the paginated contract.
   const historySessions = useHistorySessions(props.capabilities);
-  const historyDetail = useHistorySessionDetail(selection?.sessionId ?? null, props.capabilities);
-  const runs = useRuns({}, { poll: selection !== null });
-  const attention = useAttention();
-  const executionPolicyProjectId = projects.data?.find((project) => project.workspaceAlias === historyDetail.session?.workspaceAlias)?.projectId ?? null;
-  const executionPolicy = useExecutionPolicy(selection?.sessionId ?? null, executionPolicyProjectId);
-  const automationControl = useAutomationControl(selection?.sessionId ?? null);
-  const unifiedApprovals = useSessionApprovals(selection?.sessionId ?? null);
   // Mission plan/replan approvals are rendered in the approval floating panel.
   // Keep the query keyed by session so a fast session switch cannot leak a card.
   const missions = useMissions(selection?.sessionId ?? null);
@@ -1688,6 +1684,14 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
   }, []);
 
   const connection = useDurableEvents(onResync, handleFrame);
+  const pollFallback = connection !== 'CONNECTED';
+  const historyDetail = useHistorySessionDetail(selection?.sessionId ?? null, props.capabilities, { poll: pollFallback });
+  const runs = useRuns({}, { poll: pollFallback });
+  const attention = useAttention();
+  const executionPolicyProjectId = projects.data?.find((project) => project.workspaceAlias === historyDetail.session?.workspaceAlias)?.projectId ?? null;
+  const executionPolicy = useExecutionPolicy(selection?.sessionId ?? null, executionPolicyProjectId);
+  const automationControl = useAutomationControl(selection?.sessionId ?? null);
+  const unifiedApprovals = useSessionApprovals(selection?.sessionId ?? null, true, pollFallback);
 
   // Desktop-owned appearance preferences (Main store, offline-safe). The
   // Appearance page streams draft previews through appearancePreview; null
@@ -1779,7 +1783,7 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
     setNewSessionGoal('');
     setSelectedWorkspaceAlias(null);
     setNewSessionAgentProfileId('default');
-    setNewSessionReadonlyResearchMode('AUTO');
+    setNewSessionReadonlyResearchMode('OFF');
     setNewSessionModelAlias(null);
     setNewSessionModelTouched(false);
     setNewSessionStartedAt(null);
@@ -2273,7 +2277,7 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
           initialWorkspaceListing: preferencesQuery.data?.initialWorkspaceListing !== false,
           directoryPolicyVersion: 2,
           directories: [],
-          verificationLevel: alias ? 'VERIFY' : 'NONE',
+          verificationLevel: 'NONE',
           ...(workspacePreflight ? {
             policyFingerprint: workspacePreflight.policyFingerprint,
             preflightRevision: workspacePreflight.revision,
@@ -2361,7 +2365,7 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
         }
         setNewSessionGoal('');
         setNewSessionAgentProfileId('default');
-        setNewSessionReadonlyResearchMode('AUTO');
+        setNewSessionReadonlyResearchMode('OFF');
         setNewSessionModelAlias(null);
         setNewSessionModelTouched(false);
         setPendingAttachments([]);
@@ -3140,34 +3144,24 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
     void queryClient.invalidateQueries({ queryKey: ['runs'] });
   }
 
-  /**
-   * Post-timeout reconciliation: the send request may have been accepted
-   * even though its response never arrived. The history tail is
-   * authoritative — a row carrying our clientMessageId means the service
-   * accepted the message, so the UI reports "still processing" instead of
-   * inviting a retry.
-   */
-  async function reconcileSendOutcome(sessionId: string, clientMessageId?: string): Promise<void> {
-    if (!clientMessageId) {
-      setBanner('发送超时，服务可能仍在处理；请重试。系统会复用同一幂等键，不会重复发送。');
-      return;
-    }
+  async function reconcileSendOutcome(input: SendMessageInput): Promise<void> {
     try {
-      const page = unwrap(
-        await window.codeAgentDesktop.pageSessionMessages(sessionId, { limit: 50 })
-      ) as SessionMessagePageResponse;
-      const accepted = (page?.items ?? []).some((item) => item.clientMessageId === clientMessageId);
-      if (accepted) {
-        setBanner('服务已接收该消息，仍在处理中。');
-        invalidateSessionHistory(queryClient, sessionId);
-        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        void queryClient.invalidateQueries({ queryKey: ['runs'] });
-      } else {
-        setBanner('发送超时，服务未接收该消息；请重试。系统会复用同一幂等键，不会重复发送。');
+      if (!input.clientMessageId) throw new Error('MISSING_MESSAGE_KEY');
+      const receipt = unwrap<OperationReceiptResponse>(await window.codeAgentDesktop.lookupSessionMessageReceipt(
+        input.sessionId, input.clientMessageId));
+      if (receipt.status === 'APPLIED') {
+        finishSendSuccess(input, receipt.result as SessionMessageResponse);
+        setBanner(null);
+        return;
+      }
+      if (receipt.status === 'NOT_APPLIED') {
+        setBanner('服务确认未接收这条消息，可以用原请求重试。');
+        return;
       }
     } catch {
-      setBanner('发送超时，且服务状态确认失败；请稍后重试。系统会复用同一幂等键，不会重复发送。');
+      // A failed lookup cannot rule out an in-flight send.
     }
+    setBanner('发送结果待确认。重试会沿用同一条消息。');
   }
 
   function finishSendError(input: SendMessageInput, error: unknown): void {
@@ -3207,10 +3201,9 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
       setBanner(`发送失败：${explained}`);
     } else if (isRequestTimeout(error)) {
       // A transport timeout means the outcome is unknown, not failed:
-      // reconcile against the authoritative history tail before deciding
-      // whether a retry is safe to offer.
+      // look up the original request before offering a retry.
       setBanner('发送超时，正在确认服务是否已接收…');
-      void reconcileSendOutcome(input.sessionId, input.clientMessageId);
+      void reconcileSendOutcome(input);
     } else {
       setBanner(`发送失败：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -3814,8 +3807,10 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
       && (message.clientMessageId === pendingTurnForSession.clientMessageId
         || (message.clientMessageId == null && message.content === pendingTurnForSession.content))));
   const showPendingTurn = Boolean(pendingTurnForSession && !pendingTurnAlreadyInHistory);
+  const ordinaryTurnActive = (session?.messages ?? []).some(message =>
+    message.role === 'user' && !message.runId && message.status === 'RUNNING');
   const sendingSelectedSession = Boolean(
-    selection?.sessionId && sendingSessionIds.has(selection.sessionId)
+    selection?.sessionId && (sendingSessionIds.has(selection.sessionId) || ordinaryTurnActive)
   );
   const composerRunActive = Boolean(selectedActiveRun && (selectedActiveRun.state === 'RUNNING' || selectedActiveRun.state === 'QUEUED'));
   // While this session has a live run the send button becomes a stop
@@ -3980,17 +3975,17 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
     props.capabilities ? false : true
   );
   const activeActivitySnapshot = useRunActivities(canReadActivities ? (selectedActiveRunId ?? null) : null, {
-    live: selectedRunIsLive
+    live: selectedRunIsLive && pollFallback
   });
   // Reasoning mirrors the activity read family: the journal snapshot is the
   // authoritative fold, the SSE reducer provides lower-latency live chunks.
   const activeReasoningSnapshot = useRunReasoning(canReadActivities ? (selectedActiveRunId ?? null) : null, {
-    live: selectedRunIsLive
+    live: selectedRunIsLive && pollFallback
   });
   // Per-round visible output (design 2026-09-19 §5.5-B): same gating as
   // reasoning — a bounded live poll plus the terminal refetch.
   const activeOutputSnapshot = useRunOutput(canReadActivities ? (selectedActiveRunId ?? null) : null, {
-    live: selectedRunIsLive
+    live: selectedRunIsLive && pollFallback
   });
   useEffect(() => {
     const snapshot: RunActivitySnapshot | undefined = activeActivitySnapshot.data;
@@ -4651,9 +4646,9 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
                 {newConversationSource === 'NATIVE' && personalChannelAvailable ? <NativeTaskLauncher onCreated={(taskId) => selectNativeTask(taskId)} /> : <>
                 {createSession.isPending && newSessionStartedAt !== null ? <div className="run-progress-status new-session-progress" data-testid="new-session-progress" role="status"><span className="run-progress-elapsed">{formatRunElapsed(Math.max(0, Math.floor((runClock - newSessionStartedAt) / 1_000)))}</span></div> : null}
                 <form className="new-session new-session-form" data-testid="new-session" onSubmit={(event) => { event.preventDefault(); createSession.mutate(); }}>
-                  <div className="new-session-project"><span className="new-session-project-icon"><Icon name="folder" size={15} /></span>{((projects.data ?? []).length === 0 || newSessionWorkspaceAlias) ? <strong>{workspaceName}</strong> : null}{(projects.data ?? []).length > 0 ? <select aria-label="新会话项目" data-testid="new-session-project" value={newSessionWorkspaceAlias} onChange={(event) => { const alias = event.target.value || null; setSelectedWorkspaceAlias(alias); if (!alias) { setNewSessionAgentProfileId('default'); setNewSessionReadonlyResearchMode('AUTO'); } }}><option value="">普通对话（不使用工作区）</option>{(projects.data ?? []).map((project) => <option key={project.workspaceAlias} value={project.workspaceAlias}>{project.displayName ?? project.workspaceAlias}</option>)}</select> : null}</div>
+                  <div className="new-session-project"><span className="new-session-project-icon"><Icon name="folder" size={15} /></span>{((projects.data ?? []).length === 0 || newSessionWorkspaceAlias) ? <strong>{workspaceName}</strong> : null}{(projects.data ?? []).length > 0 ? <select aria-label="新会话项目" data-testid="new-session-project" value={newSessionWorkspaceAlias} onChange={(event) => { const alias = event.target.value || null; setSelectedWorkspaceAlias(alias); if (!alias) { setNewSessionAgentProfileId('default'); setNewSessionReadonlyResearchMode('OFF'); } }}><option value="">普通对话（不使用工作区）</option>{(projects.data ?? []).map((project) => <option key={project.workspaceAlias} value={project.workspaceAlias}>{project.displayName ?? project.workspaceAlias}</option>)}</select> : null}</div>
                  <div className="new-session-specialist" data-testid="new-session-agent-profile">
-                   <label><span>专业智能体</span><select aria-label="专业智能体" value={newSessionAgentProfileId} disabled={!workspaceSelected || createSession.isPending || agentProfiles.isLoading} onChange={(event) => { const id = event.target.value; setNewSessionAgentProfileId(id); const profile = (agentProfiles.data?.profiles ?? []).find((item) => item.id === id); setNewSessionReadonlyResearchMode(profile?.readonlyResearchDefault === 'OFF' ? 'OFF' : 'AUTO'); if (!newSessionModelTouched && profile?.modelSettings?.modelAlias) setNewSessionModelAlias(profile.modelSettings.modelAlias); }}><option value="default">默认智能体</option>{(agentProfiles.data?.profiles ?? []).filter((profile) => profile.id !== 'default').map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
+                   <label><span>专业智能体</span><select aria-label="专业智能体" value={newSessionAgentProfileId} disabled={!workspaceSelected || createSession.isPending || agentProfiles.isLoading} onChange={(event) => { const id = event.target.value; setNewSessionAgentProfileId(id); const profile = (agentProfiles.data?.profiles ?? []).find((item) => item.id === id); setNewSessionReadonlyResearchMode(profile?.readonlyResearchDefault === 'AUTO' ? 'AUTO' : 'OFF'); if (!newSessionModelTouched && profile?.modelSettings?.modelAlias) setNewSessionModelAlias(profile.modelSettings.modelAlias); }}><option value="default">默认智能体</option>{(agentProfiles.data?.profiles ?? []).filter((profile) => profile.id !== 'default').map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
                    <button type="button" className="secondary-button new-session-profile-refresh" onClick={() => { void agentProfiles.refetch(); }} disabled={agentProfiles.isFetching || createSession.isPending}>刷新</button>
                    {selectedAgentProfile && newSessionAgentProfileId !== 'default' ? <span className="new-session-specialist-description">{selectedAgentProfile.description}</span> : null}
                    <label className="new-session-readonly-toggle"><input type="checkbox" checked={newSessionReadonlyResearchMode === 'AUTO'} disabled={!workspaceSelected || createSession.isPending} onChange={(event) => setNewSessionReadonlyResearchMode(event.target.checked ? 'AUTO' : 'OFF')} />自动只读研究</label>
@@ -4773,6 +4768,7 @@ export function Workbench(props: { capabilities?: DesktopCapabilities; protocolV
                       onOpen={() => { if (relatedRun) openGitSurface(relatedRun.runId, 'DIFF'); }}
                     />
                     <RunContinueEntry run={relatedRun ?? null} />
+                    {ordinaryTurnActive ? <p role="status" className="run-meta">正在生成回复…</p> : null}
                     {showPendingTurn ? (
                       <div className="message-turn pending-message-turn" data-testid="pending-message">
                         <ConversationMessage role="user" pending><div className="content"><ContentRenderer text={pendingTurnForSession?.content ?? ''} className="pending-message-text" /></div></ConversationMessage>

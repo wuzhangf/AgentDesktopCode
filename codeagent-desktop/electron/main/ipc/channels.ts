@@ -51,6 +51,7 @@ export const IPC_CHANNELS = {
   sessionsCreate: 'app/sessions/create',
   sessionsPatch: 'app/sessions/patch',
   sessionsMessage: 'app/sessions/message',
+  sessionMessageReceipt: 'app/sessions/message-receipt',
   sessionsAttachmentContent: 'app/sessions/attachment-content',
   sessionsAttachmentBytes: 'app/sessions/attachment-bytes',
   sessionsFork: 'app/sessions/fork',

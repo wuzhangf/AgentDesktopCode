@@ -277,6 +277,7 @@ describe('IPC payload validation (design 6.3)', () => {
       'app/sessions/list',
       'app/sessions/message',
       'app/sessions/message-content',
+      'app/sessions/message-receipt',
       'app/sessions/messages-page',
       'app/sessions/metadata',
       'app/sessions/patch',

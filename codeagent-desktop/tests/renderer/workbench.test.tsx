@@ -94,7 +94,8 @@ function installFakeApi(): void {
         if (sessionId === 'session-aaa') {
           await new Promise((r) => setTimeout(r, 120));
         }
-        return sessions.find((s) => s.sessionId === sessionId);
+        const session = sessions.find((s) => s.sessionId === sessionId);
+        return session && { ...session, messages: session.messages.map(message => ({ ...message })) };
       }),
       createSession: vi.fn(async () => ({ sessionId: 'session-new', sessionVersion: 1 })),
       patchSession: vi.fn(),
@@ -102,6 +103,7 @@ function installFakeApi(): void {
         sentMessages.push({ sessionId, body });
         return { messageId: 'm-new', status: 'ACCEPTED', sessionVersion: 3, eventCursor: 9 };
       }),
+      lookupSessionMessageReceipt: vi.fn(async () => ({ status: 'UNKNOWN' })),
       pageSessionMessages: vi.fn(async (sessionId: string) => ({
         schemaVersion: 'session-message-page/1',
         sessionId,
@@ -380,21 +382,24 @@ describe('workbench selection isolation (design §12.2)', () => {
     });
   });
 
-  it('re-syncs the transcript again shortly after a run terminates', async () => {
+  it('loads the final transcript when the terminal event precedes message storage', async () => {
     renderWorkbench();
     await screen.findByText('Session A');
-    // the open conversation must be the one re-synced
     screen.getByRole('button', { name: /Session A/ }).click();
-    await screen.findByText('message for session A');
-    const getSession = vi.mocked(window.codeAgentDesktop.getSession);
-    const before = getSession.mock.calls.length;
-    for (const listener of listeners.durable) {
-      listener([{ cursor: 9, type: 'run.terminal', payload: { runId: 'run-1', terminationCode: 'COMPLETED' } }]);
-    }
-    // immediate invalidation...
-    await waitFor(() => expect(getSession.mock.calls.length).toBeGreaterThan(before), { timeout: 3000 });
-    // ...plus the delayed re-sync that catches post-terminal persistence
-    await waitFor(() => expect(getSession.mock.calls.length).toBeGreaterThan(before + 1), { timeout: 3000 });
+    const conversationMessages = () => within(document.querySelector('.conversation .messages') as HTMLElement);
+    await waitFor(() => expect(conversationMessages().getByText('message for session A')).toBeTruthy());
+    const fetchesBefore = vi.mocked(window.codeAgentDesktop.getSession).mock.calls.length;
+
+    fakeRuns[0] = { runId: 'run-1', taskId: 'task-1', sessionId: 'session-aaa', state: 'COMPLETED', stateVersion: 5 };
+    listeners.durable.at(-1)?.([{
+      cursor: 9, type: 'run.terminal',
+      payload: { runId: 'run-1', sessionId: 'session-aaa', aggregate: { version: 5 } }
+    }]);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    sessions[0]!.messages.push({ id: 'm3', role: 'assistant', content: 'Persisted after the terminal event' });
+
+    await waitFor(() => expect(vi.mocked(window.codeAgentDesktop.getSession).mock.calls.length).toBeGreaterThan(fetchesBefore));
+    expect(await conversationMessages().findByText('Persisted after the terminal event', {}, { timeout: 2500 })).toBeTruthy();
   });
 
   it('composer posts a typed message with a client id', async () => {
@@ -669,7 +674,8 @@ describe('visible output stream (EW4, design §9.4)', () => {
 
     // the live status bar may go away once nothing is active...
     await waitFor(() => expect(screen.queryByTestId('run-status-bar')).toBeNull());
-    // ...but the process panel must persist inside the finished turn
+    // The finished turn opens process details on demand.
+    fireEvent.click(await screen.findByRole('button', { name: '查看执行过程' }));
     expect(await screen.findByText(/第 1 轮交互/)).toBeTruthy();
   });
 
@@ -698,13 +704,13 @@ describe('visible output stream (EW4, design §9.4)', () => {
 
     // the ungrouped activity row must stay visible inside the finished turn
     await waitFor(() => expect(screen.getAllByText(/Run FAILED/).length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('button', { name: '查看执行过程' }));
     const row = await screen.findByTestId('round-ungrouped');
     expect(row.textContent).toContain('code_search');
   });
 
-  it('loads a finished turn process panel on view even without cached activities', async () => {
-    // cold history: the run finished before this renderer ever saw a frame —
-    // the turn must still show its collapsed panel, not a bare entry button
+  it('loads a finished turn process panel on expansion without cached activities', async () => {
+    // This renderer has no live events for the finished run.
     fakeRuns[0]!.state = 'SUCCEEDED';
     fakeActivityItems.push(
       { activityId: 'step-0-call-1', runId: 'run-1', kind: 'MODEL', status: 'SUCCEEDED',
@@ -724,7 +730,8 @@ describe('visible output stream (EW4, design §9.4)', () => {
     screen.getByRole('button', { name: /Session A/ }).click();
     await screen.findByText('message for session A');
 
-    // the panel mounts and fetches the snapshot by itself
+    expect(window.codeAgentDesktop.getRunActivities).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '查看执行过程' }));
     const block = await screen.findByText(/第 1 轮交互/);
     expect(block).toBeTruthy();
     expect(vi.mocked(window.codeAgentDesktop.getRunActivities)).toHaveBeenCalledWith('run-1');
@@ -752,6 +759,7 @@ describe('visible output stream (EW4, design §9.4)', () => {
     screen.getByRole('button', { name: /Session A/ }).click();
     await screen.findByText('message for session A');
 
+    fireEvent.click(await screen.findByRole('button', { name: '查看执行过程' }));
     expect(await screen.findByText(/第 1 轮交互/)).toBeTruthy();
   });
 
@@ -995,38 +1003,27 @@ describe('governance workbench (EW5)', () => {
     fireEvent.change(screen.getByPlaceholderText('说说想做什么…'), { target: { value: '查看 ipconfig' } });
     screen.getByRole('button', { name: '开始会话' }).click();
 
-    await screen.findByText(/发送超时，服务未接收该消息/);
+    await screen.findByText(/发送结果待确认/);
     expect(screen.queryByText(/创建会话失败/)).toBeNull();
     expect((screen.getByPlaceholderText('输入消息…') as HTMLTextAreaElement).value).toBe('查看 ipconfig');
     expect(vi.mocked(window.codeAgentDesktop.createSession)).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(window.codeAgentDesktop.pageSessionMessages).toHaveBeenCalledWith(
-      'session-new', expect.objectContaining({ limit: 50 })
+    await waitFor(() => expect(window.codeAgentDesktop.lookupSessionMessageReceipt).toHaveBeenCalledWith(
+      'session-new', expect.any(String)
     ));
   });
 
-  it('reports a timed-out send as accepted when the history tail carries it', async () => {
+  it('reports a timed-out send as accepted when its original receipt exists', async () => {
     let capturedClientMessageId: string | undefined;
     vi.mocked(window.codeAgentDesktop.sendSessionMessage).mockImplementationOnce(
       async (_sessionId: string, body: SessionMessageRequest) => {
         capturedClientMessageId = body.clientMessageId;
         throw new Error('The operation was aborted due to timeout');
       });
-    vi.mocked(window.codeAgentDesktop.pageSessionMessages).mockImplementation(
-      async (sessionId: string) => ({
-        schemaVersion: 'session-message-page/1',
-        sessionId,
-        transcriptRevision: '2',
-        items: [{
-          id: 'm-accepted', clientMessageId: capturedClientMessageId!, role: 'USER',
-          status: 'QUEUED', createdAt: 1, updatedAt: 1, contentRevision: 'r1',
-          content: 'x', contentState: 'INLINE', contentBytes: 1
-        }],
-        beforeCursor: null,
-        afterCursor: null,
-        hasOlder: false,
-        hasNewer: false,
-        rangeComplete: true
-      }));
+    vi.mocked(window.codeAgentDesktop.lookupSessionMessageReceipt).mockResolvedValueOnce({
+      receiptId: 'rcpt-test', operation: 'session.message', resourceId: 'session-new',
+      status: 'APPLIED', requestHash: 'test-hash', createdAtMillis: 1,
+      result: { messageId: 'm-accepted', status: 'RUNNING' }
+    });
 
     renderWorkbench();
     await screen.findByText('Session A');
@@ -1034,7 +1031,9 @@ describe('governance workbench (EW5)', () => {
     fireEvent.change(screen.getByPlaceholderText('说说想做什么…'), { target: { value: '查看 ipconfig' } });
     screen.getByRole('button', { name: '开始会话' }).click();
 
-    await screen.findByText(/服务已接收该消息，仍在处理中/);
+    await waitFor(() => expect(window.codeAgentDesktop.lookupSessionMessageReceipt)
+      .toHaveBeenCalledWith('session-new', capturedClientMessageId));
+    await waitFor(() => expect((screen.getByPlaceholderText('输入消息…') as HTMLTextAreaElement).value).toBe(''));
     expect(screen.queryByText(/请重试/)).toBeNull();
   });
 

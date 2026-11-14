@@ -76,6 +76,7 @@ import {
   sessionsListDefinition,
   sessionsAttachmentContentDefinition,
   sessionsAttachmentBytesDefinition,
+  sessionMessageReceiptDefinition,
   sessionsMessageDefinition,
   sessionsPatchDefinition,
   runCancelDefinition,
@@ -973,6 +974,7 @@ function registerIpcHandlers(): void {
   registry.register(sessionMessageContentDefinition);
   registry.register(sessionsCreateDefinition);
   registry.register(sessionsPatchDefinition);
+  registry.register(sessionMessageReceiptDefinition);
   registry.register(sessionsMessageDefinition);
   registry.register(sessionsAttachmentContentDefinition);
   registry.register(sessionsAttachmentBytesDefinition);
@@ -1542,6 +1544,16 @@ function registerIpcHandlers(): void {
     const admission = registry.admit(IPC_CHANNELS.sessionsPatch, event.senderFrame?.url, payload);
     if (!admission.ok) return { error: admission.reason, code: 'IPC_REJECTED' };
     return withService((client) => client.patchSession(admission.value.sessionId, admission.value.body as never));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.sessionMessageReceipt, async (event, payload: unknown) => {
+    const admission = registry.admit(IPC_CHANNELS.sessionMessageReceipt, event.senderFrame?.url, payload);
+    if (!admission.ok) return { error: admission.reason, code: 'IPC_REJECTED' };
+    return withService((client) => client.lookupOperationReceipt({
+      operation: 'session.message',
+      resourceId: admission.value.sessionId,
+      idempotencyKey: admission.value.idempotencyKey
+    }));
   });
 
   ipcMain.handle(IPC_CHANNELS.sessionsMessage, async (event, payload: unknown) => {
