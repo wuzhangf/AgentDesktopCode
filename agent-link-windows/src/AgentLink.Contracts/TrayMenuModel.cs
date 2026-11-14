@@ -15,10 +15,12 @@ public sealed record TrayMenuEntry(
     string? Detail = null,
     bool DetailAccent = false,
     string? Tint = null,
+    string? Badge = null,
     IReadOnlyList<TrayMenuEntry>? Children = null);
 
 public sealed record TrayWorkerCard(
-    string Path, string Name, string? Engine = null, string? ProjectId = null, string? ProjectDir = null);
+    string Path, string Name, string? Engine = null, string? ProjectId = null,
+    string? ProjectDir = null, string? ConnectionId = null);
 
 public sealed record TraySnapshot(
     bool Reachable,
@@ -174,6 +176,7 @@ public static class TrayMenuModel
             var orphan = new TrayWorkerCard(current, Path.GetFileNameWithoutExtension(current));
             items.Add(new(TrayMenuEntryKind.Submenu, orphan.Name, Icon: "agent",
                 Detail: "接入中", DetailAccent: true, Tint: EngineTint(orphan.Engine),
+                Badge: orphan.Engine,
                 Children: AgentCardChildren(orphan, current)));
         }
         foreach (var card in snapshot.Workers)
@@ -181,7 +184,7 @@ public static class TrayMenuModel
             var attached = string.Equals(card.Path, current, StringComparison.OrdinalIgnoreCase);
             items.Add(new(TrayMenuEntryKind.Submenu, card.Name, Icon: "agent",
                 Detail: attached ? "接入中" : CardSubtitle(card),
-                DetailAccent: attached, Tint: EngineTint(card.Engine),
+                DetailAccent: attached, Tint: EngineTint(card.Engine), Badge: card.Engine,
                 Children: AgentCardChildren(card, attached ? current : null)));
         }
         if (items.Count == 0)
@@ -198,7 +201,7 @@ public static class TrayMenuModel
         var items = new List<TrayMenuEntry>
         {
             new(TrayMenuEntryKind.Item, CardSubtitle(card) + (attached ? " · 接入中" : ""),
-                Enabled: false, Icon: "agent", Tint: EngineTint(card.Engine)),
+                Enabled: false, Icon: "agent", Tint: EngineTint(card.Engine), Badge: card.Engine),
         };
         if (attached)
             items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Icon: "reject"));

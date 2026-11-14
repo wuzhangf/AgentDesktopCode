@@ -166,6 +166,10 @@ internal static class Program
         {
             var workers = EnumerateWorkerCards();
             var current = ReadCurrentWorkerPath();
+            if (current is not null
+                && workers.All(c => !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase))
+                && TryReadCard(current) is { } attached)
+                workers.Add(attached);
             try
             {
                 var reply = await LinkProtocol.CallAsync(new("status"));
@@ -210,27 +214,56 @@ internal static class Program
         static string? CardField(JsonElement card, string name) =>
             card.TryGetProperty(name, out var value) && value.GetString() is { Length: > 0 } text ? text : null;
 
+        // Workers self-register by dropping a card into the gateway drop dir
+        // (default ~/.agent-gateway/workers.d, overridable per worker through
+        // GATEWAY_WORKER_DROP_DIR) and remove it on exit — the directories are
+        // the live registry, so scan all of them on every snapshot.
+        static List<string> WorkerCardDirs()
+        {
+            var dirs = new List<string>
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".agent-gateway", "workers.d"),
+            };
+            var drop = Environment.GetEnvironmentVariable("GATEWAY_WORKER_DROP_DIR");
+            if (!string.IsNullOrWhiteSpace(drop)) dirs.Add(drop!);
+            return dirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        static TrayWorkerCard? TryReadCard(string file)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(file));
+                var name =
+                    CardField(doc.RootElement, "displayName") ??
+                    CardField(doc.RootElement, "connectionId") ??
+                    Path.GetFileNameWithoutExtension(file);
+                return new(Path.GetFullPath(file), name,
+                    CardField(doc.RootElement, "engine"),
+                    CardField(doc.RootElement, "projectId"),
+                    CardField(doc.RootElement, "project"),
+                    CardField(doc.RootElement, "connectionId"));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+            {
+                return null;
+            }
+        }
+
         static List<TrayWorkerCard> EnumerateWorkerCards()
         {
             var cards = new List<TrayWorkerCard>();
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".agent-gateway", "workers.d");
-            if (!Directory.Exists(dir)) return cards;
-            foreach (var file in Directory.EnumerateFiles(dir, "*.json").OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dir in WorkerCardDirs())
             {
-                try
+                if (!Directory.Exists(dir)) continue;
+                foreach (var file in Directory.EnumerateFiles(dir, "*.json").OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
                 {
-                    using var doc = JsonDocument.Parse(File.ReadAllText(file));
-                    var name =
-                        CardField(doc.RootElement, "displayName") ??
-                        CardField(doc.RootElement, "connectionId") ??
-                        Path.GetFileNameWithoutExtension(file);
-                    cards.Add(new(Path.GetFullPath(file), name,
-                        CardField(doc.RootElement, "engine"),
-                        CardField(doc.RootElement, "projectId"),
-                        CardField(doc.RootElement, "project")));
+                    if (TryReadCard(file) is not { } card) continue;
+                    if (card.ConnectionId is { } id && !seen.Add(id)) continue;
+                    cards.Add(card);
                 }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
             }
             return cards;
         }
@@ -247,6 +280,30 @@ internal static class Program
             }
             catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException) { }
         }
+        var cardRefresh = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        cardRefresh.Tick += async (_, _) =>
+        {
+            cardRefresh.Stop();
+            await RefreshMenuAsync();
+            if (panel.IsVisible) _ = panel.RefreshAsync();
+        };
+        var cardWatchers = new List<FileSystemWatcher>();
+        void EnsureCardWatchers()
+        {
+            foreach (var dir in WorkerCardDirs())
+            {
+                if (!Directory.Exists(dir) || cardWatchers.Any(w =>
+                    string.Equals(w.Path, dir, StringComparison.OrdinalIgnoreCase))) continue;
+                var watcher = new FileSystemWatcher(dir) { Filter = "*.json", EnableRaisingEvents = true };
+                void Queue(object _, FileSystemEventArgs e) { cardRefresh.Stop(); cardRefresh.Start(); }
+                watcher.Created += Queue;
+                watcher.Deleted += Queue;
+                watcher.Changed += Queue;
+                watcher.Renamed += (_, _) => { cardRefresh.Stop(); cardRefresh.Start(); };
+                cardWatchers.Add(watcher);
+            }
+        }
+        EnsureCardWatchers();
         var health = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         var checking = false;
         var misses = 0;
@@ -254,6 +311,7 @@ internal static class Program
         health.Tick += async (_, _) =>
         {
             icon.EnsureRegistered();
+            EnsureCardWatchers();
             if (checking) return;
             checking = true;
             try

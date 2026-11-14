@@ -187,8 +187,10 @@ internal static class ContractChecks
         };
         var agents = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"d:\CARDS\pi.json"))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
-        if (agents[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Sage Pi", Detail: "接入中", Tint: "#6366F1" }
-            || agents[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Codex", Detail: "codex · codex-proj" })
+        if (agents[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Sage Pi", Detail: "接入中",
+                Tint: "#6366F1", Badge: "sage-pi" }
+            || agents[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Codex", Detail: "codex · codex-proj",
+                Badge: "codex" })
             throw new InvalidOperationException("agent card rows wrong");
         var sagePage = agents[0].Children!;
         if (!sagePage.Any(e => e.Action == "detachWorker")
