@@ -2,6 +2,11 @@ using System.Runtime.CompilerServices;
 using AgentLink;
 
 var mode = args.Single();
+if (mode.StartsWith("contract-", StringComparison.Ordinal))
+{
+    ContractChecks.Run(mode);
+    return;
+}
 var daily = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Steercrew", "AgentLink");
 var isolated = Path.Combine(Path.GetTempPath(), "Agent Link smoke", Guid.NewGuid().ToString("N"));
 Environment.SetEnvironmentVariable("AGENT_LINK_WINDOWS_STATE", mode switch

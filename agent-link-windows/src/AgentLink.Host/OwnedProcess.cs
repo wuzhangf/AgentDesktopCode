@@ -10,7 +10,7 @@ internal sealed class OwnedProcess : IDisposable
     private readonly SafeFileHandle job;
     internal Process Process { get; }
 
-    internal OwnedProcess(ProcessStartInfo start)
+    internal OwnedProcess(ProcessStartInfo start, bool signalStart = true)
     {
         job = CreateJobObjectW(IntPtr.Zero, null);
         if (job.IsInvalid) throw new Win32Exception();
@@ -25,8 +25,11 @@ internal sealed class OwnedProcess : IDisposable
             {
                 // The bundled Node preload waits for this line before loading the gateway.
                 if (!AssignProcessToJobObject(job, Process.Handle)) throw new Win32Exception();
-                Process.StandardInput.WriteLine("start");
-                Process.StandardInput.Flush();
+                if (signalStart)
+                {
+                    Process.StandardInput.WriteLine("start");
+                    Process.StandardInput.Flush();
+                }
             }
             catch
             {
@@ -42,11 +45,11 @@ internal sealed class OwnedProcess : IDisposable
         }
     }
 
-    internal async Task StopAsync()
+    internal async Task StopAsync(TimeSpan? graceful = null)
     {
         if (Process.HasExited) return;
         Process.StandardInput.Close();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+        using var timeout = new CancellationTokenSource(graceful ?? TimeSpan.FromSeconds(7));
         try { await Process.WaitForExitAsync(timeout.Token); }
         catch (OperationCanceledException)
         {

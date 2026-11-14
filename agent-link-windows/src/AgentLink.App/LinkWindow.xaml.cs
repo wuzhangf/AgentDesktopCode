@@ -18,6 +18,7 @@ public partial class LinkWindow : Window
     private bool choosingWorker;
     private long inviteExpires;
     private long dismissedAt = long.MinValue / 2;
+    private string memberPhase = "NONE";
 
     internal bool JustDismissed => Environment.TickCount64 - dismissedAt < System.Windows.Forms.SystemInformation.DoubleClickTime;
 
@@ -98,6 +99,24 @@ public partial class LinkWindow : Window
             PhoneEnabled.IsEnabled = state.Ready;
             PhoneEnabled.IsChecked = state.Enabled;
             Invite.IsEnabled = state.Ready && state.Enabled;
+            memberPhase = state.MemberState ?? "NONE";
+            var memberDetail = state.MemberInfo;
+            MemberInfo.Text = memberPhase switch
+            {
+                "LINKED" => "会员连接可用",
+                "LINKING" => memberDetail is { Length: > 0 } code ? $"请在浏览器中确认 {code}" : "等待浏览器确认",
+                "CONNECTING" => "会员连接中",
+                "ERROR" => memberDetail ?? "会员连接需要处理",
+                _ => memberDetail ?? "未登录",
+            };
+            MemberButton.Content = memberPhase switch
+            {
+                "LINKED" => "退出登录",
+                "LINKING" => "取消",
+                "ERROR" => "重试",
+                _ => "登录会员",
+            };
+            MemberButton.IsEnabled = state.Ready && memberPhase is not "CONNECTING";
             if (inviteExpires <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() && Qr.Source is not null)
                 ClearInvite();
             if (!state.Enabled) ClearInvite();
@@ -194,13 +213,33 @@ public partial class LinkWindow : Window
             if (!IsVisible) return;
             Qr.Source = bitmap;
             QrCard.Visibility = Visibility.Visible;
-            InviteHelp.Text = "在 Android 或 iPhone 的 Control 中扫码。请连接同一个局域网。";
+            InviteHelp.Text = memberPhase == "LINKED"
+                ? "在 Android 或 iPhone 的 Control 中扫码。会员连接可用时支持任意网络。"
+                : "在 Android 或 iPhone 的 Control 中扫码。请连接同一个局域网。";
         }
         catch (Exception error) when (IsUnavailable(error))
         {
             InviteHelp.Text = "后台暂不可用，请稍后重试。";
         }
         finally { working = false; Invite.IsEnabled = true; }
+    }
+
+    private async void MemberButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (working) return;
+        var operation = memberPhase switch
+        {
+            "LINKED" => "memberLogout",
+            "LINKING" => "memberCancel",
+            _ => "memberLogin",
+        };
+        try
+        {
+            var reply = await LinkProtocol.CallAsync(new(operation));
+            if (!reply.Ok) MemberInfo.Text = reply.Error ?? "操作失败";
+        }
+        catch (Exception error) when (IsUnavailable(error)) { MemberInfo.Text = "后台暂不可用。"; }
+        await RefreshAsync();
     }
 
     private async void ConnectionSwitch_Click(object sender, RoutedEventArgs e)

@@ -6,6 +6,8 @@ Click the blue chain icon in the Windows notification area to open or dismiss th
 
 Open **Agent Link** from Start. In **Agent**, choose **接入已运行的 Worker…** and select the registration card from a trusted local Worker. Pi normally writes its card under `%USERPROFILE%\.agent-gateway\workers.d` while it runs. In **连接**, choose **连接手机** and scan the invitation from Control on the same network. The invitation includes the selected Worker's available launch scopes. When the selected Worker becomes available, Agent Link updates the launch choices for paired phones while preserving access to their existing tasks. The **设置** tab controls login startup.
 
+The **会员账号** card on the 连接 tab signs the computer into the member relay: **登录会员** starts the device-approval flow, opens the member confirmation page, and keeps the packaged PAC connector supervised once approved. While the connector holds a live route, new invitations automatically carry the same relay binding Agent Link Mac produces, so a signed-in phone can pair from any network. Member credentials stay sealed with DPAPI whenever no connector process is running.
+
 The preview uses the Mac gateway's existing listener switch. Turning off **允许手机连接** closes the phone listener. Windows network policy determines whether a phone can reach the listener. Tailscale addresses are advertised when a running Tailscale client reports them.
 
 ## Build
@@ -13,8 +15,10 @@ The preview uses the Mac gateway's existing listener switch. Turning off **允�
 Install gateway build dependencies with `npm --prefix device-gateway ci` at the repository root. Use the .NET 10 SDK, WiX 6, and a Windows x64 Node 24 distribution from 24.18.0 onward that includes its license.
 
 ```powershell
-.\agent-link-windows\packaging\build.ps1 -Dotnet <dotnet.exe> -Wix <wix.exe> -Node <node.exe>
+.\agent-link-windows\packaging\build.ps1 -Dotnet <dotnet.exe> -Wix <wix.exe> -Node <node.exe> [-ConnectorPackage <dir>]
 ```
+
+`-ConnectorPackage` accepts the locked `control-relay-package/1` artifact produced by `AgentCodeService/build/package-control-relay.py`; its contents install under `components/connector` and enable the member relay. Omitting it produces a direct-connectivity-only build where the member card reports the component as unavailable.
 
 The output directory contains the MSI and a manifest of the packaged files. The supplied build script produces an unsigned internal preview. The MSI installs the application and its runtimes in the current user's Programs folder. For a preview upgrade or uninstall, exit through the tray first. Removing the package preserves the user's local state.
 
@@ -26,10 +30,12 @@ State-root startup regression checks run without opening a UI or touching user d
 
 ```powershell
 dotnet build agent-link-windows/tests/AgentLink.Contracts.Smoke
-foreach ($case in 'absent','empty','whitespace','explicit') {
+foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines','contract-relay-invite','contract-launch-scopes') {
     dotnet run --no-build --project agent-link-windows/tests/AgentLink.Contracts.Smoke -- $case
-    if ($LASTEXITCODE) { throw "State-root case failed: $case" }
+    if ($LASTEXITCODE) { throw "Smoke case failed: $case" }
 }
 ```
 
-The preview supports an explicitly attached Worker and direct connectivity. The membership connector, managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.
+The contract cases cover the connector's `pac-relay/1` route and approval lines, the invite relay-injection guard (host/store/certificate match), and availability-filtered launch-scope expansion.
+
+The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

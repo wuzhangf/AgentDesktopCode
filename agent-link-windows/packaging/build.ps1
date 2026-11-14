@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Dotnet,
     [Parameter(Mandatory = $true)][string]$Wix,
     [Parameter(Mandatory = $true)][string]$Node,
+    [string]$ConnectorPackage,
     [string]$OutputRoot = '.local/agent-link-windows-release'
 )
 $ErrorActionPreference = 'Stop'
@@ -39,6 +40,21 @@ Copy-Item -LiteralPath $license -Destination (Join-Path $runtime 'NODE-LICENSE.t
 Copy-Item -LiteralPath (Join-Path $product 'runtime/await-parent.mjs') -Destination $runtime
 Copy-Item -LiteralPath (Join-Path $gateway 'dist/device-gateway.mjs') -Destination $gatewayOutput
 
+# Optional locked PAC relay connector (control-relay-package/1 from
+# AgentCodeService build/package-control-relay.py). Its contents land at
+# components/connector so the Host can supervise python -m daily_relay.pac_launcher.
+$connectorIncluded = $false
+if ($ConnectorPackage) {
+    $connectorSrc = [IO.Path]::GetFullPath($ConnectorPackage)
+    $connectorManifest = Join-Path $connectorSrc 'relay-manifest.json'
+    if (!(Test-Path -LiteralPath $connectorManifest)) { throw 'Connector package manifest missing.' }
+    $connectorSchema = (Get-Content -Raw -LiteralPath $connectorManifest | ConvertFrom-Json).schemaVersion
+    if ($connectorSchema -ne 'control-relay-package/1') { throw "Unexpected connector package schema: $connectorSchema" }
+    if (!(Test-Path -LiteralPath (Join-Path $connectorSrc 'python/python.exe'))) { throw 'Connector python runtime missing.' }
+    Copy-Item -LiteralPath $connectorSrc -Destination (Join-Path $payload 'components/connector') -Recurse
+    $connectorIncluded = $true
+}
+
 $gatewaySha = git -C $repo rev-parse HEAD
 if ($LASTEXITCODE) { throw 'Could not read gateway source revision.' }
 $manifest = [ordered]@{
@@ -52,6 +68,7 @@ $manifest = [ordered]@{
     nodeVersion = $nodeVersion
     routes = @('lan', 'tailscale')
     worker = 'external-registration-card'
+    connector = $connectorIncluded
     files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($payload.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }
     })

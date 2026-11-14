@@ -49,6 +49,10 @@ internal sealed class LinkHost : IDisposable
 {
     private const string OwnerRoot = "/api/v2/personal-access/";
     private static string InstallRoot => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
+    private static string MemberOrigin =>
+        Environment.GetEnvironmentVariable("AGENT_LINK_MEMBER_ORIGIN") is { Length: > 0 } configured
+            && configured.StartsWith("https://", StringComparison.Ordinal)
+            ? configured : "https://api.steercrew.com";
     private readonly CancellationTokenSource stop = new();
     private readonly HttpClient owner = new(new SocketsHttpHandler
     {
@@ -64,14 +68,24 @@ internal sealed class LinkHost : IDisposable
     private volatile Ports? ports;
     private string WorkerPathFile => Path.Combine(LinkProtocol.Root, "worker-card.path");
     private WorkerCard? registered;
+    private readonly ConnectorSupervisor connector;
+    private string? descriptorCertificatePem;
 
-    internal LinkHost() => status = NewStatus("正在启动");
+    internal LinkHost()
+    {
+        connector = new ConnectorSupervisor(InstallRoot, MemberOrigin,
+            enabled: () => enabled, ports: () => ports,
+            ensureDescriptor: EnsureDescriptorAsync, openBrowser: OpenMemberPage);
+        status = NewStatus("正在启动");
+    }
 
-    private LinkStatus NewStatus(string message) => new(false, message, computer, null, 0, 0, null, null, null, enabled);
+    private LinkStatus NewStatus(string message) => new(false, message, computer, null, 0, 0, null, null, null, enabled,
+        MemberStateName(connector.GetSnapshot().Phase), null);
 
     internal async Task RunAsync()
     {
         var local = ServeAsync(stop.Token);
+        var relay = connector.RunAsync(stop.Token);
         try
         {
             try
@@ -92,6 +106,8 @@ internal sealed class LinkHost : IDisposable
         {
             stop.Cancel();
             await local;
+            await relay;
+            connector.Dispose();
         }
     }
 
@@ -119,10 +135,17 @@ internal sealed class LinkHost : IDisposable
         var data = Path.Combine(LinkProtocol.Root, "gateway");
         Directory.CreateDirectory(data);
         var portsFile = Path.Combine(LinkProtocol.Root, "ports.json");
-        var firstStart = !File.Exists(portsFile);
-        var chosen = firstStart ? AllocatePorts() :
+        var persistPorts = !File.Exists(portsFile);
+        var chosen = persistPorts ? AllocatePorts() :
             JsonSerializer.Deserialize<Ports>(File.ReadAllBytes(portsFile), LinkProtocol.Json)
                 ?? throw new InvalidDataException("Missing saved ports.");
+        // Installs from before the relay listener have no saved Relay port;
+        // allocate one rather than reusing a port another product may own.
+        if (chosen.Relay is < 1024 or > 65535 || chosen.Relay == chosen.Phone || chosen.Relay == chosen.Owner)
+        {
+            chosen = chosen with { Relay = FreeLoopbackPort() };
+            persistPorts = true;
+        }
         if (chosen.Phone is < 1024 or > 65535 || chosen.Owner is < 1024 or > 65535 || chosen.Phone == chosen.Owner)
             throw new InvalidDataException("Invalid saved ports.");
 
@@ -139,6 +162,7 @@ internal sealed class LinkHost : IDisposable
         variables["DEVICE_GATEWAY_BIND"] = "::";
         variables["DEVICE_GATEWAY_PORT"] = chosen.Phone.ToString();
         variables["DEVICE_GATEWAY_OWNER_PORT"] = chosen.Owner.ToString();
+        variables["DEVICE_GATEWAY_RELAY_PORT"] = chosen.Relay.ToString();
         variables["DEVICE_GATEWAY_ORIGIN"] = origin;
         variables["DEVICE_GATEWAY_DISPLAY_NAME"] = computer;
         variables["DEVICE_GATEWAY_MDNS_NAME"] = computer;
@@ -164,7 +188,7 @@ internal sealed class LinkHost : IDisposable
             try
             {
                 await RefreshAsync(gateway.Process.Id, cancellation);
-                if (firstStart) LinkIdentity.SaveAtomic(portsFile, JsonSerializer.SerializeToUtf8Bytes(chosen, LinkProtocol.Json));
+                if (persistPorts) LinkIdentity.SaveAtomic(portsFile, JsonSerializer.SerializeToUtf8Bytes(chosen, LinkProtocol.Json));
             }
             finally { mutations.Release(); }
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
@@ -198,7 +222,8 @@ internal sealed class LinkHost : IDisposable
             var item = JsonNode.Parse(line);
             if (item?["listener"]?.GetValue<string>() == "device-gateway" &&
                 item?["port"]?.GetValue<int>() == chosen.Phone &&
-                item?["owner"]?["port"]?.GetValue<int>() == chosen.Owner) return;
+                item?["owner"]?["port"]?.GetValue<int>() == chosen.Owner &&
+                item?["relay"]?["port"]?.GetValue<int>() == chosen.Relay) return;
         }
         throw new IOException("Gateway exited before opening its listeners.");
     }
@@ -209,7 +234,7 @@ internal sealed class LinkHost : IDisposable
         while (await reader.ReadAsync(buffer) != 0) { }
     }
 
-    private static ProcessStartInfo ProcessInfo(string file, string work)
+    internal static ProcessStartInfo ProcessInfo(string file, string work)
     {
         var info = new ProcessStartInfo(file)
         {
@@ -226,12 +251,27 @@ internal sealed class LinkHost : IDisposable
 
     private static Ports AllocatePorts()
     {
-        using var phone = new TcpListener(IPAddress.IPv6Any, 0);
-        using var owner = new TcpListener(IPAddress.Loopback, 0);
-        phone.Server.DualMode = true;
-        phone.Start();
-        owner.Start();
-        return new(((IPEndPoint)phone.LocalEndpoint).Port, ((IPEndPoint)owner.LocalEndpoint).Port);
+        for (var attempt = 0; ; attempt++)
+        {
+            using var phone = new TcpListener(IPAddress.IPv6Any, 0);
+            using var owner = new TcpListener(IPAddress.Loopback, 0);
+            using var relay = new TcpListener(IPAddress.Loopback, 0);
+            phone.Server.DualMode = true;
+            phone.Start();
+            owner.Start();
+            relay.Start();
+            var chosen = new Ports(((IPEndPoint)phone.LocalEndpoint).Port,
+                ((IPEndPoint)owner.LocalEndpoint).Port, ((IPEndPoint)relay.LocalEndpoint).Port);
+            if (attempt == 2 || chosen.Phone != chosen.Owner && chosen.Phone != chosen.Relay
+                && chosen.Owner != chosen.Relay) return chosen;
+        }
+    }
+
+    private static int FreeLoopbackPort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     private static string? LanAddress()
@@ -268,6 +308,49 @@ internal sealed class LinkHost : IDisposable
         return node;
     }
 
+    private async Task<JsonNode?> FetchCapabilitiesAsync(CancellationToken cancellation)
+    {
+        try { return await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation); }
+        catch (Exception error) when (error is HttpRequestException or IOException or OperationCanceledException
+            && !cancellation.IsCancellationRequested) { return null; }
+    }
+
+    /// Writes the connector's public five-field PAC trust descriptor. Only
+    /// rewritten when the advertised identity actually changes.
+    private async Task<bool> EnsureDescriptorAsync(CancellationToken cancellation)
+    {
+        var cap = await FetchCapabilitiesAsync(cancellation);
+        if (cap is not JsonObject fields) return false;
+        string? Text(string key) => fields[key] is JsonValue value
+            && value.TryGetValue<string>(out var text) && text.Length > 0 ? text : null;
+        var hostId = Text("personalHostId");
+        var storeId = Text("storeId");
+        var certificateSha256 = Text("certificateSha256");
+        var origin = Text("origin");
+        if (hostId is null || storeId is null || certificateSha256 is null || origin is null) return false;
+        var pem = descriptorCertificatePem ??= identity!.Certificate().ExportCertificatePem();
+        var body = JsonSerializer.SerializeToUtf8Bytes(new JsonObject
+        {
+            ["personalHostId"] = hostId,
+            ["storeId"] = storeId,
+            ["certificateSha256"] = certificateSha256,
+            ["certificatePem"] = pem,
+            ["origin"] = origin,
+        }, LinkProtocol.Json);
+        var file = Path.Combine(LinkProtocol.Root, "connector", "public-pac-descriptor.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        var current = File.Exists(file) ? await File.ReadAllBytesAsync(file, cancellation) : null;
+        if (current is null || !current.AsSpan().SequenceEqual(body))
+            LinkIdentity.SaveAtomic(file, body);
+        return true;
+    }
+
+    private static void OpenMemberPage(Uri uri)
+    {
+        try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception) { }
+    }
+
     private async Task RefreshAsync(int gatewayPid, CancellationToken cancellation)
     {
         await RefreshWorkerAsync(cancellation);
@@ -290,13 +373,25 @@ internal sealed class LinkHost : IDisposable
             }
         }
         var requests = await OwnerAsync(HttpMethod.Get, "pairing-requests", null, cancellation) as JsonArray;
+        var member = connector.GetSnapshot();
         var message = !enabled ? "手机连接已关闭" : scopesSynced ? "后台已就绪" : "手机授权同步暂未完成";
         status = new(true, message, computer,
             LanAddress() is { } ip ? $"https://{ip}:{ports!.Phone}" : cap?["origin"]?.GetValue<string>(),
             devices?.Count(d => d?["state"]?.GetValue<string>() == "ACTIVE") ?? 0,
             requests?.Count(d => d?["state"]?.GetValue<string>() == "PENDING") ?? 0,
-            cap?["personalHostId"]?.GetValue<string>(), cap?["storeId"]?.GetValue<string>(), gatewayPid, enabled);
+            cap?["personalHostId"]?.GetValue<string>(), cap?["storeId"]?.GetValue<string>(), gatewayPid, enabled,
+            MemberStateName(member.Phase), member.UserCode ?? member.Detail
+                ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null));
     }
+
+    private static string MemberStateName(ConnectorSupervisor.Phase phase) => phase switch
+    {
+        ConnectorSupervisor.Phase.Linking => "LINKING",
+        ConnectorSupervisor.Phase.Ready => "LINKED",
+        ConnectorSupervisor.Phase.Failed => "ERROR",
+        ConnectorSupervisor.Phase.Starting => "CONNECTING",
+        _ => "NONE",
+    };
 
     private static async Task<WorkerCard> LoadWorkerAsync(string path, CancellationToken cancellation)
     {
@@ -419,12 +514,38 @@ internal sealed class LinkHost : IDisposable
                     status = status with { Enabled = enabled, Message = enabled ? "后台已就绪" : "手机连接已关闭" };
                     return new(true);
                 case "invite" when enabled:
-                    var actions = new[] { "OBSERVE", "CONTROL", "INTERACT", "APPROVE", "LAUNCH" };
+                    // Same contract as Agent Link Mac: explicit availability-
+                    // filtered launch scopes, LAUNCH iff the set is non-empty.
+                    var inviteCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
+                    var scopes = LaunchScopes.FromCatalog(inviteCap?["localSource"]);
+                    var actions = scopes.Count == 0
+                        ? new[] { "OBSERVE", "CONTROL", "INTERACT", "APPROVE" }
+                        : new[] { "OBSERVE", "CONTROL", "INTERACT", "LAUNCH", "APPROVE" };
                     var invitation = await OwnerAsync(HttpMethod.Post, "pairing-invitations",
-                        new { requestId = "win-link-" + Guid.NewGuid().ToString("N"), resources = Array.Empty<string>(),
-                            launchScopes = "detected", actions }, cancellation);
-                    if (invitation is JsonObject payload) payload.Remove("certificatePem");
+                        new { requestId = "win-link-" + Guid.NewGuid().ToString("N"),
+                            resources = Array.Empty<string>(), launchScopes = scopes, actions }, cancellation);
+                    if (invitation is JsonObject payload)
+                    {
+                        payload.Remove("certificatePem");
+                        var member = connector.GetSnapshot();
+                        if (member.Route is { } route)
+                            RelayContract.TryInjectRelay(payload, route, inviteCap);
+                    }
                     return new(true, Data: invitation);
+                case "memberLogin":
+                    if (!connector.PackagePresent) return new(false, "此安装不包含会员连接组件");
+                    connector.RequestLogin();
+                    var login = connector.GetSnapshot();
+                    return new(true, Data: JsonSerializer.SerializeToNode(new
+                    {
+                        state = MemberStateName(login.Phase), userCode = login.UserCode,
+                    }, LinkProtocol.Json));
+                case "memberCancel":
+                    connector.RequestCancel();
+                    return new(true);
+                case "memberLogout":
+                    connector.RequestLogout();
+                    return new(true);
                 default:
                     return new(false, "操作当前不可用");
             }
@@ -439,6 +560,7 @@ internal sealed class LinkHost : IDisposable
         stop.Dispose();
     }
 
-    private sealed record Ports(int Phone, int Owner);
     private sealed record WorkerCard(string ConnectionId, string Url, string Token, string? DisplayName);
 }
+
+internal sealed record Ports(int Phone, int Owner, int Relay);
