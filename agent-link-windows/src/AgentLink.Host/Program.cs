@@ -528,6 +528,11 @@ internal sealed class LinkHost : IDisposable
                     await OwnerAsync(HttpMethod.Post, $"pairing-requests/{id}/decisions",
                         new { approve = request.Operation == "approve" }, cancellation);
                     return new(true);
+                case "revokeDevice" when request.Id is { Length: > 0 and < 129 } deviceId &&
+                    deviceId.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.'):
+                    await OwnerAsync(HttpMethod.Delete,
+                        "devices/" + Uri.EscapeDataString(deviceId), null, cancellation);
+                    return new(true);
                 case "enable" or "disable":
                     var on = request.Operation == "enable";
                     var marker = Path.Combine(LinkProtocol.Root, "disabled");

@@ -165,8 +165,9 @@ internal static class ContractChecks
             """)!.AsArray();
         var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], null))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
-        if (phone[0].Text != "iPhone-吴" || phone[0].Detail != "在线" || !phone[0].DetailAccent
-            || phone[1].Text != "g2-abcde" || phone[1].Detail != "不可用" || phone[1].DetailAccent
+        if (phone[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "iPhone-吴", Detail: "在线", DetailAccent: true }
+            || phone[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "g2-abcde", Detail: "不可用" }
+            || !phone[0].Children!.Any(e => e is { Action: "revokeDevice", Id: "g1" })
             || Find(phone, "inviteQr")!.Enabled == false || Find(phone, "inviteCopy")!.Enabled == false
             || Find(phone, "togglePhone") is not { Checked: true })
             throw new InvalidOperationException("device rows wrong");

@@ -150,10 +150,11 @@ public static class TrayMenuModel
             foreach (var device in devices)
             {
                 var active = Text(device, "state") == "ACTIVE";
-                var label = Text(device, "label") ?? Text(device, "deviceGrantId")?[..8] ?? "手机";
-                items.Add(new(TrayMenuEntryKind.Item, label,
-                    Action: "open", Icon: "phone",
-                    Detail: active ? "在线" : "不可用", DetailAccent: active));
+                var grant = Text(device, "deviceGrantId");
+                var label = Text(device, "label") ?? grant?[..8] ?? "手机";
+                items.Add(new(TrayMenuEntryKind.Submenu, label,
+                    Icon: "phone", Detail: active ? "在线" : "不可用", DetailAccent: active,
+                    Children: DeviceChildren(grant, label, active)));
             }
         }
         items.Add(new(TrayMenuEntryKind.Separator, ""));
@@ -163,6 +164,20 @@ public static class TrayMenuModel
         items.Add(new(TrayMenuEntryKind.Separator, ""));
         items.Add(new(TrayMenuEntryKind.CheckItem, "手机连接", Action: "togglePhone",
             Checked: status.Enabled, Enabled: status.Ready, Icon: "phone"));
+        return items;
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> DeviceChildren(string? grant, string label, bool active)
+    {
+        var items = new List<TrayMenuEntry>
+        {
+            new(TrayMenuEntryKind.Item, label + (active ? " · 在线" : " · 不可用"),
+                Enabled: false, Icon: "phone"),
+        };
+        if (grant is { Length: > 0 })
+            items.Add(new(TrayMenuEntryKind.Item, "取消配对…", Action: "revokeDevice", Id: grant, Icon: "reject"));
+        items.Add(new(TrayMenuEntryKind.Separator, ""));
+        items.Add(new(TrayMenuEntryKind.Item, "打开面板", Action: "open", Icon: "open"));
         return items;
     }
 

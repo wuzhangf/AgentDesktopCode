@@ -148,6 +148,16 @@ public partial class LinkWindow : Window
     private void ShowDevices(JsonArray? devices)
     {
         DeviceList.Children.Clear();
+        DeviceList.Children.Add(new Border
+        {
+            Height = 1, Margin = new Thickness(0, 12, 0, 0),
+            Background = (Brush)Resources["LinkLine"],
+        });
+        DeviceList.Children.Add(new TextBlock
+        {
+            Text = "手机", FontWeight = FontWeights.SemiBold, FontSize = 12,
+            Margin = new Thickness(2, 8, 0, 0),
+        });
         var list = devices?.OfType<JsonObject>().ToArray() ?? [];
         if (list.Length == 0)
         {
@@ -161,10 +171,12 @@ public partial class LinkWindow : Window
         foreach (var device in list)
         {
             var active = Text(device, "state") == "ACTIVE";
-            var label = Text(device, "label") ?? Text(device, "deviceGrantId")?[..8] ?? "手机";
+            var grant = Text(device, "deviceGrantId");
+            var label = Text(device, "label") ?? grant?[..8] ?? "手机";
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var icon = new Viewbox
             {
@@ -188,6 +200,26 @@ public partial class LinkWindow : Window
             };
             Grid.SetColumn(icon, 0); Grid.SetColumn(name, 1); Grid.SetColumn(state, 2);
             grid.Children.Add(icon); grid.Children.Add(name); grid.Children.Add(state);
+            if (grant is { Length: > 0 })
+            {
+                var unpair = new Button
+                {
+                    Content = "解除", FontSize = 11, MinHeight = 24,
+                    Padding = new Thickness(8, 1, 8, 1), Margin = new Thickness(8, 0, 0, 0),
+                    Background = Brushes.Transparent,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                AutomationProperties.SetName(unpair, $"解除配对 {label}");
+                unpair.Click += async (_, _) =>
+                {
+                    if (MessageBox.Show($"取消配对 {label}？这台手机需要重新扫码连接。",
+                        "取消配对", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+                        return;
+                    await ActAsync(new("revokeDevice", grant));
+                };
+                Grid.SetColumn(unpair, 3);
+                grid.Children.Add(unpair);
+            }
             DeviceList.Children.Add(new Border
             {
                 Padding = new Thickness(11, 8, 11, 8), Margin = new Thickness(0, 6, 0, 0),
