@@ -54,32 +54,23 @@ public partial class LinkWindow : Window
         Tabs.SelectedItem = Settings;
     }
 
+    internal void OpenAgentTab() => Tabs.SelectedIndex = 1;
+
+    internal void BeginInvite()
+    {
+        Tabs.SelectedIndex = 0;
+        Invite_Click(Invite, new RoutedEventArgs());
+    }
+
+    internal void BeginWorkerPick()
+    {
+        Tabs.SelectedIndex = 1;
+        ConnectWorker_Click(this, new RoutedEventArgs());
+    }
+
     internal void CancelDismissal() => dismiss.Stop();
 
-    private void ApplyTheme()
-    {
-        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-            @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-        var dark = key?.GetValue("AppsUseLightTheme") is 0;
-        SetBrush("LinkSurface", dark ? "#202327" : "#FCFCFD", SystemColors.WindowColor);
-        SetBrush("LinkText", dark ? "#F0F2F5" : "#17202E", SystemColors.WindowTextColor);
-        SetBrush("LinkSecondary", dark ? "#B4BFCC" : "#536071", SystemColors.WindowTextColor);
-        SetBrush("LinkLine", dark ? "#434951" : "#DFE4EB", SystemColors.WindowTextColor);
-        SetBrush("LinkSubtle", dark ? "#2B3036" : "#EDF1F6", SystemColors.ControlColor);
-        SetBrush("LinkHover", dark ? "#383F47" : "#E4EBF4", SystemColors.ControlColor);
-        SetBrush("LinkAccent", dark ? "#83B8FF" : "#0863CD", SystemColors.HighlightColor);
-        SetBrush("LinkOnAccent", dark ? "#102841" : "#FFFFFF", SystemColors.HighlightTextColor);
-        SetBrush("LinkReady", dark ? "#75D7AA" : "#13764E", SystemColors.WindowTextColor);
-    }
-
-    private void SetBrush(string key, string color, Color contrastColor)
-    {
-        var value = SystemParameters.HighContrast ? contrastColor : (Color)ColorConverter.ConvertFromString(color);
-        if (Resources[key] is SolidColorBrush previous && previous.Color == value) return;
-        var brush = new SolidColorBrush(value);
-        brush.Freeze();
-        Resources[key] = brush;
-    }
+    private void ApplyTheme() => LinkTheme.Apply(Resources);
 
     internal async Task RefreshAsync()
     {

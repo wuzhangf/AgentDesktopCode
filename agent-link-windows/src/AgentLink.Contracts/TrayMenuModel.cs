@@ -1,0 +1,188 @@
+using System.Text.Json.Nodes;
+
+namespace AgentLink;
+
+public enum TrayMenuEntryKind { Header, Problem, Submenu, Item, CheckItem, Separator }
+
+public sealed record TrayMenuEntry(
+    TrayMenuEntryKind Kind,
+    string Text,
+    string? Action = null,
+    string? Id = null,
+    bool Checked = false,
+    bool Enabled = true,
+    string? Icon = null,
+    IReadOnlyList<TrayMenuEntry>? Children = null);
+
+public sealed record TrayWorkerCard(string Path, string Name);
+
+public sealed record TraySnapshot(
+    bool Reachable,
+    LinkStatus? Status,
+    JsonArray? Devices,
+    JsonArray? Requests,
+    IReadOnlyList<TrayWorkerCard> Workers,
+    string? CurrentWorkerPath);
+
+/// <summary>
+/// Builds the tray context menu from a point-in-time snapshot: a status
+/// header, a conditional problem area, pending pairing requests, one submenu
+/// per managed entity (phones, Agents, member account), then the global
+/// actions. Rebuilt on every right-click — the model is pure data so the
+/// contract smoke can assert it.
+/// </summary>
+public static class TrayMenuModel
+{
+    public static IReadOnlyList<TrayMenuEntry> Build(TraySnapshot snapshot)
+    {
+        if (!snapshot.Reachable || snapshot.Status is null)
+            return
+            [
+                new(TrayMenuEntryKind.Header, "Agent Link · 后台连接中", Enabled: false),
+                new(TrayMenuEntryKind.Problem, "后台暂不可用，点这里打开面板", Action: "open", Icon: "warn"),
+                new(TrayMenuEntryKind.Separator, ""),
+                new(TrayMenuEntryKind.Item, "刷新", Action: "refresh", Icon: "refresh"),
+                new(TrayMenuEntryKind.Item, "打开 Agent Link", Action: "open", Icon: "open"),
+                new(TrayMenuEntryKind.Item, "退出 Agent Link…", Action: "exit", Icon: "exit"),
+            ];
+
+        var status = snapshot.Status;
+        var entries = new List<TrayMenuEntry>
+        {
+            new(TrayMenuEntryKind.Header, HeaderText(status), Enabled: false),
+        };
+        if (!status.Ready)
+            entries.Add(new(TrayMenuEntryKind.Problem, "后台未就绪 · " + status.Message, Action: "open", Icon: "warn"));
+        if (status.MemberState == "ERROR")
+            entries.Add(new(TrayMenuEntryKind.Problem, "会员连接需要处理", Action: "open", Icon: "warn"));
+        var requests = RequestChildren(snapshot);
+        if (requests.Count > 0)
+            entries.Add(new(TrayMenuEntryKind.Submenu, $"{status.PendingCount} 条配对请求",
+                Icon: "pair", Children: requests));
+        entries.Add(new(TrayMenuEntryKind.Separator, ""));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "手机连接", Icon: "phone", Children: PhoneChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "Agent", Icon: "agent", Children: AgentChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Submenu, "会员账号", Icon: "member", Children: MemberChildren(snapshot)));
+        entries.Add(new(TrayMenuEntryKind.Separator, ""));
+        entries.Add(new(TrayMenuEntryKind.Item, "打开 Agent Link", Action: "open", Icon: "open"));
+        entries.Add(new(TrayMenuEntryKind.Item, "刷新", Action: "refresh", Icon: "refresh"));
+        entries.Add(new(TrayMenuEntryKind.Item, "设置", Action: "openSettings", Icon: "settings"));
+        entries.Add(new(TrayMenuEntryKind.Item, "退出 Agent Link…", Action: "exit", Icon: "exit"));
+        return entries;
+    }
+
+    private static string HeaderText(LinkStatus status)
+    {
+        var lane = !status.Enabled ? "连接已关闭"
+            : status.MemberState == "LINKED" ? "局域网 + 会员"
+            : "局域网";
+        return $"{status.Computer} · {lane} · {status.DeviceCount} 台手机";
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> RequestChildren(TraySnapshot snapshot)
+    {
+        var status = snapshot.Status!;
+        var requests = snapshot.Requests?.OfType<JsonObject>()
+            .Where(r => Text(r, "state") == "PENDING" && Text(r, "pairingRequestId") is { Length: > 0 })
+            .ToArray() ?? [];
+        if (status.PendingCount > 0 && requests.Length == 0)
+            return [new(TrayMenuEntryKind.Item, "打开面板处理配对请求", Action: "open")];
+        var items = new List<TrayMenuEntry>();
+        foreach (var request in requests)
+        {
+            var id = Text(request, "pairingRequestId")!;
+            var label = Text(request, "label") ?? "手机";
+            items.Add(new(TrayMenuEntryKind.Item, label + " · " + Text(request, "checkWords"),
+                Enabled: false, Icon: "phone"));
+            items.Add(new(TrayMenuEntryKind.Item, "批准配对", Action: "approve", Id: id, Icon: "check"));
+            items.Add(new(TrayMenuEntryKind.Item, "拒绝", Action: "reject", Id: id, Icon: "reject"));
+        }
+        return items;
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> PhoneChildren(TraySnapshot snapshot)
+    {
+        var status = snapshot.Status!;
+        var items = new List<TrayMenuEntry>();
+        var devices = snapshot.Devices?.OfType<JsonObject>().ToArray() ?? [];
+        if (devices.Length == 0)
+        {
+            items.Add(new(TrayMenuEntryKind.Item, "尚未配对手机", Enabled: false));
+        }
+        else
+        {
+            foreach (var device in devices)
+            {
+                var active = Text(device, "state") == "ACTIVE";
+                var label = Text(device, "label") ?? Text(device, "deviceGrantId")?[..8] ?? "手机";
+                items.Add(new(TrayMenuEntryKind.Item,
+                    label + (active ? " · 在线" : " · 不可用"),
+                    Action: "open", Icon: active ? "phoneOn" : "phone"));
+            }
+        }
+        items.Add(new(TrayMenuEntryKind.Separator, ""));
+        var inviteReady = status.Ready && status.Enabled;
+        items.Add(new(TrayMenuEntryKind.Item, "生成配对邀请…", Action: "inviteQr", Enabled: inviteReady, Icon: "invite"));
+        items.Add(new(TrayMenuEntryKind.Item, "复制连接码", Action: "inviteCopy", Enabled: inviteReady, Icon: "copy"));
+        items.Add(new(TrayMenuEntryKind.Separator, ""));
+        items.Add(new(TrayMenuEntryKind.CheckItem, "手机连接", Action: "togglePhone",
+            Checked: status.Enabled, Enabled: status.Ready, Icon: "phone"));
+        return items;
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> AgentChildren(TraySnapshot snapshot)
+    {
+        var items = new List<TrayMenuEntry>();
+        var cards = snapshot.Workers;
+        var current = snapshot.CurrentWorkerPath;
+        var currentCard = current is null ? null : cards.FirstOrDefault(c =>
+            string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase));
+        if (currentCard is not null)
+            items.Add(new(TrayMenuEntryKind.Item, currentCard.Name + " · 接入中",
+                Action: "openAgents", Icon: "agentOn"));
+        else if (current is not null)
+            items.Add(new(TrayMenuEntryKind.Item,
+                Path.GetFileNameWithoutExtension(current) + " · 接入中", Action: "openAgents", Icon: "agentOn"));
+        foreach (var card in cards)
+        {
+            if (card == currentCard) continue;
+            items.Add(new(TrayMenuEntryKind.Item, card.Name + " · 接入", Action: "attachWorker", Id: card.Path, Icon: "agent"));
+        }
+        if (items.Count == 0)
+            items.Add(new(TrayMenuEntryKind.Item, "尚未接入 Agent", Enabled: false));
+        items.Add(new(TrayMenuEntryKind.Separator, ""));
+        items.Add(new(TrayMenuEntryKind.Item, "接入 Worker 注册卡…", Action: "workerPick", Icon: "card"));
+        items.Add(new(TrayMenuEntryKind.Item, "管理 Agent…", Action: "openAgents", Icon: "open"));
+        return items;
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> MemberChildren(TraySnapshot snapshot)
+    {
+        var status = snapshot.Status!;
+        var phase = status.MemberState ?? "NONE";
+        var detail = status.MemberInfo;
+        var text = phase switch
+        {
+            "LINKED" => "会员连接可用",
+            "LINKING" => detail is { Length: > 0 } code ? $"请在浏览器中确认 {code}" : "等待浏览器确认",
+            "CONNECTING" => "会员连接中",
+            "ERROR" => detail ?? "会员连接需要处理",
+            _ => detail ?? "未登录",
+        };
+        var (action, op) = phase switch
+        {
+            "LINKED" => ("退出登录", "memberLogout"),
+            "LINKING" => ("取消", "memberCancel"),
+            "ERROR" => ("重试", "memberLogin"),
+            _ => ("登录会员", "memberLogin"),
+        };
+        return
+        [
+            new(TrayMenuEntryKind.Item, text, Enabled: false, Icon: "member"),
+            new(TrayMenuEntryKind.Item, action, Action: "member", Id: op, Icon: "member",
+                Enabled: status.Ready && phase != "CONNECTING"),
+        ];
+    }
+
+    private static string? Text(JsonNode? node, string name) => node?[name]?.GetValue<string>();
+}

@@ -10,6 +10,7 @@ internal static class ContractChecks
             case "contract-relay-lines": RelayLines(); break;
             case "contract-relay-invite": RelayInvite(); break;
             case "contract-launch-scopes": LaunchScopesCheck(); break;
+            case "contract-menu-model": MenuModel(); break;
             default: throw new ArgumentException("Unknown contract case.");
         }
         Console.WriteLine($"PASS: {mode}.");
@@ -118,6 +119,103 @@ internal static class ContractChecks
         var many = new StringBuilderCatalog(17, 6);
         if (LaunchScopes.FromCatalog(many.Build()).Count != 0)
             throw new InvalidOperationException("over-limit catalog not emptied");
+    }
+
+    private static void MenuModel()
+    {
+        LinkStatus Status(bool ready = true, bool enabled = true, int devices = 0, int pending = 0,
+            string? member = null, string? info = null) =>
+            new(ready, ready ? "后台已就绪" : "正在启动", "PC-1", null, devices, pending,
+                "host", "store", 100, enabled, member, info);
+
+        TrayMenuEntry? Find(IReadOnlyList<TrayMenuEntry> entries, string action) =>
+            entries.FirstOrDefault(e => e.Action == action)
+            ?? entries.SelectMany(e => e.Children ?? []).FirstOrDefault(e => e.Action == action);
+
+        // Unreachable: header + problem + refresh/global actions, no entity submenus.
+        var offline = TrayMenuModel.Build(new(false, null, null, null, [], null));
+        if (offline.Count != 6 || offline[0].Kind != TrayMenuEntryKind.Header || offline[0].Enabled
+            || offline[1].Kind != TrayMenuEntryKind.Problem || offline[1].Action != "open"
+            || offline.Any(e => e.Kind == TrayMenuEntryKind.Submenu)
+            || Find(offline, "refresh") is null || Find(offline, "exit") is null)
+            throw new InvalidOperationException("offline menu wrong");
+
+        // Ready: header shows computer, lane and device count; problems surface;
+        // pending pairing requests become an actionable drill-down submenu.
+        var requests = JsonNode.Parse("""
+            [{"pairingRequestId":"req-1","label":"iPhone-吴","checkWords":"BLUE-CAT","state":"PENDING"},
+             {"pairingRequestId":"req-2","label":"旧请求","checkWords":"DONE","state":"APPROVED"}]
+            """)!.AsArray();
+        var ready = TrayMenuModel.Build(new(true, Status(devices: 2, pending: 1, member: "ERROR"), null, requests, [], null));
+        if (!ready[0].Text.Contains("PC-1") || !ready[0].Text.Contains("2 台手机")
+            || ready.Count(e => e.Kind == TrayMenuEntryKind.Problem) != 1)
+            throw new InvalidOperationException("ready header/problems wrong");
+        var pairing = ready.FirstOrDefault(e => e is { Kind: TrayMenuEntryKind.Submenu } && e.Text.Contains("配对请求"))
+            ?? throw new InvalidOperationException("pairing submenu missing");
+        var pairRows = pairing.Children!;
+        if (pairRows.Count != 3 || pairRows[0].Enabled || !pairRows[0].Text.Contains("BLUE-CAT")
+            || pairRows[1] is not { Action: "approve", Id: "req-1" }
+            || pairRows[2] is not { Action: "reject", Id: "req-1" })
+            throw new InvalidOperationException("pairing rows wrong");
+
+        // Devices: ACTIVE marked online, inactive marked unavailable, label fallback.
+        var devices = JsonNode.Parse("""
+            [{"deviceGrantId":"g1","label":"iPhone-吴","state":"ACTIVE"},
+             {"deviceGrantId":"g2-abcdefghij","state":"REVOKED"}]
+            """)!.AsArray();
+        var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
+        if (phone[0].Text != "iPhone-吴 · 在线" || phone[1].Text != "g2-abcde · 不可用"
+            || Find(phone, "inviteQr")!.Enabled == false || Find(phone, "inviteCopy")!.Enabled == false
+            || Find(phone, "togglePhone") is not { Checked: true })
+            throw new InvalidOperationException("device rows wrong");
+
+        // Phone off: invites disabled, toggle unchecked, lane says closed.
+        var off = TrayMenuModel.Build(new(true, Status(enabled: false), devices, null, [], null));
+        var phoneOff = off.First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
+        if (!off[0].Text.Contains("连接已关闭") || Find(phoneOff, "inviteQr")!.Enabled
+            || Find(phoneOff, "inviteCopy")!.Enabled || Find(phoneOff, "togglePhone") is not { Checked: false })
+            throw new InvalidOperationException("disabled phone wrong");
+
+        // Workers: current on top marked attached, others carry attach action + path.
+        var cards = new List<TrayWorkerCard>
+        {
+            new(@"D:\cards\pi.json", "Sage Pi"),
+            new(@"D:\cards\codex.json", "Codex"),
+        };
+        var agents = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"d:\CARDS\pi.json"))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
+        if (agents[0].Text != "Sage Pi · 接入中" || agents[1].Text != "Codex · 接入"
+            || agents[1].Action != "attachWorker" || agents[1].Id != @"D:\cards\codex.json"
+            || Find(agents, "workerPick") is null || Find(agents, "openAgents") is null)
+            throw new InvalidOperationException("worker rows wrong");
+
+        // Orphan current path still shows an attached row; empty shows the hint.
+        var orphan = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"D:\gone\old.json"))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
+        if (!orphan[0].Text.Contains("old") || !orphan[0].Text.Contains("接入中"))
+            throw new InvalidOperationException("orphan worker row wrong");
+        var none = TrayMenuModel.Build(new(true, Status(), null, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
+        if (none[0].Text != "尚未接入 Agent" || none[0].Enabled) throw new InvalidOperationException("empty workers wrong");
+
+        // Member phases drive status text, action label and operation.
+        var linked = TrayMenuModel.Build(new(true, Status(member: "LINKED"), null, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
+        if (linked[0].Text != "会员连接可用" || linked[0].Enabled
+            || linked[1].Text != "退出登录" || linked[1].Id != "memberLogout")
+            throw new InvalidOperationException("member linked wrong");
+        var linking = TrayMenuModel.Build(new(true, Status(member: "LINKING", info: "ABCD-1234"), null, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
+        if (!linking[0].Text.Contains("ABCD-1234") || linking[1].Text != "取消" || linking[1].Id != "memberCancel")
+            throw new InvalidOperationException("member linking wrong");
+        var connecting = TrayMenuModel.Build(new(true, Status(member: "CONNECTING"), null, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
+        if (connecting[1].Enabled) throw new InvalidOperationException("member connecting should be disabled");
+        var noneMember = TrayMenuModel.Build(new(true, Status(member: null, info: "此安装不包含会员连接组件"), null, null, [], null))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
+        if (noneMember[0].Text != "此安装不包含会员连接组件" || noneMember[1].Text != "登录会员"
+            || noneMember[1].Id != "memberLogin") throw new InvalidOperationException("member none wrong");
     }
 
     private static readonly string[] EngineIds = ["codex", "claude", "pi", "macos", "sage-pi", "sage-codex"];
