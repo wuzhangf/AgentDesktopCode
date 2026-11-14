@@ -81,16 +81,27 @@ const txt = (name: string, fields: Record<string, string>): Buffer => {
 const a = (name: string, ip: string): Buffer =>
   rr(name, TYPE.A, TTL_S, Buffer.from(ip.split('.').map(Number)), true);
 
+/** Routable LAN IPv4 interfaces. 169.254 link-local and 198.18/15 (the
+ *  fake-ip TUN range desktop proxies create) are never dialable from a
+ *  phone — picking one for the A record or the multicast egress puts the
+ *  whole advert into a dead interface under a VPN route table. */
+const lanInterfaces = (): string[] => {
+  const out: string[] = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const iface of list ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal
+          && !iface.address.startsWith('169.254.') && !/^198\.1[89]\./.test(iface.address)
+          && !out.includes(iface.address)) out.push(iface.address);
+    }
+  }
+  return out;
+};
+
 const pickAddress = (hint?: string): string | undefined => {
   // A wildcard bind (0.0.0.0/::) is a listen-any instruction, not an
   // address a phone can dial — fall through to the interface pick.
   if (hint !== undefined && /^(\d{1,3}\.){3}\d{1,3}$/.test(hint) && !hint.split('.').every((p) => p === '0')) return hint;
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const iface of list ?? []) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
-    }
-  }
-  return undefined;
+  return lanInterfaces()[0];
 };
 
 export interface MdnsHandle { stop(): void }
@@ -143,27 +154,46 @@ export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
         const name = q.name.toLowerCase();
         if (wanted.has(qtype) && (name === SERVICE_TYPE || name === instance.toLowerCase() || name === hostname.toLowerCase())) hit = true;
       }
-      if (hit) socket.send(response(), MDNS_PORT, MDNS_ADDRESS, () => {});
+      if (hit) sendAll(response());
     } catch { /* malformed query — ignore */ }
   });
 
   socket.bind(MDNS_PORT, () => {
     try {
-      socket.addMembership(MDNS_ADDRESS);
+      // Join on every routable interface — the single-arg form lets the
+      // kernel pick one, and a VPN's covering routes can steal the choice
+      // and leave this responder deaf on the real LAN.
+      for (const addr of lanInterfaces()) {
+        try { socket.addMembership(MDNS_ADDRESS, addr); } catch { /* iface flap */ }
+      }
+      // Pin multicast egress to the LAN IP: the route table can send
+      // 224.0.0.251 into a proxy TUN under covering routes.
       socket.setMulticastTTL(255);
     } catch (e) {
       log('mdns.membership-failed', { detail: String(e) });
     }
     // Initial burst so already-listening phones see us immediately.
-    const burst = (): void => socket.send(response(), MDNS_PORT, MDNS_ADDRESS, () => {});
     burst();
     setTimeout(burst, 1_000).unref();
     setTimeout(burst, 2_500).unref();
     log('mdns.advertising', { instance, port: advert.port, address: ip });
   });
 
+  // One copy per LAN interface — multicast egress must not follow the
+  // unicast table (a VPN's covering routes would eat it), and pinning a
+  // single interface silently abandons phones on other subnets.
+  const sendAll = (packet: Buffer): void => {
+    for (const addr of lanInterfaces()) {
+      try {
+        socket.setMulticastInterface(addr);
+        socket.send(packet, MDNS_PORT, MDNS_ADDRESS, () => {});
+      } catch { /* iface flap mid-send */ }
+    }
+  };
+  const burst = (): void => sendAll(response());
+
   const announce = setInterval(() => {
-    try { socket.send(response(), MDNS_PORT, MDNS_ADDRESS, () => {}); } catch { /* socket closed */ }
+    try { sendAll(response()); } catch { /* socket closed */ }
   }, ANNOUNCE_EVERY_MS);
   announce.unref();
 

@@ -100,7 +100,11 @@ export class LocalTransport {
     }
     const schemeOk = url.protocol === 'http:' || url.protocol === 'https:';
     const host = url.hostname.toLowerCase();
-    if (!schemeOk || !LOOPBACK_HOSTNAMES.has(host) || url.username !== '' || url.password !== ''
+    // Self-registered workers (tokenRef `worker:*`) redeemed an owner-minted
+    // invite, so remote origins are authorized; env/supervisor rows stay
+    // loopback-only. Either way: no userinfo, path, query or fragment.
+    const hostOk = LOOPBACK_HOSTNAMES.has(host) || (row.tokenRef?.startsWith('worker:') ?? false);
+    if (!schemeOk || !hostOk || url.username !== '' || url.password !== ''
         || (url.pathname !== '' && url.pathname !== '/') || url.search !== '' || url.hash !== '') {
       fail('LOCAL_SOURCE_UNAVAILABLE', 503);
     }

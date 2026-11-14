@@ -42,15 +42,15 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
-import { isIP } from 'node:net';
+import { hostname, networkInterfaces } from 'node:os';
+import { isIP, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
-import type { GatewayContext, GatewayConfig } from './context.js';
+import type { GatewayContext, GatewayConfig, JsonObject } from './context.js';
 import { createGatewayListener, createHooksListener, createOwnerListener, createRelayListener } from './http.js';
 import { certificateInfo, fingerprintOfCertPem, provisionTlsMaterial, type TlsMaterial } from './tls.js';
 import { startMdns } from './mdns.js';
 import { tailscaleNames } from './tailscale.js';
-import { fail, GatewayError } from './protocol.js';
+import { fail, GatewayError, id, text } from './protocol.js';
 import type { Device, Resource } from './protocol.js';
 import { GatewayStore } from './store.js';
 import { Devices } from './devices.js';
@@ -272,6 +272,21 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
   // SANs (provisioned certs only — existing material is reused untouched) and
   // the alternate origins phones probe when the primary LAN origin fails.
   const tailscale = tailscaleNames();
+  // LAN IPv4s become dial candidates too: multicast may be filtered between
+  // a wired Mac and a wireless phone while plain TCP still works — the
+  // invite and the advert then carry a route that never needed mDNS.
+  const lanIPv4: string[] = [];
+  for (const list of Object.values(networkInterfaces())) {
+    for (const iface of list ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal
+          // 169.254 link-local and 198.18/15 (proxy TUN fake-ip range) are
+          // never dialable from a phone — keep them out of SANs/adverts.
+          && !iface.address.startsWith('169.254.') && !/^198\.1[89]\./.test(iface.address)
+          && !lanIPv4.includes(iface.address)) {
+        lanIPv4.push(iface.address);
+      }
+    }
+  }
 
   const inlineKey = pemFromEnv('DEVICE_GATEWAY_TLS_KEY');
   const inlineCert = pemFromEnv('DEVICE_GATEWAY_TLS_CERT');
@@ -308,6 +323,7 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     // Self-detected tailnet names ride along in the cert SANs so the
     // advertised alternate origins pass hostname verification too.
     extraNames.push(...tailscale);
+    extraNames.push(...lanIPv4);
     tls = provisionTlsMaterial(tlsDir, {
       commonName,
       days: intEnv('DEVICE_GATEWAY_TLS_DAYS', 825, 1, 8250),
@@ -402,8 +418,17 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
     acsStoreId: env('DEVICE_GATEWAY_ACS_STORE_ID') ?? env('ACS_STORE_ID'),
     acsUrl,
     origin: env('DEVICE_GATEWAY_ORIGIN'),
-    alternateOrigins: tailscale.length === 0 ? undefined
-      : tailscale.map((name) => `https://${name}:${port}`),
+    alternateOrigins: (() => {
+      const candidates = [
+        // The Bonjour name first — DHCP renumbering never invalidates it, and
+        // paired phones absorb it through discovery so a stale numeric primary
+        // can heal without re-pairing.
+        `https://${hostname()}:${port}`,
+        ...lanIPv4.map((ip) => `https://${ip}:${port}`),
+        ...tailscale.map((name) => `https://${name}:${port}`),
+      ];
+      return candidates.length === 0 ? undefined : candidates;
+    })(),
     workerLocal,
     extraWorkerLocals,
     cliBridge,
@@ -511,12 +536,70 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     if (ref.startsWith('cli-supervisor:')) {
       return extraTokens.get(`cli:${ref.slice('cli-supervisor:'.length)}`);
     }
+    if (ref.startsWith('worker:')) return extraTokens.get(ref);
     if (ref === 'env:PERSONAL_ENV_TOKEN') return opts.personalEnv?.token;
     return undefined;
   };
+  // Worker self-registration: minted secrets are single-use and boot-scoped —
+  // a restart simply means the owner re-mints, matching invite semantics.
+  // Registered rows ride the SAME registry listConnections() reads every
+  // catalog build does, so a live worker is probed in on the next request.
+  const pendingWorkerInvites = new Map<string, number>();
+  const insertWorkerRow = (connectionId: string, url: string, token: string, displayName: string): JsonObject => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(connectionId)) fail('INVALID_REQUEST', 400);
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { fail('INVALID_REQUEST', 400); }
+    if ((parsed!.protocol !== 'http:' && parsed!.protocol !== 'https:')
+        || url.length > 512 || token.length === 0 || token.length > 1024) fail('INVALID_REQUEST', 400);
+    const row = {
+      connectionId, kind: 'worker-local', baseUrl: parsed!.origin,
+      tokenRef: `worker:${connectionId}`, displayName,
+    };
+    if (opts.localCliOnly) configuredWorkers.set(connectionId, row);
+    else {
+      store.upsertConnection(row);
+      store.updateConnectionBaseUrl(connectionId, parsed!.origin);
+    }
+    extraTokens.set(`worker:${connectionId}`, token);
+    return { connectionId, registeredAt: new Date().toISOString() };
+  };
+  const workers: import('./context.js').GatewayWorkers = {
+    mint(requestId: string) {
+      id(requestId);
+      const workerSecret = randomBytes(24).toString('hex');
+      const expiresAt = Date.now() + 30 * 60_000;
+      for (const [secret, until] of pendingWorkerInvites) {
+        if (until <= Date.now()) pendingWorkerInvites.delete(secret);
+      }
+      if (pendingWorkerInvites.size >= 8) fail('PAIRING_LIMIT', 429);
+      pendingWorkerInvites.set(workerSecret, expiresAt);
+      return { workerSecret, expiresAt };
+    },
+    register(body: JsonObject) {
+      const secret = text(body, 'workerSecret');
+      const until = pendingWorkerInvites.get(secret);
+      if (until === undefined) fail('WORKER_INVITE_UNKNOWN', 401);
+      if (until <= Date.now()) { pendingWorkerInvites.delete(secret); fail('WORKER_INVITE_EXPIRED', 410); }
+      pendingWorkerInvites.delete(secret);
+      const connectionId = text(body, 'connectionId');
+      const displayName = body.displayName === undefined ? `worker:${connectionId}` : text(body, 'displayName');
+      return insertWorkerRow(connectionId, text(body, 'url'), text(body, 'token'), displayName);
+    },
+    registerDirect(body: JsonObject) {
+      const connectionId = text(body, 'connectionId');
+      const displayName = body.displayName === undefined ? `worker:${connectionId}` : text(body, 'displayName');
+      return insertWorkerRow(connectionId, text(body, 'url'), text(body, 'token'), displayName);
+    },
+    remove(connectionId: string) {
+      id(connectionId);
+      if (opts.localCliOnly) configuredWorkers.delete(connectionId);
+      else store.deleteConnection(connectionId);
+      extraTokens.delete(`worker:${connectionId}`);
+    },
+  };
   let localTasks: LocalTaskAccess | undefined;
   if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
-      || opts.cliBridge !== undefined) {
+      || opts.cliBridge !== undefined || workers !== undefined) {
     const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
     localTasks = new LocalTaskAccess(devices, transport, store);
   }
@@ -571,6 +654,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   const ctx: GatewayContext = {
     auth: devices,
     inbox: undefined as unknown as GatewayContext['inbox'],
+    workers,
     config,
     ...(localTasks !== undefined ? { localTasks } : {}),
   };
@@ -686,6 +770,33 @@ export async function main(): Promise<void> {
     built.store.close();
     throw error;
   }
+
+  // Master connect switch: the owner can close the phone listener without
+  // taking the loopback owner API down with it — Agent Link still manages
+  // state while every phone sees the Mac go offline.
+  const phoneSockets = new Set<Socket>();
+  phoneServer.on('connection', (s) => { phoneSockets.add(s); s.once('close', () => phoneSockets.delete(s)); });
+  phoneServer.on('secureConnection', (s) => { phoneSockets.add(s); s.once('close', () => phoneSockets.delete(s)); });
+  let phoneEnabled = true;
+  built.ctx.link = {
+    phoneEnabled: () => phoneEnabled,
+    setPhoneEnabled: async (on) => {
+      if (on === phoneEnabled) return;
+      phoneEnabled = on;
+      if (on) {
+        await new Promise<void>((resolveListen, rejectListen) => {
+          phoneServer.once('error', rejectListen);
+          phoneServer.listen(opts.port, opts.bind, () => {
+            phoneServer.removeListener('error', rejectListen);
+            resolveListen();
+          });
+        });
+      } else {
+        for (const s of phoneSockets) s.destroy();
+        if (phoneServer.listening) await new Promise<void>((r) => phoneServer.close(() => r()));
+      }
+    },
+  };
 
   // Java: scheduleWithFixedDelay(scanAll, 5, 15, SECONDS) — first scan after
   // 5s, then a fixed 15s delay measured after each scan completes.

@@ -386,6 +386,15 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     };
   }
 
+  // Worker self-registration — unauthenticated because the one-shot secret
+  // the owner minted IS the consent (same trust shape as pairing requests).
+  if (path === '/personal/v1/worker-registrations' && method === 'POST') {
+    rate(ctx, req);
+    if (ctx.workers === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+    const b = exact(jsonBody(req), 'workerSecret', 'connectionId', 'url', 'token', 'displayName');
+    return { status: 202, body: await ctx.workers.register(b) };
+  }
+
   const token = bearer(req);
   const device = await ctx.auth.authenticate(token);
   const actions = new Set(device.actions ?? []);

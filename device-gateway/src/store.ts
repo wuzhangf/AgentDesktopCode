@@ -295,6 +295,11 @@ export class GatewayStore implements ConnectionRegistry {
       .run(kind, id, JSON.stringify(value));
   }
 
+  ids(kind: string): string[] {
+    return (this.db.prepare('SELECT id FROM personal_access_record WHERE kind=?')
+      .all(kind) as { id: string }[]).map((r) => r.id);
+  }
+
   delete(kind: string, id: string): void {
     this.db.prepare('DELETE FROM personal_access_record WHERE kind=? AND id=?').run(kind, id);
   }
@@ -449,6 +454,11 @@ export class GatewayStore implements ConnectionRegistry {
         SET base_url=?, updated_at=?, revision=revision+1
       WHERE connection_id=?`)
       .run(baseUrl, new Date().toISOString(), connectionId);
+  }
+
+  /** Runtime removal for self-registered/direct rows (worker leaves, config retracted). */
+  deleteConnection(connectionId: string): void {
+    this.db.prepare('DELETE FROM registry_connections WHERE connection_id=?').run(connectionId);
   }
 
   getConnection(connectionId: string): ConnectionRow | undefined {

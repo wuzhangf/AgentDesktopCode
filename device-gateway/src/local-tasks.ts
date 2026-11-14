@@ -290,9 +290,14 @@ export class LocalTaskAccess {
   private async identities(deadlineMillis?: number): Promise<{ connectionId: string; storeId: string }[]> {
     const rows = this.transport.orderedWorkerLocalRows?.() ?? this.transport.workerLocalRows();
     const out: { connectionId: string; storeId: string }[] = [];
+    const seen = new Set<string>();
     for (const row of rows) {
       try {
         const storeId = await this.transport.identity(row.connectionId, deadlineMillis);
+        // Two rows can point at one store (env config + self-registration) —
+        // the catalog lists a backend once either way.
+        if (seen.has(storeId)) continue;
+        seen.add(storeId);
         this.connectionCache.set(storeId, row.connectionId);
         out.push({ connectionId: row.connectionId, storeId });
       } catch { /* an offline host stays out of catalogs; source() reports it on demand */ }

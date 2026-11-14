@@ -261,6 +261,43 @@ export async function handleOwnerRoute(
       return { status: 201, body: invitation };
     }
 
+    // Worker self-registration: the owner mints a one-shot secret here and a
+    // reachable worker host redeems it through the public listener — the
+    // same trust shape as device pairing invitations.
+    if (method === 'POST' && path === `${ROOT}/worker-invitations`) {
+      const b = exact(jsonBody(req), 'requestId');
+      if (ctx.workers === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.workers.mint(text(b, 'requestId')) };
+    }
+
+    // Loopback-direct worker rows — owner-token auth IS the consent, so the
+    // supervisor reconciles agent registrations without a service restart.
+    if (method === 'POST' && path === `${ROOT}/worker-registrations`) {
+      const b = exact(jsonBody(req), 'connectionId', 'url', 'token', 'displayName');
+      if (ctx.workers === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 202, body: await ctx.workers.registerDirect(b) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'worker-registrations') {
+      id(parts[5]);
+      if (ctx.workers === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      await ctx.workers.remove(parts[5]);
+      return { status: 204, body: null };
+    }
+
+    // Master connect switch — closes/reopens the phone listener while the
+    // owner loopback keeps serving so the UI can still read state.
+    if (method === 'GET' && path === `${ROOT}/link-state`) {
+      if (ctx.link === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: { enabled: ctx.link.phoneEnabled() } };
+    }
+    if (method === 'POST' && path === `${ROOT}/link-state`) {
+      const b = exact(jsonBody(req), 'enabled');
+      if (ctx.link === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      if (typeof b.enabled !== 'boolean') fail('INVALID_REQUEST', 400);
+      await ctx.link.setPhoneEnabled(b.enabled);
+      return { status: 200, body: { enabled: ctx.link.phoneEnabled() } };
+    }
+
     if (method === 'GET' && path === `${ROOT}/pairing-requests`) {
       return { status: 200, body: await ctx.auth.requests() };
     }

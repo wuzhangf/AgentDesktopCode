@@ -190,6 +190,10 @@ export interface Device extends ScopeRecord {
   installationId?: string;
   state?: string;               // ACTIVE | REVOKED
   accessHash?: string;
+  /** Recently rotated access hashes still honored briefly — a refresh racing
+   *  an in-flight call (8s approval long-poll, mid-write) must not 401 the
+   *  sibling request that left the phone with the previous token. */
+  accessGrace?: { hash: string; until: number }[];
   refreshHash?: string;
   previousRefreshHash?: string;
   refreshRequestId?: string;
@@ -206,6 +210,8 @@ export interface Device extends ScopeRecord {
 export interface ScopeChange {
   fingerprint: string;
   result: string;
+  /** Epoch ms — idempotency cache eviction ages records; absent on legacy rows. */
+  at?: number;
 }
 
 /** Device-namespaced request ledger row (kinds local-launch/local-input/local-graphics). */

@@ -43,7 +43,7 @@ export const ACTION_SET = new Set([
   'GRAPHICS_OBSERVE', 'GRAPHICS_CAPTURE', 'GRAPHICS_ACT',
 ]);
 
-const ENGINE_SET = new Set(['pi', 'codex', 'claude', 'macos']);
+const ENGINE_SET = new Set(['pi', 'codex', 'claude', 'macos', 'sage-pi', 'sage-codex']);
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** Java checkedResources / checkedLaunchScopes bound. */

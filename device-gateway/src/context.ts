@@ -313,9 +313,41 @@ export interface GatewayConfig {
   transcriptionReason?: string;
 }
 
+/**
+ * Worker self-registration — the inbound half of worker-local sources.
+ * The owner mints a single-use worker invite (pairing-invite semantics:
+ * the secret IS the consent), and a reachable worker host (pi, an
+ * Electron-packaged agent app) registers its own {url, token} against it
+ * through the public listener. Registered rows go live immediately — the
+ * catalog's per-request identity probes do the health filtering.
+ */
+export interface GatewayWorkers {
+  /** Owner-minted one-shot registration secret → {workerSecret, expiresAt}. */
+  mint(requestId: string): MaybePromise<JsonObject>;
+  /** Public consume: {workerSecret, connectionId, url, token, displayName?}. */
+  register(body: JsonObject): MaybePromise<JsonObject>;
+  /**
+   * Loopback-direct registration — the owner token already authenticates, so
+   * the supervisor can add/remove worker rows without restarting the service
+   * (registering one agent must not kill the others' bridges).
+   */
+  registerDirect(body: JsonObject): MaybePromise<JsonObject>;
+  remove(connectionId: string): MaybePromise<void>;
+}
+
+export interface GatewayLink {
+  /** Master connect switch — false → phone listener stops accepting. */
+  setPhoneEnabled(on: boolean): MaybePromise<void>;
+  phoneEnabled(): boolean;
+}
+
 export interface GatewayContext {
   commercial?: import('./commercial.js').CommercialAccess;
   auth: GatewayAuth;
+  /** Undefined → worker registration routes fail OPERATION_NOT_ALLOWED. */
+  workers?: GatewayWorkers;
+  /** Undefined → owner link-state routes fail OPERATION_NOT_ALLOWED. */
+  link?: GatewayLink;
   /** Undefined when no worker-local source is registered (Java localTasks==null). */
   localTasks?: GatewayLocalTasks;
   inbox: GatewayInbox;

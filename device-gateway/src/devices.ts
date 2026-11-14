@@ -95,6 +95,10 @@ export class Devices {
   private readonly alternateOrigins: string[];
   private readonly expectedStoreId?: string;
   private storeId = '';
+  /** Volatile last-contact per deviceGrantId — online presence is a live
+   *  fact, not durable state: a gateway restart honestly reports "unknown"
+   *  until the phone calls in again. */
+  private readonly seen = new Map<string, number>();
 
   /**
    * Java constructor shape: (store, key[, previousKey], storeId, origin, clock).
@@ -637,6 +641,17 @@ export class Devices {
         if (constantEqual(d.accessHash, digest)) {
           this.active(d);
           if (d.accessExpiry <= this.now()) fail('ACCESS_EXPIRED', 401);
+          this.seen.set(d.id, this.now());
+          return d;
+        }
+      }
+      // Grace pass: a request that left the phone before a token rotation
+      // still resolves — the alternative is ACCESS_UNAUTHORIZED on a live
+      // grant, which phones (correctly) read as revocation.
+      for (const d of this.store.list<Device>('device')) {
+        if ((d.accessGrace ?? []).some((g) => g.until > this.now() && constantEqual(g.hash, digest))) {
+          this.active(d);
+          this.seen.set(d.id, this.now());
           return d;
         }
       }
@@ -831,7 +846,14 @@ export class Devices {
       this.active(d);
       if (String(d.revision) !== expectedRevision) fail('GRANT_REVISION_CONFLICT', 409);
       if (this.store.list<ScopeChange>('scope-change').length >= SCOPE_HISTORY_LIMIT) {
-        fail('SCOPE_HISTORY_LIMIT', 429);
+        // Idempotency cache, not an audit log — a full table must never freeze
+        // grant updates. Evict the oldest half; legacy rows lack `at` and go first.
+        const aged = this.store.ids('scope-change')
+          .map((id) => ({ id, at: this.store.get<ScopeChange>('scope-change', id)?.at ?? 0 }))
+          .sort((a, b) => a.at - b.at);
+        for (const stale of aged.slice(0, Math.ceil(SCOPE_HISTORY_LIMIT / 2))) {
+          this.store.delete('scope-change', stale.id);
+        }
       }
       d.resources = resources;
       d.launchScopes = launches;
@@ -840,7 +862,7 @@ export class Devices {
       d.revision++;
       this.putScope('device', deviceId, d);
       const result = this.deviceView(d);
-      const change: ScopeChange = { fingerprint: fp, result: JSON.stringify(result) };
+      const change: ScopeChange = { fingerprint: fp, result: JSON.stringify(result), at: Date.now() };
       this.store.put('scope-change', requestId, change);
       return result;
     });
@@ -900,6 +922,14 @@ export class Devices {
   private issue(d: Device): Json {
     const accessToken = secret();
     const refreshToken = secret();
+    // Rotating the access hash must not orphan in-flight callers — the phone
+    // holds an 8s approval long-poll and writes whose bearer was valid when
+    // sent. Keep the outgoing hash honored briefly, like the refresh-side
+    // recovery envelope, then it dies for real.
+    if (d.accessHash != null) {
+      (d.accessGrace ??= []).push({ hash: d.accessHash, until: this.now() + 120_000 });
+      while (d.accessGrace.length > 8) d.accessGrace.shift();
+    }
     d.accessHash = hash(accessToken);
     d.accessExpiry = this.now() + ACCESS_TTL;
     d.refreshHash = hash(refreshToken);
@@ -950,6 +980,7 @@ export class Devices {
       actions: d.actions ?? [],
       resources: d.resources ?? [],
       launchScopes: d.launchScopes ?? [],
+      lastSeenAt: this.seen.get(d.id) ?? null,
     };
   }
 

@@ -720,13 +720,15 @@ describe('authenticate + authorize', () => {
 });
 
 describe('refresh', () => {
-  it('rotates tokens and invalidates the old access token', () => {
+  it('rotates tokens and honors the old access token inside a grace window', () => {
     const { issued } = mintDevice();
     const next = devices.refresh(issued.refreshToken as string, 'rr-1');
     expect(next.refreshToken).not.toBe(issued.refreshToken);
     expect(next.accessToken).not.toBe(issued.accessToken);
     expect(next.deviceGrantId).toBe(issued.deviceGrantId);
-    expectFail(() => devices.authenticate(issued.accessToken as string), 'ACCESS_UNAUTHORIZED', 401);
+    // In-flight callers keep working: the previous access token resolves
+    // through the grace window instead of 401-ing as "revoked".
+    expect(devices.authenticate(issued.accessToken as string).id).toBe(issued.deviceGrantId);
     expect(devices.authenticate(next.accessToken as string).id).toBe(issued.deviceGrantId);
     const d = deviceRecord(issued.deviceGrantId as string);
     expect(d.previousRefreshHash).toBe(hash(issued.refreshToken as string));
@@ -734,6 +736,12 @@ describe('refresh', () => {
     expect(d.refreshRequestId).toBe('rr-1');
     expect(d.recoverUntil).toBeGreaterThan(Date.now());
     expect(d.envelope).toBeTruthy();
+    expect(d.accessGrace?.map((g) => g.hash)).toContain(hash(issued.accessToken as string));
+    // Past the grace window the rotated-out token is dead for real.
+    patch<Device>('device', issued.deviceGrantId as string, (d) => {
+      d.accessGrace = d.accessGrace?.map((g) => ({ ...g, until: Date.now() - 1 }));
+    });
+    expectFail(() => devices.authenticate(issued.accessToken as string), 'ACCESS_UNAUTHORIZED', 401);
   });
 
   it('replays the grace window: same requestId + old secret → identical issued payload', () => {
@@ -873,15 +881,27 @@ describe('updateScope / updateScopeResources', () => {
     );
   });
 
-  it('enforces SCOPE_HISTORY_LIMIT at 128 change records', () => {
+  it('evicts the oldest half of scope history at the limit instead of failing', () => {
+    const { issued } = mintDevice();
+    for (let i = 0; i < 128; i++) {
+      store.put('scope-change', `old-${i}`, { fingerprint: `f${i}`, result: '{}', at: i });
+    }
+    const view = devices.updateScope(issued.deviceGrantId as string, 'sc-8', '1', ['s1'], ['OBSERVE']);
+    expect(view.grantRevision).toBe('2');
+    // oldest 64 evicted; newest 64 + the fresh record remain.
+    expect(store.ids('scope-change')).toHaveLength(65);
+    expect(store.get('scope-change', 'old-0')).toBeUndefined();
+    expect(store.get('scope-change', 'old-127')).toBeDefined();
+  });
+
+  it('evicts legacy scope-change rows (no timestamp) first', () => {
     const { issued } = mintDevice();
     for (let i = 0; i < 128; i++) {
       store.put('scope-change', `old-${i}`, { fingerprint: `f${i}`, result: '{}' });
     }
-    expectFail(
-      () => devices.updateScope(issued.deviceGrantId as string, 'sc-8', '1', ['s1'], ['OBSERVE']),
-      'SCOPE_HISTORY_LIMIT', 429,
-    );
+    const view = devices.updateScope(issued.deviceGrantId as string, 'sc-9', '1', ['s1'], ['OBSERVE']);
+    expect(view.grantRevision).toBe('2');
+    expect(store.ids('scope-change')).toHaveLength(65);
   });
 });
 
