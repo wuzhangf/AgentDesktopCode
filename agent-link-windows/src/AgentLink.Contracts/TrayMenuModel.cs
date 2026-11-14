@@ -221,7 +221,7 @@ public static class TrayMenuModel
         return card.ProjectId is { Length: > 0 } project ? engine + " · " + project : engine;
     }
 
-    private static string? EngineTint(string? engine) => engine switch
+    public static string? EngineTint(string? engine) => engine switch
     {
         { } e when e.Contains("claude") => "#D97757",
         { } e when e.Contains("codex") => "#10A37F",

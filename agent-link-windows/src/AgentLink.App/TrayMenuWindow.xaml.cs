@@ -247,14 +247,6 @@ public partial class TrayMenuWindow : Window
         return grid;
     }
 
-    private static readonly Dictionary<string, Geometry> EngineGlyphs = new()
-    {
-        ["codex"] = Parse("M6,7 L11,12 L6,17 M13,17 L18,17"),
-        ["claude"] = Parse("M12,5 L12,19 M5,12 L19,12 M7.5,7.5 L16.5,16.5 M16.5,7.5 L7.5,16.5"),
-        ["gemini"] = Parse("M12,4 L20,12 L12,20 L4,12 Z"),
-        ["macos"] = Parse("M5,6 L19,6 L19,18 L5,18 Z M5,9.5 L19,9.5"),
-    };
-
     private void AddIcon(Grid grid, TrayMenuEntry entry, bool warning)
     {
         var stroke = warning ? (Brush)Resources["LinkWarn"] : (Brush)Resources["LinkSecondary"];
@@ -265,16 +257,9 @@ public partial class TrayMenuWindow : Window
         }
         if (entry.Badge is { } engine)
         {
-            var tile = new Border
-            {
-                Width = 26, Height = 26, CornerRadius = new CornerRadius(7),
-                Margin = new Thickness(0, 0, 10, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Background = new SolidColorBrush(stroke is SolidColorBrush b
-                    ? Color.FromArgb(28, b.Color.R, b.Color.G, b.Color.B)
-                    : Colors.LightGray),
-                Child = EngineGlyph(engine, stroke),
-            };
+            var tile = EngineBadge.Tile(engine, stroke);
+            tile.Margin = new Thickness(0, 0, 10, 0);
+            tile.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(tile, 0);
             grid.Children.Add(tile);
             return;
@@ -296,36 +281,6 @@ public partial class TrayMenuWindow : Window
         };
         Grid.SetColumn(viewbox, 0);
         grid.Children.Add(viewbox);
-    }
-
-    private static FrameworkElement EngineGlyph(string engine, Brush stroke)
-    {
-        var family = engine.Contains("codex") ? "codex"
-            : engine.Contains("claude") ? "claude"
-            : engine.Contains("gemini") ? "gemini"
-            : engine.Contains("macos") ? "macos"
-            : engine.Contains("pi") ? "pi" : "agent";
-        if (family == "pi")
-            return new TextBlock
-            {
-                Text = "π", FontSize = 13, FontWeight = FontWeights.Bold,
-                Foreground = stroke,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-        return new Viewbox
-        {
-            Width = 14, Height = 14,
-            Child = new System.Windows.Shapes.Path
-            {
-                Data = EngineGlyphs.TryGetValue(family, out var geometry) ? geometry : Icons["agent"],
-                Stroke = stroke,
-                StrokeThickness = 1.7,
-                StrokeLineJoin = PenLineJoin.Round,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
-            },
-        };
     }
 
     private FrameworkElement Glyph(string name, int column = 0)
