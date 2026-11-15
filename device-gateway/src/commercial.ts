@@ -18,10 +18,8 @@ export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'
       && isRecord(body) && body.intent === 'STOP') return false;
   if (localCliOnly) {
     const id = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}';
-    if (req.method === 'POST'
-        && (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|tasks/${id}/messages)$`).test(req.path)
-            || new RegExp(`^/personal/v1/local-tasks/${id}/(?:history|tasks/${id})/questions(?:/${id})?$`).test(req.path)
-            || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path))) return false;
+    if (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|history/questions(?:/${id})?|tasks/${id}/(?:messages|commands|questions(?:/${id})?))$`).test(req.path)
+        || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path)) return false;
     // Task-bound material uploads ride the free lane like task messages —
     // PUT chunks and DELETE remove are the same upload session's verbs.
     if (['POST', 'PUT', 'DELETE'].includes(req.method)

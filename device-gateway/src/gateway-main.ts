@@ -1,3 +1,4 @@
+import { taskFileBinding } from './sage-link-files.js';
 /**
  * Standalone entry: `node dist/device-gateway.mjs`.
  *
@@ -33,6 +34,8 @@
  *   DEVICE_GATEWAY_TLS_DIR|TLS_CN|TLS_DAYS|TLS_EXTRA_NAMES  provisioning knobs
  *   DEVICE_GATEWAY_TLS_KEY|TLS_CERT|TLS_CA  inline PEM (or file paths)
  *   DEVICE_GATEWAY_DISPLAY_NAME|DEVICE_GATEWAY_VERSION   log metadata
+ *   DEVICE_GATEWAY_ADVERTISE_IP   IPv4 the mDNS A record announces
+ *                                  (multi-homed hosts; default = first LAN iface)
  *   DEVICE_GATEWAY_MAX_RAW_BODY        listener drain cap bytes (default 16MiB)
  *   DEVICE_GATEWAY_PAIRING_AUTO_APPROVE  invite secret ⇒ instant approval
  *                                  (default on; '0' requires owner decision)
@@ -603,7 +606,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
       || opts.cliBridge !== undefined || workers !== undefined) {
     const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
-    localTasks = new LocalTaskAccess(devices, transport, store);
+    const socket = env('SAGE_LINK_FILE_SOCKET');
+    const key = env('SAGE_LINK_FILE_GATEWAY_KEY');
+    const mcp = env('SAGE_LINK_FILE_MCP');
+    const fileBinding = socket?.startsWith('/') && key && /^[a-f0-9]{64}$/.test(key) && mcp?.startsWith('/')
+      ? taskFileBinding(socket, key, mcp) : undefined;
+    localTasks = new LocalTaskAccess(devices, transport, store, fileBinding);
   }
 
   // OC-G: the supervisor's spawned bridges register into the same connection
@@ -621,8 +629,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       },
       {
         // upsertConnection is register-once; supervisor rows get a fresh port
-        // per spawn, so re-point the row when it already exists.
+        // per spawn, so re-point the row when it already exists. LOCAL_CLI
+        // reads the boot-scoped configuredWorkers map, not the store.
         upsertConnection: (row) => {
+          if (opts.localCliOnly) {
+            configuredWorkers.set(row.connectionId, row);
+            return;
+          }
           store.upsertConnection(row);
           if (row.baseUrl !== undefined) {
             store.updateConnectionBaseUrl(row.connectionId, row.baseUrl);
@@ -857,12 +870,19 @@ export async function main(): Promise<void> {
   // approval (discovery requests land PENDING). Opt out via env.
   const altsTxt = (origins: string[]): string | undefined =>
     origins.length === 0 ? undefined : origins.map((o) => new URL(o).host).join(',');
+  // Multi-homed hosts (VMware/Hyper-V adapters enumerate before Wi-Fi) need
+  // an explicit dial address for the Bonjour A record; without it the advert
+  // announces whichever interface the OS listed first — often undialable.
+  const advertiseIp = env('DEVICE_GATEWAY_ADVERTISE_IP');
+  if (advertiseIp !== undefined && (isIP(advertiseIp) !== 4)) {
+    configError('CONFIG_INVALID', 'DEVICE_GATEWAY_ADVERTISE_IP must be an IPv4 literal');
+  }
   const mdns = env('DEVICE_GATEWAY_MDNS') === '0'
     ? { stop: () => {}, update: () => {} }
     : startMdns({
       instance: env('DEVICE_GATEWAY_MDNS_NAME') ?? hostname(),
       port: boundPort,
-      address: opts.bind,
+      address: advertiseIp ?? opts.bind,
       txt: {
         v: '1',
         host: built.config.personalHostId ?? '',
@@ -887,7 +907,9 @@ export async function main(): Promise<void> {
       built.devices.setAlternateOrigins(origins);
       const lan = lanIPv4Addresses();
       mdns.update({
-        ...(lan.length === 0 ? {} : { address: lan[0] }),
+        ...(advertiseIp !== undefined
+          ? { address: advertiseIp }
+          : lan.length === 0 ? {} : { address: lan[0] }),
         txt: { alts: altsTxt(origins) ?? '' },
       });
     } catch { /* interface flap mid-scan — retry next round */ }

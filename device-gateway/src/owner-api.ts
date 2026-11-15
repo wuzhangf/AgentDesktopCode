@@ -203,6 +203,9 @@ export async function handleOwnerRoute(
 
     if (method === 'GET' && path === `${ROOT}/capabilities`) {
       const out: JsonObject = { ...(await ctx.auth.ownerStatus()) };
+      // The tray's member-center entry reads this same field on the owner
+      // surface — phone-api already publishes it (MC-R06).
+      out.dailyOrigin = ctx.commercial?.dailyOrigin ?? null;
       out.certificateSha256 = ctx.config.certificateSha256;
       out.certificateNotBefore = ctx.config.certificateNotBefore;
       out.certificateNotAfter = ctx.config.certificateNotAfter;
