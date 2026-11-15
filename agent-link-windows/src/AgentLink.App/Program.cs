@@ -140,6 +140,38 @@ internal static class Program
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
                     break;
                 case "workerPick": ShowPanel(); panel.BeginWorkerPick(); break;
+                case "agentAdd": ShowPanel(); panel.BeginAgentRegister(); break;
+                case "agentEnable" or "agentDisable" when entry.Id is { } key:
+                    await CallQuietAsync(new("agentSet", key,
+                        new JsonObject { ["enabled"] = entry.Action == "agentEnable" }),
+                        showPanelOnError: true);
+                    await RefreshMenuAsync();
+                    break;
+                case "agentSkip" when entry.Id is { } skipKey:
+                    await CallQuietAsync(new("agentSet", skipKey,
+                        new JsonObject { ["skipPermissions"] = !entry.Checked }),
+                        showPanelOnError: true);
+                    await RefreshMenuAsync();
+                    break;
+                case "agentRemove" when entry.Id is { } removeKey:
+                    if (MessageBox.Show("移除后此工作区注册将从列表中删除（目录文件不受影响）。",
+                        "Agent Link", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+                    await CallQuietAsync(new("agentRemove", removeKey), showPanelOnError: true);
+                    await RefreshMenuAsync();
+                    break;
+                case "agentTest" when entry.Id is { } testKey:
+                    try
+                    {
+                        var reply = await LinkProtocol.CallAsync(new("agentTest", testKey));
+                        ShowPanel();
+                        panel.ShowWorkerNotice(reply.Ok ? "✓ 引擎可用" : $"✗ {reply.Error ?? "测试失败"}");
+                    }
+                    catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException)
+                    {
+                        ShowPanel();
+                        panel.ShowWorkerNotice("后台暂不可用，无法测试。");
+                    }
+                    break;
                 case "member" when entry.Id is { } op:
                     await CallQuietAsync(new(op));
                     await RefreshMenuAsync();
@@ -181,9 +213,16 @@ internal static class Program
                 if (!reply.Ok || status is null) return new(false, null, null, null, workers, current);
                 JsonArray? devices = null;
                 JsonArray? requests = null;
+                List<ManagedAgent>? managed = null;
                 if (status.Ready)
                 {
                     try { devices = (await LinkProtocol.CallAsync(new("devices"))).Data as JsonArray; }
+                    catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException) { }
+                    try
+                    {
+                        managed = (await LinkProtocol.CallAsync(new("managedAgents"))).Data
+                            ?.Deserialize<List<ManagedAgent>>(LinkProtocol.Json);
+                    }
                     catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException) { }
                 }
                 if (status.PendingCount > 0)
@@ -191,7 +230,7 @@ internal static class Program
                     try { requests = (await LinkProtocol.CallAsync(new("requests"))).Data as JsonArray; }
                     catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException) { }
                 }
-                return new(true, status, devices, requests, workers, current);
+                return new(true, status, devices, requests, workers, current, managed);
             }
             catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException)
             {

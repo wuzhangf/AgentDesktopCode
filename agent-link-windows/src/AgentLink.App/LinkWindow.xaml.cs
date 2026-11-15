@@ -265,6 +265,14 @@ public partial class LinkWindow : Window
         }
         catch (Exception error) when (IsUnavailable(error)) { }
 
+        List<ManagedAgent>? managed = null;
+        try
+        {
+            managed = (await LinkProtocol.CallAsync(new("managedAgents"))).Data
+                ?.Deserialize<List<ManagedAgent>>(LinkProtocol.Json);
+        }
+        catch (Exception error) when (IsUnavailable(error)) { }
+
         var cards = WorkerCards.Enumerate();
         var current = WorkerCards.CurrentPath();
         if (current is not null
@@ -273,7 +281,9 @@ public partial class LinkWindow : Window
             cards.Add(attached);
 
         AgentList.Children.Clear();
-        if (cards.Count == 0)
+        foreach (var agent in managed ?? [])
+            AgentList.Children.Add(ManagedRow(agent));
+        if ((managed?.Count ?? 0) == 0 && cards.Count == 0)
         {
             AgentList.Children.Add(new Border
             {
@@ -281,7 +291,7 @@ public partial class LinkWindow : Window
                 CornerRadius = new CornerRadius(8),
                 Child = new TextBlock
                 {
-                    Text = "尚未发现运行中的 Agent。Worker 启动后会自动出现在这里；也可以手动选择它的注册卡。",
+                    Text = "尚未接入 Agent。点「注册工作区」选择引擎和目录即可接入；运行中的外部 Worker 也会自动出现在这里。",
                     Style = (Style)Resources["SecondaryText"],
                 },
             });
@@ -289,6 +299,472 @@ public partial class LinkWindow : Window
         foreach (var card in cards)
             AgentList.Children.Add(AgentRow(card, current, availability));
         if (!agentProbing) _ = ProbeAgentsAsync(cards);
+    }
+
+    private static string ManagedTitle(ManagedAgent agent)
+    {
+        var name = Path.GetFileName(agent.Project.TrimEnd(Path.DirectorySeparatorChar));
+        var engine = agent.Engine switch
+        {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            "pi" => "Sage Pi",
+            _ => agent.Engine,
+        };
+        return engine + " · " + (name is { Length: > 0 } ? name : "workspace");
+    }
+
+    private FrameworkElement ManagedRow(ManagedAgent agent)
+    {
+        var tint = TintBrush(agent.Engine);
+        var expandKey = "m:" + agent.Key;
+        var stack = new StackPanel();
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var badge = EngineBadge.Tile(agent.Engine, tint);
+        badge.Margin = new Thickness(0, 0, 10, 0);
+        badge.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(badge, 0);
+
+        var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        texts.Children.Add(new TextBlock { Text = ManagedTitle(agent), FontWeight = FontWeights.SemiBold });
+        var sub = agent.Engine + (agent.SkipPermissions ? " · 免审批" : " · 需审批")
+            + (agent.Running ? " · 运行中" : agent.Enabled ? " · 启动中" : " · 已停用");
+        if (agent.Detail is { Length: > 0 }) sub += " · " + agent.Detail;
+        texts.Children.Add(new TextBlock
+        {
+            Text = sub, FontSize = 11,
+            Foreground = (Brush)Resources["LinkSecondary"],
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        Grid.SetColumn(texts, 1);
+
+        var chevron = new TextBlock
+        {
+            Text = expanded.Contains(expandKey) ? "▾" : "▸", FontSize = 11,
+            Foreground = (Brush)Resources["LinkSecondary"],
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(chevron, 2);
+
+        var toggle = new CheckBox
+        {
+            Style = (Style)Resources["Switch"], IsChecked = agent.Enabled,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+        };
+        AutomationProperties.SetName(toggle, agent.Enabled ? $"停用 {ManagedTitle(agent)}" : $"启用 {ManagedTitle(agent)}");
+        Grid.SetColumn(toggle, 3);
+        toggle.Click += async (_, _) =>
+        {
+            toggle.IsEnabled = false;
+            try
+            {
+                await ActAsync(new("agentSet", agent.Key,
+                    new JsonObject { ["enabled"] = !agent.Enabled }));
+            }
+            finally { toggle.IsEnabled = true; }
+        };
+
+        head.Children.Add(badge);
+        head.Children.Add(texts);
+        head.Children.Add(chevron);
+        head.Children.Add(toggle);
+
+        var detail = ManagedDetail(agent);
+        detail.Visibility = expanded.Contains(expandKey) ? Visibility.Visible : Visibility.Collapsed;
+        head.MouseLeftButtonUp += (_, e) =>
+        {
+            if (Inside(e.OriginalSource as DependencyObject, toggle)) return;
+            if (!expanded.Remove(expandKey)) expanded.Add(expandKey);
+            detail.Visibility = expanded.Contains(expandKey) ? Visibility.Visible : Visibility.Collapsed;
+            chevron.Text = expanded.Contains(expandKey) ? "▾" : "▸";
+        };
+        stack.Children.Add(head);
+        stack.Children.Add(detail);
+        return new Border
+        {
+            Padding = new Thickness(11), Margin = new Thickness(0, 0, 0, 8),
+            Background = (Brush)Resources["LinkSubtle"], CornerRadius = new CornerRadius(8),
+            Child = stack,
+        };
+    }
+
+    private FrameworkElement ManagedDetail(ManagedAgent agent)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        panel.Children.Add(new Border
+        {
+            Height = 1, Margin = new Thickness(0, 0, 0, 10),
+            Background = (Brush)Resources["LinkLine"],
+        });
+
+        var actions = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var test = new Button
+        {
+            Content = "测试引擎", Padding = new Thickness(12, 4, 12, 4),
+            MinHeight = 30, HorizontalAlignment = HorizontalAlignment.Left,
+            IsEnabled = agent.Running,
+        };
+        DockPanel.SetDock(test, Dock.Left);
+        test.Click += async (_, _) =>
+        {
+            test.IsEnabled = false;
+            try
+            {
+                var reply = await LinkProtocol.CallAsync(new("agentTest", agent.Key));
+                WorkerNotice.Text = reply.Ok ? "✓ " + ManagedTitle(agent) + " · 引擎可用"
+                    : "✗ " + ManagedTitle(agent) + " · " + (reply.Error ?? "测试失败");
+            }
+            catch (Exception error) when (IsUnavailable(error)) { WorkerNotice.Text = "后台暂不可用。"; }
+            finally { test.IsEnabled = true; }
+        };
+        var remove = new Button
+        {
+            Content = "删除注册", Padding = new Thickness(12, 4, 12, 4),
+            MinHeight = 30, HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        DockPanel.SetDock(remove, Dock.Right);
+        remove.Click += async (_, _) =>
+        {
+            if (MessageBox.Show("删除后此工作区注册将从列表中移除（目录文件不受影响）。", "Agent Link",
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            await ActAsync(new("agentRemove", agent.Key));
+        };
+        actions.Children.Add(test);
+        actions.Children.Add(remove);
+        panel.Children.Add(actions);
+
+        var skip = new CheckBox
+        {
+            Content = "免审批执行（跳过工具确认；关闭后按各家 CLI 默认规则，可能被拒）",
+            IsChecked = agent.SkipPermissions, Margin = new Thickness(0, 0, 0, 8),
+        };
+        skip.Click += async (_, _) =>
+        {
+            skip.IsEnabled = false;
+            try
+            {
+                await ActAsync(new("agentSet", agent.Key,
+                    new JsonObject { ["skipPermissions"] = skip.IsChecked == true }));
+            }
+            finally { skip.IsEnabled = true; }
+        };
+        panel.Children.Add(skip);
+
+        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var pick = new Button
+        {
+            Content = "切换…", Padding = new Thickness(10, 2, 10, 2), MinHeight = 26,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        pick.Click += async (_, _) =>
+        {
+            var chooser = new Microsoft.Win32.OpenFolderDialog { Title = "选择工作区目录" };
+            if (chooser.ShowDialog(this) != true) return;
+            await ActAsync(new("agentSet", agent.Key,
+                new JsonObject { ["project"] = chooser.FolderName }));
+        };
+        var open = new Button
+        {
+            Content = "打开", Padding = new Thickness(10, 2, 10, 2), MinHeight = 26,
+            HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(6, 0, 0, 0),
+        };
+        open.Click += (_, _) => OpenDirectory(agent.Project);
+        var pathText = new TextBlock
+        {
+            Text = agent.Project, FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = (Brush)Resources["LinkSecondary"],
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        DockPanel.SetDock(open, Dock.Right);
+        DockPanel.SetDock(pick, Dock.Right);
+        row.Children.Add(open);
+        row.Children.Add(pick);
+        row.Children.Add(new TextBlock
+        {
+            Text = "工作区  ", FontWeight = FontWeights.SemiBold, FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(pathText);
+        panel.Children.Add(row);
+
+        if (agent.Engine is "codex" or "claude")
+        {
+            var historyPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+            var histRow = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            var histButton = new Button
+            {
+                Content = "查看…", Padding = new Thickness(10, 2, 10, 2), MinHeight = 26,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            DockPanel.SetDock(histButton, Dock.Right);
+            histRow.Children.Add(histButton);
+            histRow.Children.Add(new TextBlock
+            {
+                Text = "历史会话  ", FontWeight = FontWeights.SemiBold, FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            histButton.Click += async (_, _) =>
+            {
+                histButton.IsEnabled = false;
+                try { await LoadHistoryAsync(agent, historyPanel); }
+                finally { histButton.IsEnabled = true; }
+            };
+            panel.Children.Add(histRow);
+            panel.Children.Add(historyPanel);
+        }
+
+        // Provider choice: official login vs cc-switch route — the same
+        // decision the desktop model picker encodes, as a plain either/or.
+        {
+            var provRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+            provRow.Children.Add(new TextBlock
+            {
+                Text = "模型来源", FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Brush)Resources["LinkSecondary"], Margin = new Thickness(0, 0, 8, 0),
+            });
+            var prov = new ComboBox { MinWidth = 220, FontSize = 12 };
+            prov.Items.Add("自动");
+            prov.Items.Add(agent.Engine == "codex" ? "OpenAI 官方" : agent.Engine == "claude" ? "Claude 官方" : "官方");
+            prov.Items.Add(agent.CcRoute is { } r ? "CC 路由 · " + r : "CC 路由");
+            prov.SelectedIndex = agent.Provider switch { "official" => 1, "cc" => 2, _ => 0 };
+            var provApplying = false;
+            prov.SelectionChanged += async (_, _) =>
+            {
+                if (provApplying) return;
+                var value = prov.SelectedIndex switch { 1 => "official", 2 => "cc", _ => null };
+                if (value == agent.Provider) return;
+                prov.IsEnabled = false;
+                try { await ActAsync(new("agentSet", agent.Key, new JsonObject { ["provider"] = value })); }
+                finally { prov.IsEnabled = true; }
+            };
+            provRow.Children.Add(prov);
+            panel.Children.Add(provRow);
+        }
+
+        if (agent.Provider != "official" && agent.Models is { Count: > 0 } models)
+        {
+            // cc-switch route model menu — same choice Claude Desktop's picker
+            // makes, sent to the upstream verbatim.
+            var modelRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+            modelRow.Children.Add(new TextBlock
+            {
+                Text = "模型", FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Brush)Resources["LinkSecondary"], Margin = new Thickness(0, 0, 8, 0),
+            });
+            var picker = new ComboBox { MinWidth = 180, FontSize = 12 };
+            foreach (var id in models) picker.Items.Add(id);
+            picker.SelectedItem = agent.Model is { } m && models.Contains(m) ? m : models[0];
+            var applying = false;
+            picker.SelectionChanged += async (_, _) =>
+            {
+                if (applying || picker.SelectedItem is not string next || next == agent.Model) return;
+                picker.IsEnabled = false;
+                try { await ActAsync(new("agentSet", agent.Key, new JsonObject { ["model"] = next })); }
+                finally { picker.IsEnabled = true; }
+            };
+            modelRow.Children.Add(picker);
+            panel.Children.Add(modelRow);
+        }
+
+        var config = new List<string> { "引擎  " + agent.Engine };
+        if (agent.Model is { } model) config.Add("模型  " + model);
+        if (agent.CcRoute is { } route) config.Add("cc 路由  " + route);
+        if (agent.Executable is { } exe) config.Add("可执行文件  " + exe);
+        if (agent.ConnectionId is { } cid) config.Add("连接  " + cid);
+        panel.Children.Add(new TextBlock
+        {
+            Text = string.Join("\n", config), FontSize = 11,
+            Foreground = (Brush)Resources["LinkSecondary"],
+            TextWrapping = TextWrapping.Wrap,
+        });
+        return panel;
+    }
+
+    /// <summary>Reads this engine's local vendor-CLI session files (read-only,
+    /// via the Host's cli-bridge history subcommand) and lists them inline.</summary>
+    private async Task LoadHistoryAsync(ManagedAgent agent, StackPanel target)
+    {
+        target.Children.Clear();
+        target.Children.Add(new TextBlock { Text = "读取中…", Style = (Style)Resources["SecondaryText"] });
+        try
+        {
+            var reply = await LinkProtocol.CallAsync(new("agentHistory",
+                Args: new JsonObject { ["engine"] = agent.Engine }));
+            var sessions = (reply.Data?["sessions"] as JsonArray)?.OfType<JsonObject>().ToArray() ?? [];
+            target.Children.Clear();
+            if (sessions.Length == 0)
+            {
+                target.Children.Add(new TextBlock
+                {
+                    Text = "本机没有此引擎的会话记录",
+                    Style = (Style)Resources["SecondaryText"],
+                });
+            }
+            foreach (var session in sessions)
+            {
+                var at = DateTimeOffset.TryParse(Text(session, "at"), out var t)
+                    ? t.ToLocalTime().ToString("MM-dd HH:mm") : "";
+                var title = Text(session, "title") is { Length: > 0 } tt
+                    ? tt : Text(session, "id")?[..Math.Min(8, Text(session, "id")!.Length)] ?? "会话";
+                var file = Text(session, "file");
+                var rowPanel = new DockPanel { Margin = new Thickness(0, 0, 0, 3) };
+                var adopt = new Button
+                {
+                    Content = "接管", FontSize = 10, Padding = new Thickness(8, 1, 8, 1),
+                    MinHeight = 24, HorizontalAlignment = HorizontalAlignment.Right,
+                    IsEnabled = agent.Enabled,
+                    ToolTip = agent.Enabled
+                        ? "把此会话接入此工作区：历史导入账本，下一条消息续跑原会话"
+                        : "先启用此工作区",
+                };
+                adopt.Click += async (_, _) =>
+                {
+                    adopt.IsEnabled = false;
+                    try
+                    {
+                        var reply = await LinkProtocol.CallAsync(new("agentAdopt", agent.Key,
+                            new JsonObject { ["file"] = file, ["title"] = title }));
+                        WorkerNotice.Text = reply.Ok
+                            ? "已接管——手机端此工作区下出现对应任务，继续对话会续跑原会话"
+                            : reply.Error;
+                    }
+                    catch (Exception error) when (IsUnavailable(error)) { WorkerNotice.Text = "后台暂不可用。"; }
+                    finally { adopt.IsEnabled = true; }
+                };
+                var row = new Button
+                {
+                    Content = $"{at}  {title}", FontSize = 11, MinHeight = 26,
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(8, 2, 8, 2),
+                };
+                row.Click += async (_, _) => await ShowHistoryAsync(agent, file!, title);
+                DockPanel.SetDock(adopt, Dock.Right);
+                rowPanel.Children.Add(adopt);
+                rowPanel.Children.Add(row);
+                target.Children.Add(rowPanel);
+            }
+        }
+        catch (Exception error) when (IsUnavailable(error))
+        {
+            target.Children.Clear();
+            target.Children.Add(new TextBlock
+            {
+                Text = "后台暂不可用", Style = (Style)Resources["SecondaryText"],
+            });
+        }
+    }
+
+    /// <summary>Fetches one session file's messages and shows them in a
+    /// read-only window (last 60, vendor-injected context rows filtered).</summary>
+    private async Task ShowHistoryAsync(ManagedAgent agent, string file, string title)
+    {
+        try
+        {
+            var reply = await LinkProtocol.CallAsync(new("agentHistoryRead",
+                Args: new JsonObject { ["engine"] = agent.Engine, ["file"] = file }));
+            var messages = (reply.Data?["messages"] as JsonArray)?.OfType<JsonObject>().ToArray() ?? [];
+            var view = new Window
+            {
+                Owner = this, Title = title, Width = 560, Height = 640,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            };
+            LinkTheme.Apply(view.Resources);
+            var list = new StackPanel { Margin = new Thickness(16) };
+            if (reply.Data?["truncated"]?.GetValue<bool>() == true)
+                list.Children.Add(new TextBlock
+                {
+                    Text = "仅显示最近 60 条", Margin = new Thickness(0, 0, 0, 10),
+                    Style = (Style)view.Resources["SecondaryText"],
+                });
+            foreach (var m in messages)
+            {
+                var role = Text(m, "role");
+                list.Children.Add(new TextBlock
+                {
+                    Text = role == "user" ? "你" : role == "assistant" ? "助手" : role ?? "?",
+                    FontWeight = FontWeights.SemiBold, FontSize = 11,
+                    Margin = new Thickness(0, 10, 0, 2),
+                });
+                list.Children.Add(new TextBlock
+                {
+                    Text = Text(m, "text"), TextWrapping = TextWrapping.Wrap, FontSize = 12,
+                });
+            }
+            if (messages.Length == 0)
+                list.Children.Add(new TextBlock { Text = "此会话没有可显示的消息。" });
+            view.Content = new ScrollViewer
+            {
+                Content = list,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            };
+            view.Show();
+        }
+        catch (Exception error) when (IsUnavailable(error)) { WorkerNotice.Text = "后台暂不可用。"; }
+    }
+
+    internal void BeginAgentRegister()
+    {
+        Tabs.SelectedIndex = 1;
+        RegisterForm.Visibility = Visibility.Visible;
+        RegisterProject.Focus();
+    }
+
+    private void RegisterAgent_Click(object sender, RoutedEventArgs e) =>
+        RegisterForm.Visibility = RegisterForm.Visibility == Visibility.Visible
+            ? Visibility.Collapsed : Visibility.Visible;
+
+    private void RegisterCancel_Click(object sender, RoutedEventArgs e) =>
+        RegisterForm.Visibility = Visibility.Collapsed;
+
+    private void RegisterProjectPick_Click(object sender, RoutedEventArgs e)
+    {
+        var chooser = new Microsoft.Win32.OpenFolderDialog { Title = "选择工作区目录" };
+        if (chooser.ShowDialog(this) == true) RegisterProject.Text = chooser.FolderName;
+    }
+
+    private void RegisterExePick_Click(object sender, RoutedEventArgs e)
+    {
+        var chooser = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选择引擎可执行文件", Filter = "可执行文件 (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat|全部 (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (chooser.ShowDialog(this) == true) RegisterExe.Text = chooser.FileName;
+    }
+
+    private async void RegisterSubmit_Click(object sender, RoutedEventArgs e)
+    {
+        var project = RegisterProject.Text.Trim();
+        if (project.Length == 0 || !Directory.Exists(project))
+        {
+            WorkerNotice.Text = "请选择存在的工作区目录。";
+            return;
+        }
+        var engine = (RegisterEngine.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "claude";
+        var args = new JsonObject
+        {
+            ["engine"] = engine,
+            ["project"] = project,
+            ["skipPermissions"] = RegisterSkip.IsChecked == true,
+        };
+        if (RegisterExe.Text.Trim() is { Length: > 0 } exe) args["executable"] = exe;
+        if (RegisterModel.Text.Trim() is { Length: > 0 } model) args["model"] = model;
+        RegisterSubmit.IsEnabled = false;
+        try
+        {
+            var reply = await LinkProtocol.CallAsync(new("agentAdd", Args: args));
+            WorkerNotice.Text = reply.Ok ? "已注册，正在启动引擎…" : reply.Error;
+            if (reply.Ok) RegisterForm.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception error) when (IsUnavailable(error)) { WorkerNotice.Text = "后台暂不可用。"; }
+        finally { RegisterSubmit.IsEnabled = true; }
+        await RefreshAsync();
     }
 
     private FrameworkElement AgentRow(TrayWorkerCard card, string? current, Dictionary<string, string> availability)

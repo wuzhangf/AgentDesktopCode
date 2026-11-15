@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 
 namespace AgentLink;
 
-public sealed record LinkRequest(string Operation, string? Id = null);
+public sealed record LinkRequest(string Operation, string? Id = null, JsonNode? Args = null);
 public sealed record LinkReply(bool Ok, string? Error = null, JsonNode? Data = null);
 public sealed record LinkStatus(bool Ready, string Message, string Computer, string? Origin, int DeviceCount,
     int PendingCount, string? PersonalHostId, string? StoreId, int? GatewayPid, bool Enabled,

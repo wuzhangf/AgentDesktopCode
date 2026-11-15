@@ -68,11 +68,13 @@ internal sealed class LinkHost : IDisposable
     private volatile Ports? ports;
     private string WorkerPathFile => Path.Combine(LinkProtocol.Root, "worker-card.path");
     private WorkerCard? registered;
+    private readonly ManagedAgents managed;
     private readonly ConnectorSupervisor connector;
     private string? descriptorCertificatePem;
 
     internal LinkHost()
     {
+        managed = new ManagedAgents(InstallRoot, OwnerAsync);
         connector = new ConnectorSupervisor(InstallRoot, MemberOrigin,
             enabled: () => enabled, ports: () => ports,
             ensureDescriptor: EnsureDescriptorAsync, openBrowser: OpenMemberPage);
@@ -184,25 +186,44 @@ internal sealed class LinkHost : IDisposable
             stdout = DrainAsync(gateway.Process.StandardOutput);
             ports = chosen;
             registered = null;
+            managed.GatewayRestarted();
             await mutations.WaitAsync(cancellation);
             try
             {
-                await RefreshAsync(gateway.Process.Id, cancellation);
+                // The owner listener binds seconds after the announce line —
+                // retry instead of treating the first refusal as fatal.
+                for (var attempt = 0; ; attempt++)
+                {
+                    try { await RefreshAsync(gateway.Process.Id, cancellation); break; }
+                    catch (Exception error) when ((error is HttpRequestException or IOException) && attempt < 30)
+                    {
+                        await Task.Delay(500, cancellation);
+                    }
+                }
                 if (persistPorts) LinkIdentity.SaveAtomic(portsFile, JsonSerializer.SerializeToUtf8Bytes(chosen, LinkProtocol.Json));
             }
             finally { mutations.Release(); }
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
             var exited = gateway.Process.WaitForExitAsync(cancellation);
+            var refreshFailures = 0;
             while (!exited.IsCompleted)
             {
                 var tick = timer.WaitForNextTickAsync(cancellation).AsTask();
                 if (await Task.WhenAny(tick, exited) == exited) break;
                 await tick;
                 await mutations.WaitAsync(cancellation);
-                try { await RefreshAsync(gateway.Process.Id, cancellation); }
+                try { await RefreshAsync(gateway.Process.Id, cancellation); refreshFailures = 0; }
+                // A transient owner-API failure must not kill a live gateway;
+                // only surface it after ~30s of consecutive failures.
+                catch (Exception error) when (error is HttpRequestException or IOException)
+                {
+                    if (++refreshFailures >= 10)
+                        status = NewStatus("后台刷新失败（" + error.GetType().Name + "）");
+                }
                 finally { mutations.Release(); }
             }
             await exited;
+            managed.GatewayStopped();
             status = NewStatus($"后台网关已退出（{gateway.Process.ExitCode}），正在恢复");
         }
         finally
@@ -354,6 +375,7 @@ internal sealed class LinkHost : IDisposable
     private async Task RefreshAsync(int gatewayPid, CancellationToken cancellation)
     {
         await RefreshWorkerAsync(cancellation);
+        await managed.ReconcileAsync(cancellation);
         var cap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
         var devices = await OwnerAsync(HttpMethod.Get, "devices", null, cancellation) as JsonArray;
         var scopesSynced = true;
@@ -518,6 +540,40 @@ internal sealed class LinkHost : IDisposable
                     var tested = await LoadWorkerAsync(testPath, cancellation);
                     var (ok, detail) = await ProbeWorkerAsync(tested, cancellation);
                     return ok ? new(true, Data: JsonValue.Create(detail)) : new(false, detail);
+                case "managedAgents":
+                    return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
+                case "agentAdd" when request.Args is { } addArgs:
+                    managed.Add(
+                        addArgs["engine"]?.GetValue<string>() is { Length: > 0 } engine ? engine
+                            : throw new IOException("缺少引擎"),
+                        addArgs["executable"]?.GetValue<string>(),
+                        addArgs["project"]?.GetValue<string>() is { Length: > 0 } project ? project
+                            : throw new IOException("缺少工作区目录"),
+                        addArgs["model"]?.GetValue<string>(),
+                        addArgs["skipPermissions"]?.GetValue<bool>() ?? true);
+                    // Spawn happens on the next refresh tick — a 12s startup probe
+                    // would outlast this pipe's 8s deadline; the entry shows 启动中.
+                    return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
+                case "agentSet" when request.Id is { } setKey && request.Args is { } setArgs:
+                    await managed.UpdateAsync(setKey, setArgs, cancellation);
+                    return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
+                case "agentRemove" when request.Id is { } removeKey:
+                    await managed.RemoveAsync(removeKey, cancellation);
+                    return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
+                case "agentTest" when request.Id is { } testKey:
+                    var (okAgent, agentDetail) = await managed.TestAsync(testKey);
+                    return okAgent ? new(true, Data: JsonValue.Create(agentDetail)) : new(false, agentDetail);
+                case "agentHistory" when request.Args is { } histArgs:
+                    return new(true, Data: await managed.HistoryListAsync(
+                        histArgs["engine"]?.GetValue<string>() ?? "", cancellation));
+                case "agentAdopt" when request.Id is { } adoptKey && request.Args is { } adoptArgs:
+                    return new(true, Data: await managed.AdoptAsync(adoptKey,
+                        adoptArgs["file"]?.GetValue<string>(),
+                        adoptArgs["title"]?.GetValue<string>(), cancellation));
+                case "agentHistoryRead" when request.Args is { } histArgs:
+                    return new(true, Data: await managed.HistoryReadAsync(
+                        histArgs["engine"]?.GetValue<string>() ?? "",
+                        histArgs["file"]?.GetValue<string>(), cancellation));
                 case "devices":
                     return new(true, Data: await OwnerAsync(HttpMethod.Get, "devices", null, cancellation));
                 case "requests":
@@ -585,6 +641,7 @@ internal sealed class LinkHost : IDisposable
 
     public void Dispose()
     {
+        managed.Dispose();
         owner.Dispose();
         mutations.Dispose();
         stop.Dispose();

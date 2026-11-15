@@ -205,8 +205,42 @@ internal static class ContractChecks
             || codexPage.Any(e => e.Action == "detachWorker")
             || codexPage.FirstOrDefault(e => e.Action == "browseWorker") is not { Enabled: false })
             throw new InvalidOperationException("unattached agent page wrong");
-        if (Find(agents, "workerPick") is null || Find(agents, "openAgents") is null)
+        if (Find(agents, "workerPick") is null || Find(agents, "openAgents") is null
+            || Find(agents, "agentAdd") is null)
             throw new InvalidOperationException("agent section tail wrong");
+
+        // Managed workspaces appear before cards: enable/disable switch,
+        // approval-free CheckItem, engine test, workspace browse, remove.
+        var managed = new List<ManagedAgent>
+        {
+            new("claude-abc12345", "claude", @"D:\ws\proj", @"C:\Tools\claude.exe", null,
+                SkipPermissions: true, Enabled: true, Running: true,
+                ConnectionId: "managed-claude-abc12345", Detail: null,
+                CcRoute: "opencode-go", Models: ["deepseek-v4.1-flash"], Provider: "cc"),
+            new("codex-def67890", "codex", @"D:\ws\old", null, "gpt-5.6-sol",
+                SkipPermissions: false, Enabled: false, Running: false, null, "已停用", null, null, null),
+        };
+        var managedSection = TrayMenuModel.Build(new(true, Status(), null, null, [], null, managed))
+            .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" });
+        if (managedSection.Detail != "Claude · proj · 运行中")
+            throw new InvalidOperationException("managed agent detail wrong: " + managedSection.Detail);
+        var mrows = managedSection.Children!;
+        if (mrows[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Claude · proj", Detail: "运行中",
+                Badge: "claude" }
+            || mrows[1] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Codex · old", Detail: "已停用" })
+            throw new InvalidOperationException("managed agent rows wrong");
+        var live = mrows[0].Children!;
+        if (!live.Any(e => e is { Action: "agentDisable", Id: "claude-abc12345" })
+            || live.FirstOrDefault(e => e.Action == "agentSkip") is not { Kind: TrayMenuEntryKind.CheckItem, Checked: true }
+            || live.FirstOrDefault(e => e.Action == "agentTest") is not { Enabled: true }
+            || live.FirstOrDefault(e => e.Action == "browseWorker") is not { Id: @"D:\ws\proj" }
+            || !live.Any(e => e is { Action: "agentRemove", Id: "claude-abc12345" }))
+            throw new InvalidOperationException("running managed page wrong");
+        var stopped = mrows[1].Children!;
+        if (!stopped.Any(e => e is { Action: "agentEnable", Id: "codex-def67890" })
+            || stopped.FirstOrDefault(e => e.Action == "agentSkip") is not { Checked: false }
+            || stopped.FirstOrDefault(e => e.Action == "agentTest") is not { Enabled: false })
+            throw new InvalidOperationException("stopped managed page wrong");
 
         // Orphan current path still shows an attached row; empty shows the hint.
         var orphan = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"D:\gone\old.json"))
