@@ -869,10 +869,12 @@ export class LocalTaskAccess {
       if (method === 'GET') {
         if (p.length === 4 && p[3] === 'requests') fail('OPERATION_NOT_ALLOWED', 403);
         if (p.length === 5 && p[3] === 'requests') return this.recoverInput(token, backend, task, p[4]!);
-        const chunkRead = p.length === 8 && p[3] === 'artifacts' && p[5] === 'chunks';
+        const artifactChunk = p.length === 8 && p[3] === 'artifacts' && p[5] === 'chunks';
+        const fileChunk = p.length === 8 && p[3] === 'files' && p[5] === 'chunks';
+        const chunkRead = artifactChunk || fileChunk;
         const read = chunkRead || p.length === 3
-          || (p.length === 4 && ['events', 'output', 'metrics', 'messages', 'input-requests', 'artifacts', 'questions'].includes(p[3]!))
-          || (p.length === 5 && p[3] === 'artifacts');
+          || (p.length === 4 && ['events', 'output', 'metrics', 'messages', 'input-requests', 'artifacts', 'files', 'questions'].includes(p[3]!))
+          || (p.length === 5 && (p[3] === 'artifacts' || p[3] === 'files'));
         if (!read) fail('OPERATION_NOT_ALLOWED', 403);
         let tail = `/tasks/${task}`;
         for (let i = 3; i < p.length; i++) tail += `/${p[i]}`;
@@ -894,7 +896,8 @@ export class LocalTaskAccess {
         }
         if (chunkRead && graphicsPublicRead) fail('OPERATION_NOT_ALLOWED', 403);
         const result = this.ok(await this.source(backend, 'GET', tail));
-        if (chunkRead) await this.verifyArtifactChunk(backend, task, p[4]!, p[6]!, p[7]!, result);
+        if (artifactChunk) await this.verifyArtifactChunk(backend, task, p[4]!, p[6]!, p[7]!, result);
+        if (fileChunk) await this.verifyFileChunk(backend, task, p[4]!, p[6]!, p[7]!, result);
         if (p.length === 3 && result.taskId !== task) fail('LOCAL_BINDING_MISMATCH', 409);
         let publicView: Json = (p.length === 3 && result.recipeID === WORKFLOW_RECIPE
           ? this.graphicsTaskView(result)
@@ -920,6 +923,16 @@ export class LocalTaskAccess {
         }
         if (p.length === 5 && p[3] === 'artifacts') {
           await this.verifyArtifact(backend, task, p[4]!, result);
+        }
+        // Staged-file metadata rows commit to (task, fileId, sha) — same
+        // binding check as artifact metadata so a swapped listing cannot
+        // redirect a chunk fetch.
+        if (p.length === 5 && p[3] === 'files') {
+          if (result.schemaVersion !== 'worker-local-file/1'
+              || !/^file-[a-f0-9]{64}$/.test(p[4]!) || result.fileId !== p[4]
+              || result.taskId !== task || !/^[a-f0-9]{64}$/.test(String(result.sha256))) {
+            fail('LOCAL_FILE_INVALID', 502);
+          }
         }
         if (graphicsArtifactRead) {
           if (p.length === 5) {
@@ -966,6 +979,28 @@ export class LocalTaskAccess {
     if (!item || item.status !== 'AVAILABLE_CHUNKED' || item.transferMode !== 'CHUNKS_V1' || item.sha256 !== digest
         || !Number.isSafeInteger(size) || size < 524289 || size > 20971520 || offset >= size
         || result.sizeBytes !== String(size) || bytes.length !== Math.min(262144, size - offset)) fail('LOCAL_ARTIFACT_CHANGED', 409);
+  }
+
+  /** Same end-to-end shape as verifyArtifactChunk but for staged deliverables
+   * (worker-local-file-chunk/1): the file row is task-scoped and any size may
+   * chunk — there is no >512KB floor like artifacts have. */
+  private async verifyFileChunk(backend: string, task: string, fileId: string, digest: string, rawOffset: string, result: Json): Promise<void> {
+    const offset = Number(rawOffset);
+    if (!/^file-[a-f0-9]{64}$/.test(fileId) || !/^[a-f0-9]{64}$/.test(digest)
+        || !/^(0|[1-9][0-9]*)$/.test(rawOffset) || !Number.isSafeInteger(offset) || offset % 262144 !== 0
+        || result.schemaVersion !== 'worker-local-file-chunk/1' || result.taskId !== task || result.fileId !== fileId
+        || result.sha256 !== digest || result.offset !== offset || result.encoding !== 'base64'
+        || typeof result.bytes !== 'string' || result.bytes.length > 349528) fail('LOCAL_FILE_INVALID', 502);
+    const encoded = result.bytes as string;
+    if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) fail('LOCAL_FILE_INVALID', 502);
+    const bytes = Buffer.from(encoded, 'base64');
+    if (bytes.toString('base64') !== encoded || hashBytes(bytes) !== result.chunkSHA256) fail('LOCAL_FILE_CHANGED', 409);
+    const listing = this.ok(await this.source(backend, 'GET', `/tasks/${task}/files`));
+    const item = (Array.isArray(listing.items) ? listing.items : []).filter(isRecord).find(row => row.fileId === fileId);
+    const size = Number(item?.size);
+    if (!item || item.state !== 'staged' || item.sha256 !== digest
+        || !Number.isSafeInteger(size) || size < 1 || size > 67108864 || offset >= size
+        || result.sizeBytes !== String(size) || bytes.length !== Math.min(262144, size - offset)) fail('LOCAL_FILE_CHANGED', 409);
   }
 
   /** Verify bounded immutable native bytes against the task's published manifest. */
