@@ -487,7 +487,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/local-tasks' || path.startsWith('/personal/v1/local-tasks/')) {
     if (ctx.localTasks === undefined) fail('LOCAL_SOURCE_NOT_CONFIGURED', 409);
-    const input = method === 'POST' ? jsonBody(req) : null;
+    const input = ['POST', 'PUT'].includes(method) ? jsonBody(req) : null;
     const key = input !== null && 'requestKey' in input ? idempotencyHeader(req) : null;
     const result = await ctx.localTasks.remote(token, method, path, input, key, req.rawQuery);
     await ctx.auth.authenticate(token);

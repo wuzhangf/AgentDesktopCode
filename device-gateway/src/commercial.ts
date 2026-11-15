@@ -16,10 +16,18 @@ export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'
   }
   if (req.method === 'POST' && /\/(commands|control)$/.test(req.path)
       && isRecord(body) && body.intent === 'STOP') return false;
-  if (localCliOnly && req.method === 'POST') {
+  if (localCliOnly) {
     const id = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}';
-    if (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|tasks/${id}/messages)$`).test(req.path)
-        || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path)) return false;
+    if (req.method === 'POST'
+        && (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|tasks/${id}/messages)$`).test(req.path)
+            || new RegExp(`^/personal/v1/local-tasks/${id}/(?:history|tasks/${id})/questions(?:/${id})?$`).test(req.path)
+            || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path))) return false;
+    // Task-bound material uploads ride the free lane like task messages —
+    // PUT chunks and DELETE remove are the same upload session's verbs.
+    if (['POST', 'PUT', 'DELETE'].includes(req.method)
+        && new RegExp(`^/personal/v1/local-tasks/${id}/projects/${id}/material-uploads(?:/${id}(?:/chunks/[0-9]+|/seal)?)?$`).test(req.path)) {
+      return false;
+    }
   }
   return true;
 }

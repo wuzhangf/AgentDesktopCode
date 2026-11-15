@@ -275,6 +275,29 @@ class Fixture {
         return;
       }
     }
+    const matMatch = /^\/local\/v1\/material-uploads(\/[^/?]+)?(\/chunks\/[^/?]+|\/seal|\/cancel)?$/.exec(url);
+    if (matMatch) {
+      const replyFor = (body: unknown): { status: number; body: unknown } => {
+        const b = body as Record<string, unknown> | undefined;
+        const key = matMatch[1] !== undefined ? matMatch[1].substring(1) : (b?.uploadKey as string | undefined) ?? 'mat-unknown';
+        const tail = matMatch[2] ?? '';
+        const name = (b?.name as string | undefined) ?? 'notes.md';
+        const sizeBytes = (b?.sizeBytes as number | undefined) ?? 4;
+        const sha256 = (b?.sha256 as string | undefined) ?? 'a'.repeat(64);
+        if (tail === '/cancel') {
+          return { status: 200, body: { schemaVersion: 'material-upload/1', uploadKey: key, name, sizeBytes, sha256, nextOffset: 0, state: 'CANCELLED' } };
+        }
+        const sealed = { schemaVersion: 'material-upload/1', uploadKey: key, name, sizeBytes, sha256, nextOffset: sizeBytes, state: 'SEALED', materialRef: `material://${key}` };
+        if (req.method === 'GET' || tail === '/seal') return { status: 200, body: sealed };
+        return { status: 200, body: { ...sealed, nextOffset: 0, state: 'OPEN' } };
+      };
+      if (req.method === 'POST') {
+        readBody((body) => { record(body); const reply = replyFor(body); send(reply.status, reply.body); });
+      } else {
+        record(undefined); const reply = replyFor(undefined); send(reply.status, reply.body);
+      }
+      return;
+    }
     const uploadMatch = /^\/local\/v1\/native\/v1\/workspaces\/([^/]+)\/uploads\/([^/?]+)(.*)$/.exec(url);
     if (uploadMatch) {
       const project = uploadMatch[1]!;
@@ -1231,6 +1254,88 @@ describe('native workspace uploads + CONTINUE', () => {
       inputBody({ requestKey: 'bad-4', intent: 'CONTINUE', sealedUploadKeys: ['m2'] }), 'bad-4')))
       .toEqual({ code: 'MATERIAL_UPLOAD_UNCONFIRMED', status: 409 });
     expect(fx.posts('/local/v1/tasks/native-t1/commands')).toHaveLength(0);
+  });
+});
+
+describe('task-bound material uploads (material-upload/1)', () => {
+  const matRoot = `${ROOT}/${STORE}/projects/p1/material-uploads`;
+  const sourceKey = (clientKey: string): string =>
+    'mat-' + hash(`host1|dev1|7|${STORE}|p1|${clientKey}`);
+  const beginBody = (key: string) => ({
+    requestKey: `${key}-begin`, uploadKey: key,
+    target: { taskId: 'native-t1' }, name: 'qr.png', mediaType: 'image/png',
+    sizeBytes: 4, sha256: 'b'.repeat(64),
+  });
+
+  it('forwards begin/chunk/seal with namespace-rewritten keys', async () => {
+    const { access } = harness();
+    const begun = await remote(access, 'POST', matRoot, beginBody('up1'), 'up1-begin');
+    expect(begun.status).toBe(200);
+    const sk = sourceKey('up1');
+    const posts = fx.posts('/local/v1/material-uploads');
+    expect(posts).toHaveLength(1);
+    const wire = posts[0]!.body as Record<string, unknown>;
+    expect(wire.uploadKey).toBe(sk);
+    expect(wire.requestKey).toBe(`${sk}-begin`);
+    expect(wire.target).toEqual({ taskId: 'native-t1' });
+
+    const data = Buffer.from('data');
+    const digest = createHash('sha256').update(data).digest('hex');
+    const chunked = await remote(access, 'PUT', `${matRoot}/up1/chunks/0`,
+      { requestKey: 'up1-chunk-0', chunkDigest: digest, dataBase64: data.toString('base64') }, 'up1-chunk-0');
+    expect(chunked.status).toBe(200);
+    const chunks = fx.posts(`/local/v1/material-uploads/${sk}/chunks/0`);
+    expect(chunks).toHaveLength(1);
+    expect((chunks[0]!.body as Record<string, unknown>).requestKey).toBe(`${sk}-chunk-0`);
+
+    const sealed = await remote(access, 'POST', `${matRoot}/up1/seal`,
+      { requestKey: 'up1-seal', sha256: 'b'.repeat(64) }, 'up1-seal');
+    expect(sealed.status).toBe(200);
+    expect((sealed.body as Record<string, unknown>).materialRef).toBe(`material://${sk}`);
+    expect((sealed.body as Record<string, unknown>).uploadKey).toBe('up1');
+  });
+
+  it('reads and cancels through the derived source key', async () => {
+    const { access } = harness();
+    const read = await remote(access, 'GET', `${matRoot}/up2`);
+    expect((read.body as Record<string, unknown>).uploadKey).toBe('up2');
+    expect(fx.gets(`/local/v1/material-uploads/${sourceKey('up2')}`)).toHaveLength(1);
+    const del = await remote(access, 'DELETE', `${matRoot}/up2`, null, null);
+    expect(del.status).toBe(200);
+    const cancels = fx.posts(`/local/v1/material-uploads/${sourceKey('up2')}/cancel`);
+    expect(cancels).toHaveLength(1);
+    expect((cancels[0]!.body as Record<string, unknown>).requestKey)
+      .toBe(`${sourceKey('up2')}-cancel`);
+  });
+
+  it('rejects bad descriptors, wrong chunk digest, key drift and missing scope', async () => {
+    const { access, devices } = harness();
+    expect(await codeOf(remote(access, 'POST', matRoot,
+      { ...beginBody('up3'), name: 'evil/x.png' }, 'up3-begin')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+    expect(await codeOf(remote(access, 'POST', matRoot,
+      { ...beginBody('up3'), sha256: 'not-hex' }, 'up3-begin')))
+      .toEqual({ code: 'INVALID_MATERIAL', status: 400 });
+    expect(await codeOf(remote(access, 'POST', matRoot,
+      { ...beginBody('up3'), target: {} }, 'up3-begin')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+    expect(await codeOf(remote(access, 'PUT', `${matRoot}/up3/chunks/0`,
+      { requestKey: 'up3-chunk-0', chunkDigest: 'x'.repeat(64), dataBase64: Buffer.from('data').toString('base64') }, 'up3-chunk-0')))
+      .toEqual({ code: 'INVALID_MATERIAL_CHUNK', status: 400 });
+    expect(await codeOf(remote(access, 'PUT', `${matRoot}/up3/chunks/0`,
+      { requestKey: 'up3-chunk-0', chunkDigest: createHash('sha256').update('data').digest('hex'),
+        dataBase64: Buffer.from('data').toString('base64') }, 'wrong')))
+      .toEqual({ code: 'IDEMPOTENCY_KEY_MISMATCH', status: 400 });
+    devices.get('dev1')!.launchScopes = [];
+    await expect(remote(access, 'POST', matRoot, beginBody('up3'), 'up3-begin'))
+      .rejects.toMatchObject({ code: 'DEVICE_SCOPE_DENIED' });
+  });
+
+  it('rejects chunk offsets that are not plain integers', async () => {
+    const { access } = harness();
+    expect(await codeOf(remote(access, 'PUT', `${matRoot}/up4/chunks/-1`,
+      { requestKey: 'up4-chunk--1', chunkDigest: 'x'.repeat(64), dataBase64: 'ZA==' }, 'up4-chunk--1')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
   });
 });
 
