@@ -734,6 +734,111 @@ export class LocalTaskAccess {
       fail('OPERATION_NOT_ALLOWED', 403);
     }
 
+    // Task-bound material uploads (material-upload/1): the phone attaches a
+    // file to a specific task — target.taskId pins the binding at begin and
+    // every chunk is digest-verified end to end. Seal returns a material://
+    // ref that rides on the task's next NATIVE_STEER/NATIVE_FOLLOW_UP. The
+    // phone speaks PUT/DELETE here; the worker transport is GET/POST only, so
+    // chunk and cancel translate to POST routes worker-side.
+    if (p[1] === 'projects' && p[3] === 'material-uploads' && p.length >= 4 && p.length <= 7) {
+      const project = p[2]!;
+      id(project);
+      if (!(d.launchScopes ?? []).some((s) => s.backendStoreId === backend && s.projectId === project)) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
+      const begin = method === 'POST' && p.length === 4;
+      const read = p.length === 5 && method === 'GET';
+      const remove = p.length === 5 && method === 'DELETE';
+      const chunk = method === 'PUT' && p.length === 7 && p[5] === 'chunks';
+      const seal = method === 'POST' && p.length === 6 && p[5] === 'seal';
+      if (!begin && !read && !remove && !chunk && !seal) fail('OPERATION_NOT_ALLOWED', 403);
+      const clientKey = begin ? (isRecord(body) ? body.uploadKey : undefined) : p[4];
+      if (typeof clientKey !== 'string'
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(clientKey)) fail('INVALID_REQUEST', 400);
+      if (chunk && !/^(0|[1-9][0-9]{0,9})$/.test(p[6]!)) fail('INVALID_REQUEST', 400);
+      if (query !== null && query !== '') fail('INVALID_REQUEST', 400);
+
+      const sourceKey = 'mat-' + hash(
+        `${await this.namespace()}|${d.id}|${d.revision}|${backend}|${project}|${clientKey}`);
+      let tail: string, wire: Json | undefined, wkey: string | undefined;
+      if (begin) {
+        const parsed = exact(body as Json, 'requestKey', 'uploadKey', 'target', 'name', 'mediaType', 'sizeBytes', 'sha256');
+        const name = text(parsed, 'name');
+        if (name === '' || name.length > 140 || /[\\/]|\.\./.test(name)) fail('INVALID_REQUEST', 400);
+        if (typeof parsed.mediaType !== 'string' || asText(parsed.mediaType) === ''
+            || Buffer.byteLength(asText(parsed.mediaType), 'utf8') > 100) fail('INVALID_REQUEST', 400);
+        if (typeof parsed.sizeBytes !== 'number' || !Number.isInteger(parsed.sizeBytes)
+            || parsed.sizeBytes <= 0 || parsed.sizeBytes > 20 * 1024 * 1024
+            || !/^[a-f0-9]{64}$/.test(asText(parsed.sha256))) fail('INVALID_MATERIAL', 400);
+        const target = parsed.target;
+        if (!isRecord(target) || Object.keys(target).length !== 1
+            || typeof target.taskId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(target.taskId)) {
+          fail('INVALID_REQUEST', 400);
+        }
+        await this.auth.authorizeLocal(token, backend, target.taskId, 'INTERACT');
+        const suffix = '-begin';
+        if (key !== clientKey + suffix || parsed.requestKey !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+        wkey = sourceKey + suffix;
+        wire = { ...parsed, requestKey: wkey, uploadKey: sourceKey };
+        tail = '/material-uploads';
+      } else if (read) {
+        tail = `/material-uploads/${sourceKey}`;
+      } else if (remove) {
+        tail = `/material-uploads/${sourceKey}/cancel`;
+        wkey = `${sourceKey}-cancel`;
+        wire = { requestKey: wkey };
+      } else if (chunk) {
+        const offset = p[6]!;
+        const parsed = exact(body as Json, 'requestKey', 'chunkDigest', 'dataBase64');
+        const encoded = parsed.dataBase64;
+        if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > 349528
+            || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+          fail('INVALID_MATERIAL_CHUNK', 400);
+        }
+        const bytes = Buffer.from(encoded, 'base64');
+        if (bytes.length === 0 || bytes.length > 262144
+            || hashBytes(bytes) !== asText(parsed.chunkDigest)) fail('INVALID_MATERIAL_CHUNK', 400);
+        const suffix = `-chunk-${offset}`;
+        if (key !== clientKey + suffix || parsed.requestKey !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+        wkey = sourceKey + suffix;
+        wire = { requestKey: wkey, chunkDigest: parsed.chunkDigest, dataBase64: parsed.dataBase64 };
+        tail = `/material-uploads/${sourceKey}/chunks/${offset}`;
+      } else {
+        const parsed = exact(body as Json, 'requestKey', 'sha256');
+        if (!/^[a-f0-9]{64}$/.test(asText(parsed.sha256))) fail('INVALID_MATERIAL', 400);
+        const suffix = '-seal';
+        if (key !== clientKey + suffix || parsed.requestKey !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+        wkey = sourceKey + suffix;
+        wire = { requestKey: wkey, sha256: parsed.sha256 };
+        tail = `/material-uploads/${sourceKey}/seal`;
+      }
+      const reply = this.ok(await this.source(backend, remove || chunk || seal || begin ? 'POST' : 'GET', tail, wire, wkey));
+      const rOffset = reply.nextOffset, rSize = reply.sizeBytes;
+      if (reply.schemaVersion !== 'material-upload/1' || reply.uploadKey !== sourceKey
+          || !/^[a-f0-9]{64}$/.test(asText(reply.sha256))
+          || typeof rSize !== 'number' || !Number.isInteger(rSize) || rSize <= 0 || rSize > 20 * 1024 * 1024
+          || typeof rOffset !== 'number' || !Number.isInteger(rOffset) || rOffset < 0 || rOffset > rSize
+          || !['OPEN', 'SEALED', 'CANCELLED'].includes(asText(reply.state))
+          || (reply.state === 'SEALED' && rOffset !== rSize)
+          || (seal && (reply.state !== 'SEALED' || typeof reply.materialRef !== 'string'
+              || !reply.materialRef.startsWith(`material://${sourceKey}`)))) {
+        fail('LOCAL_REPLY_INVALID', 502);
+      }
+      if (begin && (reply.name !== (wire as Json).name || reply.sizeBytes !== (wire as Json).sizeBytes
+          || reply.sha256 !== (wire as Json).sha256)) fail('LOCAL_BINDING_MISMATCH', 409);
+      const now = await this.auth.authenticate(token);
+      if (now.revision !== d.revision) fail('GRANT_REVISION_CONFLICT', 409);
+      return {
+        status: 200,
+        body: {
+          ...LocalTaskAccess.fields(reply,
+            ['schemaVersion', 'name', 'mediaType', 'sizeBytes', 'sha256', 'nextOffset', 'state', 'materialRef', 'target']),
+          uploadKey: clientKey,
+          backendStoreId: backend,
+        },
+      };
+    }
+
     if (p.length === 2 && p[1] === 'task-preflights' && method === 'POST') {
       const parsed = exact(body, 'projectId', 'engineId');
       const project = text(parsed, 'projectId');
@@ -1393,7 +1498,7 @@ export class LocalTaskAccess {
     // model/effort may ride on follow-up messages (mid-task model switch);
     // they sit outside exact() like on launch and forward verbatim — the
     // worker validates the ref against its advertised catalog.
-    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, linkFile: _f, ...r }) => r)(body) : body;
+    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, linkFile: _f, materials: _ma, ...r }) => r)(body) : body;
     const parsed = exact(rest,
       ...(stop ? ['requestKey', 'intent', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId', 'sealedUploadKeys']
         : response ? ['requestKey', 'response', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']
@@ -1441,6 +1546,31 @@ export class LocalTaskAccess {
             || seen.has(item)) fail('INVALID_REQUEST', 400);
         seen.add(item);
       }
+    }
+    // Task-bound materials: refs ride verbatim to the worker after shape
+    // checks; sealed-state + task binding are verified against the worker
+    // below once the task facts are known.
+    if (isRecord(body) && body.materials !== undefined) {
+      if (stop || response || question || !Array.isArray(body.materials)
+          || body.materials.length === 0 || body.materials.length > 8) {
+        fail('INVALID_REQUEST', 400);
+      }
+      const mats: Json[] = [];
+      const seen = new Set<string>();
+      for (const item of body.materials) {
+        if (!isRecord(item)) fail('INVALID_REQUEST', 400);
+        const m = exact(item, 'materialRef', 'sha256', 'role');
+        const ref = asText(m.materialRef);
+        if (!ref.startsWith('material://')
+            || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(ref.substring(11))
+            || !/^[a-f0-9]{64}$/.test(asText(m.sha256))
+            || !/^[A-Z_]{1,40}$/.test(asText(m.role)) || seen.has(ref)) {
+          fail('INVALID_REQUEST', 400);
+        }
+        seen.add(ref);
+        mats.push({ materialRef: ref, sha256: m.sha256, role: m.role });
+      }
+      parsed.materials = mats;
     }
     // Questions never steer: they carry no target pins, so none are required.
     if (!question) {
@@ -1522,6 +1652,19 @@ export class LocalTaskAccess {
           fail('GRANT_REVISION_CONFLICT', 409);
         }
         mappedBody.sealedUploadKeys = mapped;
+      }
+      if ('materials' in parsed) {
+        for (const m of parsed.materials as Json[]) {
+          const ref = asText(m.materialRef).substring('material://'.length);
+          const up = this.ok(await this.source(backend, 'GET', `/material-uploads/${ref}`));
+          if (up.schemaVersion !== 'material-upload/1' || up.uploadKey !== ref
+              || up.state !== 'SEALED' || up.sha256 !== asText(m.sha256)
+              || up.materialRef !== `material://${ref}`) {
+            fail('MATERIAL_UPLOAD_UNCONFIRMED', 409);
+          }
+          const bound = isRecord(up.target) ? asText(up.target.taskId) : '';
+          if (bound !== '' && bound !== task) fail('MATERIAL_SCOPE_MISMATCH', 409);
+        }
       }
       if (response) {
         const requests = this.ok(await this.source(backend, 'GET', `/tasks/${task}/input-requests`));
