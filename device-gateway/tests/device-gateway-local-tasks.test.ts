@@ -153,6 +153,16 @@ class Fixture {
       send(200, { schemaVersion: 'worker-local-history/1', items: [{ id: 'sess-1', title: 'demo session' }] });
       return;
     }
+    if (req.method === 'GET' && url.startsWith('/local/v1/history?')) {
+      record(undefined);
+      send(200, { schemaVersion: 'worker-local-history/2', items: [], pages: [{ engine: 'devin', cursor: 'next-page' }] });
+      return;
+    }
+    if (req.method === 'GET' && url.startsWith('/local/v1/history/sessions/')) {
+      record(undefined);
+      send(200, { schemaVersion: 'worker-vendor-transcript/1', engine: 'devin', sessionId: 'sess-1', items: [] });
+      return;
+    }
     if (url === '/local/v1/history/questions') {
       if (req.method === 'GET') {
         record(undefined);
@@ -667,6 +677,24 @@ describe('LocalTaskAccess session history', () => {
       .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
   });
 
+  it('forwards history cursors and requires a scoped, matching transcript', async () => {
+    const { access, devices } = harness();
+    const history = `${ROOT}/${STORE}/history`;
+    const query = 'limit=20&engine=devin&cursor=next-page&q=%E6%B5%8B%E8%AF%95';
+    const page = await remote(access, 'GET', history, null, null, query);
+    expect(page.body).toMatchObject({ backendStoreId: STORE, pages: [{ engine: 'devin', cursor: 'next-page' }] });
+    expect(fx.gets('/local/v1/history?' + query)).toHaveLength(1);
+    expect((await remote(access, 'GET', history + '/sessions/sess-1', null, null, 'engine=devin&before=25')).body)
+      .toMatchObject({ engine: 'devin', sessionId: 'sess-1' });
+    expect(await codeOf(remote(access, 'GET', history + '/sessions/sess-2', null, null, 'engine=devin')))
+      .toEqual({ code: 'LOCAL_BINDING_MISMATCH', status: 409 });
+    expect(await codeOf(remote(access, 'GET', history, null, null, 'cursor=invalid&limit=20')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+    devices.get('dev1')!.actions = ['OBSERVE'];
+    expect(await codeOf(remote(access, 'GET', history + '/sessions/sess-1', null, null, 'engine=devin')))
+      .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
+  });
+
   it('POST history/questions forwards the validated body', async () => {
     const { access } = harness();
     const body = { requestKey: 'k-q1', sessionId: 'sess-1', question: 'what did it do', engine: 'pi', model: 'm1' };
@@ -726,6 +754,15 @@ describe('LocalTaskAccess launches', () => {
       { ...launchBody, instruction: 'different' }, 'key-1')))
       .toEqual({ code: 'IDEMPOTENCY_PAYLOAD_MISMATCH', status: 409 });
     expect(store.launches().length).toBe(1);
+  });
+
+  it('passes Devin as a source engine independently of the target model', async () => {
+    const { access } = harness();
+    const selection = { ...launchBody, adoptEngine: 'devin', adoptSessionId: 'devin-old', model: 'fixture-model' };
+    const result = await remote(access, 'POST', `${ROOT}/${STORE}/tasks`, selection, 'key-1');
+    expect(result.body).toMatchObject({ state: 'OBSERVED' });
+    expect(fx.posts('/local/v1/tasks').at(-1)?.body)
+      .toMatchObject({ adoptEngine: 'devin', adoptSessionId: 'devin-old', model: 'fixture-model' });
   });
 
   it('forwards model/effort selections to the worker and keys drift on them', async () => {

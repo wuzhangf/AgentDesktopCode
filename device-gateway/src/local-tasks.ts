@@ -625,8 +625,11 @@ export class LocalTaskAccess {
     id(backend);
     for (let i = 2; i < p.length; i++) id(p[i]);
     const messagesPage = method === 'GET' && p.length === 4 && p[1] === 'tasks' && p[3] === 'messages';
+    const historyPage = method === 'GET' && p[1] === 'history' && p.length === 2;
+    const historyTranscript = method === 'GET' && p[1] === 'history' && p[2] === 'sessions' && p.length === 4;
     if (query !== null && query !== '') {
-      if (messagesPage) LocalTaskAccess.validateMessagesQuery(query);
+      if (historyPage || historyTranscript) LocalTaskAccess.validateHistoryQuery(query, historyTranscript);
+      else if (messagesPage) LocalTaskAccess.validateMessagesQuery(query);
       else LocalTaskAccess.validateQuery(query);
     }
 
@@ -681,12 +684,20 @@ export class LocalTaskAccess {
     // Session history: the backend bridge scans its engine's on-disk vendor
     // sessions (plus still-running desktop/terminal CLIs) so the phone can
     // adopt or hand one off. Gated like options — adoption is a launch act.
-    if (p.length === 2 && p[1] === 'history' && method === 'GET') {
+    if (historyPage || historyTranscript) {
       if (!(d.actions ?? []).includes('LAUNCH')
           || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
         fail('DEVICE_SCOPE_DENIED', 403);
       }
-      const out = this.ok(await this.source(backend, 'GET', '/history'));
+      const engine = new URLSearchParams(query ?? '').get('engine');
+      if (historyTranscript && engine === null) fail('INVALID_REQUEST', 400);
+      const route = historyTranscript ? '/history/sessions/' + p[3] : '/history';
+      const out = this.ok(await this.source(backend, 'GET', route + (query ? '?' + query : '')));
+      if (historyTranscript && (out.schemaVersion !== 'worker-vendor-transcript/1'
+          || out.sessionId !== p[3] || out.engine !== engine)) {
+        fail('LOCAL_BINDING_MISMATCH', 409);
+      }
+      if ((await this.auth.authenticate(token)).revision !== d.revision) fail('GRANT_REVISION_CONFLICT', 409);
       return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
     }
 
@@ -1021,6 +1032,22 @@ export class LocalTaskAccess {
     }
   }
 
+  private static validateHistoryQuery(query: string, transcript: boolean): void {
+    if (query.length > 2048) fail('INVALID_REQUEST', 400);
+    const seen = new Set<string>();
+    for (const [name, value] of new URLSearchParams(query)) {
+      if (seen.has(name)) fail('INVALID_REQUEST', 400);
+      seen.add(name);
+      if (name === 'engine' && ['codex', 'claude', 'gemini', 'devin'].includes(value)) continue;
+      if (name === 'limit' && /^[1-9][0-9]?$/.test(value) && Number(value) <= (transcript ? 20 : 50)) continue;
+      if (transcript && name === 'before' && /^[1-9][0-9]{0,14}$/.test(value)) continue;
+      if (!transcript && name === 'cursor' && /^[A-Za-z0-9_-]{1,1024}$/.test(value)) continue;
+      if (!transcript && name === 'q' && Buffer.byteLength(value) <= 200) continue;
+      fail('INVALID_REQUEST', 400);
+    }
+    if (seen.has('cursor') && !seen.has('engine')) fail('INVALID_REQUEST', 400);
+  }
+
   private static validateMessagesQuery(query: string): void {
     const seen = new Set<string>();
     for (const item of query.split('&')) {
@@ -1075,11 +1102,11 @@ export class LocalTaskAccess {
       // (defaults to the launch engine — same-engine means native resume,
       // anything else means a transcript-seeded handoff).
       if (body.adoptSessionId !== undefined) {
-        if (typeof body.adoptSessionId !== 'string' || !/^[0-9A-Za-z._-]{6,80}$/.test(body.adoptSessionId)) fail('INVALID_REQUEST', 400);
+        if (typeof body.adoptSessionId !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z._-]{5,127}$/.test(body.adoptSessionId)) fail('INVALID_REQUEST', 400);
         parsed.adoptSessionId = body.adoptSessionId;
       }
       if (body.adoptEngine !== undefined) {
-        if (typeof body.adoptEngine !== 'string' || !['codex', 'claude', 'gemini'].includes(body.adoptEngine)) fail('INVALID_REQUEST', 400);
+        if (typeof body.adoptEngine !== 'string' || !['codex', 'claude', 'gemini', 'devin'].includes(body.adoptEngine)) fail('INVALID_REQUEST', 400);
         parsed.adoptEngine = body.adoptEngine;
       }
     }
