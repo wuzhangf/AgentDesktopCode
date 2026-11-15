@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Wix,
     [Parameter(Mandatory = $true)][string]$Node,
     [string]$ConnectorPackage,
+    [string]$CliBridge,
     [string]$OutputRoot = '.local/agent-link-windows-release'
 )
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,28 @@ Copy-Item -LiteralPath $license -Destination (Join-Path $runtime 'NODE-LICENSE.t
 Copy-Item -LiteralPath (Join-Path $product 'runtime/await-parent.mjs') -Destination $runtime
 Copy-Item -LiteralPath (Join-Path $gateway 'dist/device-gateway.mjs') -Destination $gatewayOutput
 
+# Managed cli-bridge: the Host spawns gateway-node.exe components/cli-bridge/
+# cli-bridge.mjs per registered workspace. Source is the Windows-specific
+# AgentWorkersCode-windows-link fork (vendor-session history readers are
+# Windows-specific there); pass -CliBridge to override the lookup.
+$workspace = Split-Path $repo -Parent
+$cliBridgeSrc = if ($CliBridge) { [IO.Path]::GetFullPath($CliBridge) } else {
+    $found = @(
+        (Join-Path $workspace 'AgentWorkersCode-windows-link\cli-bridge\host.mjs'),
+        (Join-Path $workspace 'AgentWorkersCode\cli-bridge\host.mjs')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (!$found) { throw 'cli-bridge source not found — pass -CliBridge <host.mjs>.' }
+    $found
+}
+if (!(Test-Path -LiteralPath $cliBridgeSrc)) { throw "cli-bridge source missing: $cliBridgeSrc" }
+if (!(Select-String -LiteralPath $cliBridgeSrc -Pattern 'skip-permissions' -Quiet)) {
+    throw 'cli-bridge source lacks --skip-permissions support — stale checkout? pass -CliBridge.'
+}
+$cliBridgeSha = git -C (Split-Path $cliBridgeSrc -Parent) rev-parse HEAD
+if ($LASTEXITCODE) { throw 'Could not read cli-bridge source revision.' }
+$bridgeOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/cli-bridge')).FullName
+Copy-Item -LiteralPath $cliBridgeSrc -Destination (Join-Path $bridgeOutput 'cli-bridge.mjs')
+
 # Optional locked PAC relay connector (control-relay-package/1 from
 # AgentCodeService build/package-control-relay.py). Its contents land at
 # components/connector so the Host can supervise python -m daily_relay.pac_launcher.
@@ -67,7 +90,8 @@ $manifest = [ordered]@{
     gatewayWorkingTree = [bool](git -C $repo status --porcelain -- device-gateway)
     nodeVersion = $nodeVersion
     routes = @('lan', 'tailscale')
-    worker = 'external-registration-card'
+    worker = 'external-registration-card + managed-cli-bridge'
+    cliBridgeRevision = $cliBridgeSha
     connector = $connectorIncluded
     files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($payload.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }

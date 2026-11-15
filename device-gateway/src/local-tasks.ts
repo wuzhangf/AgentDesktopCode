@@ -676,6 +676,46 @@ export class LocalTaskAccess {
       return { status: 200, body: catalog };
     }
 
+    // Session history: the backend bridge scans its engine's on-disk vendor
+    // sessions (plus still-running desktop/terminal CLIs) so the phone can
+    // adopt or hand one off. Gated like options — adoption is a launch act.
+    if (p.length === 2 && p[1] === 'history' && method === 'GET') {
+      if (!(d.actions ?? []).includes('LAUNCH')
+          || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
+      const out = this.ok(await this.source(backend, 'GET', '/history'));
+      return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
+    }
+
+    // Session side-questions: the same detached read-only Q&A as task
+    // questions, but the context is a vendor session file, not a live task.
+    // Gated like history — adoption and session questions are launch acts.
+    if (p.length >= 3 && p[1] === 'history' && p[2] === 'questions') {
+      if (!(d.actions ?? []).includes('LAUNCH')
+          || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
+      if (method === 'POST' && p.length === 3) {
+        const parsed = exact(body, 'requestKey', 'sessionId', 'question', 'engine', 'model', 'effort');
+        if (key !== text(parsed, 'requestKey')) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+        text(parsed, 'sessionId');
+        const q = text(parsed, 'question');
+        if (!q.trim() || Buffer.byteLength(q, 'utf8') > 4096) fail('INVALID_REQUEST', 400);
+        if ('engine' in parsed) text(parsed, 'engine');
+        if ('model' in parsed) text(parsed, 'model');
+        if ('effort' in parsed) text(parsed, 'effort');
+        const out = this.ok(await this.source(backend, 'POST', '/history/questions', parsed, key ?? undefined));
+        return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
+      }
+      if (method === 'GET' && (p.length === 3 || p.length === 4)) {
+        const tail = '/history/questions' + (p.length === 4 ? `/${p[3]}` : '');
+        const out = this.ok(await this.source(backend, 'GET', tail));
+        return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
+      }
+      fail('OPERATION_NOT_ALLOWED', 403);
+    }
+
     if (p.length === 2 && p[1] === 'task-preflights' && method === 'POST') {
       const parsed = exact(body, 'projectId', 'engineId');
       const project = text(parsed, 'projectId');
@@ -708,7 +748,7 @@ export class LocalTaskAccess {
         if (p.length === 5 && p[3] === 'requests') return this.recoverInput(token, backend, task, p[4]!);
         const chunkRead = p.length === 8 && p[3] === 'artifacts' && p[5] === 'chunks';
         const read = chunkRead || p.length === 3
-          || (p.length === 4 && ['events', 'output', 'metrics', 'messages', 'input-requests', 'artifacts'].includes(p[3]!))
+          || (p.length === 4 && ['events', 'output', 'metrics', 'messages', 'input-requests', 'artifacts', 'questions'].includes(p[3]!))
           || (p.length === 5 && p[3] === 'artifacts');
         if (!read) fail('OPERATION_NOT_ALLOWED', 403);
         let tail = `/tasks/${task}`;
@@ -778,7 +818,7 @@ export class LocalTaskAccess {
         return { status: 200, body: publicView };
       }
       if (method === 'POST'
-          && ((p.length === 4 && (p[3] === 'commands' || p[3] === 'messages'))
+          && ((p.length === 4 && (p[3] === 'commands' || p[3] === 'messages' || p[3] === 'questions'))
             || (p.length === 6 && p[3] === 'input-requests' && p[5] === 'responses'))) {
         return this.input(token, backend, task, p, body, key);
       }
@@ -995,7 +1035,8 @@ export class LocalTaskAccess {
     // model/effort are optional per-task selections; exact() is strict both
     // ways, so they ride alongside the required envelope and forward verbatim
     // — the worker validates the ref against its advertised catalog.
-    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, ...r }) => r)(body) : body;
+    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, linkFile: _f,
+      adoptSessionId: _as, adoptEngine: _ae, ...r }) => r)(body) : body;
     let parsed: Json;
     if (office) {
       parsed = exact(rest, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction', 'nativeWorkSpec');
@@ -1019,6 +1060,20 @@ export class LocalTaskAccess {
       if (body.context !== undefined) {
         if (typeof body.context !== 'number' || !Number.isInteger(body.context) || body.context <= 0 || body.context > 4000000) fail('INVALID_REQUEST', 400);
         parsed.context = body.context;
+      }
+      if (!office) {
+        // Session adoption/handoff: adoptSessionId names a vendor session file
+        // under the source engine's session root; adoptEngine names that source
+        // (defaults to the launch engine — same-engine means native resume,
+        // anything else means a transcript-seeded handoff).
+        if (body.adoptSessionId !== undefined) {
+          if (typeof body.adoptSessionId !== 'string' || !/^[0-9A-Za-z._-]{6,80}$/.test(body.adoptSessionId)) fail('INVALID_REQUEST', 400);
+          parsed.adoptSessionId = body.adoptSessionId;
+        }
+        if (body.adoptEngine !== undefined) {
+          if (typeof body.adoptEngine !== 'string' || !['codex', 'claude', 'gemini', 'devin'].includes(body.adoptEngine)) fail('INVALID_REQUEST', 400);
+          parsed.adoptEngine = body.adoptEngine;
+        }
       }
     }
     id(key);
@@ -1299,15 +1354,20 @@ export class LocalTaskAccess {
   ): Promise<LocalResult> {
     const stop = p.length === 4 && p[3] === 'commands';
     const response = p.length === 6;
+    const question = p.length === 4 && p[3] === 'questions';
     // model/effort may ride on follow-up messages (mid-task model switch);
     // they sit outside exact() like on launch and forward verbatim — the
     // worker validates the ref against its advertised catalog.
-    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, ...r }) => r)(body) : body;
+    const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, linkFile: _f, ...r }) => r)(body) : body;
     const parsed = exact(rest,
       ...(stop ? ['requestKey', 'intent', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId', 'sealedUploadKeys']
         : response ? ['requestKey', 'response', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']
+        : question ? ['requestKey', 'question', 'engine']
         : ['requestKey', 'kind', 'content', 'generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']));
     if (isRecord(body) && !stop && !response) {
+      // model/effort pass on both messages and side questions (the worker or
+      // spawned CLI validates the ref); context stays message-only — a
+      // question is one detached turn with nothing to retune.
       if (body.model !== undefined) {
         if (typeof body.model !== 'string' || Buffer.byteLength(body.model) > 300) fail('INVALID_REQUEST', 400);
         parsed.model = body.model;
@@ -1317,7 +1377,7 @@ export class LocalTaskAccess {
         parsed.effort = body.effort;
       }
       if (body.context !== undefined) {
-        if (typeof body.context !== 'number' || !Number.isInteger(body.context) || body.context <= 0 || body.context > 4000000) fail('INVALID_REQUEST', 400);
+        if (question || typeof body.context !== 'number' || !Number.isInteger(body.context) || body.context <= 0 || body.context > 4000000) fail('INVALID_REQUEST', 400);
         parsed.context = body.context;
       }
     } else if (isRecord(body) && (body.model !== undefined || body.effort !== undefined || body.context !== undefined)) {
@@ -1325,11 +1385,14 @@ export class LocalTaskAccess {
     }
     id(key);
     if (key !== text(parsed, 'requestKey')) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
-    const operation = stop ? text(parsed, 'intent') : response ? 'INPUT_RESPONSE' : text(parsed, 'kind');
+    const operation = stop ? text(parsed, 'intent') : response ? 'INPUT_RESPONSE' : question ? 'QUESTION' : text(parsed, 'kind');
     const action = stop ? 'CONTROL' : response ? 'APPROVE' : 'INTERACT';
     if ((stop && !['STOP', 'PAUSE', 'RESUME', 'CONTINUE'].includes(operation))
-        || (!stop && !response && !['NATIVE_STEER', 'NATIVE_FOLLOW_UP'].includes(operation))) {
+        || (!stop && !response && !question && !['NATIVE_STEER', 'NATIVE_FOLLOW_UP'].includes(operation))) {
       fail('OPERATION_NOT_ALLOWED', 403);
+    }
+    if (question && (typeof parsed.question !== 'string' || (parsed.question as string).trim() === '')) {
+      fail('INVALID_REQUEST', 400);
     }
     if ('sealedUploadKeys' in parsed
         && (!stop || operation !== 'CONTINUE' || !Array.isArray(parsed.sealedUploadKeys)
@@ -1344,11 +1407,14 @@ export class LocalTaskAccess {
         seen.add(item);
       }
     }
-    id(text(parsed, 'generation'));
-    id(text(parsed, 'targetCommandId'));
-    text(parsed, 'nativeSessionId');
+    // Questions never steer: they carry no target pins, so none are required.
+    if (!question) {
+      id(text(parsed, 'generation'));
+      id(text(parsed, 'targetCommandId'));
+      text(parsed, 'nativeSessionId');
+    }
     if ('nativeTurnId' in parsed) text(parsed, 'nativeTurnId');
-    if (!stop && !response) {
+    if (!stop && !response && !question) {
       const content = parsed.content;
       if (typeof content !== 'string' || content.trim() === ''
           || Buffer.byteLength(content, 'utf8') > 16384) fail('INVALID_REQUEST', 400);
@@ -1378,13 +1444,15 @@ export class LocalTaskAccess {
       }
       const facts = this.ok(await this.source(backend, 'GET', `/tasks/${task}`));
       if (facts.taskId !== task) fail('LOCAL_BINDING_MISMATCH', 409);
-      for (const field of ['generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']) {
+      // A question never steers: it carries no target pins and needs no
+      // session capability — existence of the task + INTERACT action suffice.
+      if (!question) for (const field of ['generation', 'nativeSessionId', 'nativeTurnId', 'targetCommandId']) {
         const sourceField = field === 'targetCommandId' ? 'currentCommandId' : field;
         const bodyValue = field in parsed && parsed[field] !== null ? asText(parsed[field]) : null;
         const factValue = sourceField in facts && facts[sourceField] !== null ? asText(facts[sourceField]) : null;
         if (bodyValue !== factValue) fail('NATIVE_TARGET_CHANGED', 409);
       }
-      if (!response) {
+      if (!response && !question) {
         const capability = stop ? operation.toLowerCase() : operation === 'NATIVE_STEER' ? 'steer' : 'followUp';
         const caps = isRecord(facts.capabilities) ? facts.capabilities : {};
         if (!asBoolean(caps[capability])) fail('NATIVE_ACTION_UNSUPPORTED', 409);
@@ -1463,7 +1531,7 @@ export class LocalTaskAccess {
     });
     if (recover) return this.recoverInput(token, backend, task, key!);
 
-    const tail = `/tasks/${task}${stop ? '/commands' : response ? `/input-requests/${p[4]}/responses` : '/messages'}`;
+    const tail = `/tasks/${task}${stop ? '/commands' : question ? '/questions' : response ? `/input-requests/${p[4]}/responses` : '/messages'}`;
     try {
       const reply = await this.source(backend, 'POST', tail, r.wire, r.sourceKey);
       r.result = reply.data;
