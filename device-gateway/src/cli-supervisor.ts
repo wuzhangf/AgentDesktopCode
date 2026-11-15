@@ -37,7 +37,7 @@ export interface ConnectionUpsert {
 }
 
 /** Whitelisted stock CLIs the gateway may offer as launch scopes. */
-export const CLI_WHITELIST = ['pi', 'codex', 'claude'] as const;
+export const CLI_WHITELIST = ['pi', 'codex', 'claude', 'gemini'] as const;
 export type CliEngineId = (typeof CLI_WHITELIST)[number];
 
 export interface CliSupervisorOptions {

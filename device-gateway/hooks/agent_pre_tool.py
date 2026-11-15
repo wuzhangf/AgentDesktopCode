@@ -38,6 +38,9 @@ RISKY = {
 HARMLESS = {
     "codex": {"update_plan", "web_search", "view_image", "read_file",
               "list_dir", "grep", "glob"},
+    "gemini": {"read_file", "read_many_files", "list_directory", "glob",
+               "grep_search", "search_file_content", "google_web_search",
+               "web_fetch", "write_todos", "activate_skill", "get_internal_docs"},
 }
 
 
@@ -94,6 +97,9 @@ def call(cfg: dict, token: str, method: str, path: str,
 
 
 def approve_out(agent: str, event: str) -> str:
+    if agent == "gemini":
+        # Gemini BeforeTool dialect: top-level decision field.
+        return json.dumps({"decision": "allow"})
     if event == "PermissionRequest":
         return json.dumps({"hookSpecificOutput": {
             "hookEventName": "PermissionRequest",
@@ -107,6 +113,8 @@ def approve_out(agent: str, event: str) -> str:
 
 
 def block_out(agent: str, event: str, reason: str) -> str:
+    if agent == "gemini":
+        return json.dumps({"decision": "deny", "reason": reason})
     if event == "PermissionRequest":
         return json.dumps({"hookSpecificOutput": {
             "hookEventName": "PermissionRequest",
@@ -161,12 +169,13 @@ def question_for(tool: str, tool_input: dict) -> str:
     cmd = str(cmd).strip()
     if tool in ("Write", "write_file"):
         return f"创建 / 覆写: {path or '一个文件'}"
-    if tool in ("Edit", "MultiEdit", "NotebookEdit", "apply_patch", "replace_in_file"):
+    if tool in ("Edit", "MultiEdit", "NotebookEdit", "apply_patch", "replace_in_file",
+                "replace", "edit"):
         return f"编辑: {path or '一个文件'}"
     if tool in ("Bash", "shell", "run_shell_command", "Shell", "run_terminal_cmd",
                 "exec_command", "shell_command", "unified_exec", "local_shell"):
         return f"运行: {cmd[:140]}"
-    if tool in ("WebFetch", "WebSearch"):
+    if tool in ("WebFetch", "WebSearch", "web_fetch", "google_web_search"):
         detail = tool_input.get("url") or tool_input.get("query") or ""
         return f"{tool}: {str(detail)[:140]}"
     if tool.startswith("mcp__"):
@@ -320,6 +329,9 @@ def main() -> int:
         return 0
 
     asking = event == "PermissionRequest" or worth_asking(agent, tool)
+    # Gemini marks MCP calls by mcp_context presence, not a name prefix.
+    if not asking and agent == "gemini" and payload.get("mcp_context"):
+        asking = True
     if not tool or not asking:
         return 0
     if session_auto(agent, session_id):

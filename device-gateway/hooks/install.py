@@ -88,6 +88,7 @@ def hook_command(agent: str) -> str:
 AGENTS = {
     "claude": Path.home() / ".claude" / "settings.json",
     "codex": Path.home() / ".codex" / "hooks.json",
+    "gemini": Path.home() / ".gemini" / "settings.json",
 }
 
 # ~/.agent-gateway/agent-hooks.json — OUR record of which agents the owner
@@ -107,7 +108,7 @@ def record_intent(agent: str, enabled: bool) -> None:
             intent[agent] = {"enabled": True,
                              "command": hook_command(agent),
                              "events": EVENTS.get(agent, ["PreToolUse"]),
-                             "timeout": PRE_TOOL_TIMEOUT}
+                             "timeout": TIMEOUTS.get(agent, PRE_TOOL_TIMEOUT)}
         else:
             intent.pop(agent, None)
         write_json(INTENT, intent)
@@ -121,7 +122,12 @@ def record_intent(agent: str, enabled: bool) -> None:
 EVENTS = {
     "claude": ["PreToolUse"],
     "codex": ["PreToolUse", "PermissionRequest"],
+    "gemini": ["BeforeTool"],
 }
+
+# Gemini hook timeouts are milliseconds (docs: default 60000); the others
+# take seconds. The hook polls ~290s, so both must exceed that.
+TIMEOUTS = {"gemini": 360_000}
 
 
 def install(agent: str, settings_path: Path) -> None:
@@ -129,7 +135,7 @@ def install(agent: str, settings_path: Path) -> None:
     hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
     entry = {"matcher": "*",
              "hooks": [{"type": "command", "command": hook_command(agent),
-                        "timeout": PRE_TOOL_TIMEOUT}]}
+                        "timeout": TIMEOUTS.get(agent, PRE_TOOL_TIMEOUT)}]}
     for name in EVENTS.get(agent, ["PreToolUse"]):
         event = without_our_hooks(list(hooks.get(name) or []))
         event.append(entry)
