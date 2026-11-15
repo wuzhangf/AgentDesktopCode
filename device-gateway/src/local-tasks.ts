@@ -623,8 +623,10 @@ export class LocalTaskAccess {
     id(backend);
     for (let i = 2; i < p.length; i++) id(p[i]);
     const messagesPage = method === 'GET' && p.length === 4 && p[1] === 'tasks' && p[3] === 'messages';
+    const transcriptPage = method === 'GET' && p.length === 4 && p[1] === 'history' && p[2] === 'sessions';
     if (query !== null && query !== '') {
       if (messagesPage) LocalTaskAccess.validateMessagesQuery(query);
+      else if (transcriptPage) LocalTaskAccess.validateTranscriptQuery(query);
       else LocalTaskAccess.validateQuery(query);
     }
 
@@ -685,6 +687,22 @@ export class LocalTaskAccess {
         fail('DEVICE_SCOPE_DENIED', 403);
       }
       const out = this.ok(await this.source(backend, 'GET', '/history'));
+      return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
+    }
+
+    // Vendor session transcript: one session's messages, newest page first
+    // (`before` walks backwards). Read-only preview for the detail page —
+    // same LAUNCH gate as the list since transcripts feed adoption.
+    if (p.length === 4 && p[1] === 'history' && p[2] === 'sessions' && method === 'GET') {
+      if (!(d.actions ?? []).includes('LAUNCH')
+          || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
+      const session = p[3]!;
+      if (!/^[0-9A-Za-z._-]{6,80}$/.test(session)) fail('INVALID_REQUEST', 400);
+      let tail = `/history/sessions/${session}`;
+      if (query !== null && query !== '') tail += `?${query}`;
+      const out = this.ok(await this.source(backend, 'GET', tail));
       return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
     }
 
@@ -1009,6 +1027,23 @@ export class LocalTaskAccess {
         const limit = Number(pair[1]);
         if (limit < 1 || limit > 100) fail('INVALID_REQUEST', 400);
       }
+    }
+  }
+
+  /** Vendor-transcript paging: `engine` is a vendor id, `limit`/`before`
+   * bound the message window. Unknown keys or repeats are rejected the
+   * same as the other query surfaces. */
+  private static validateTranscriptQuery(query: string): void {
+    const seen = new Set<string>();
+    for (const item of query.split('&')) {
+      const pair = item.split('=', 2);
+      if (pair.length !== 2 || seen.has(pair[0]!)) fail('INVALID_REQUEST', 400);
+      seen.add(pair[0]!);
+      if (pair[0] === 'engine') {
+        if (!/^[0-9A-Za-z._-]{1,40}$/.test(pair[1]!)) fail('INVALID_REQUEST', 400);
+      } else if (pair[0] === 'limit' || pair[0] === 'before') {
+        if (!/^(0|[1-9][0-9]{0,9})$/.test(pair[1]!)) fail('INVALID_REQUEST', 400);
+      } else fail('INVALID_REQUEST', 400);
     }
   }
 
