@@ -18,7 +18,7 @@ export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'
       && isRecord(body) && body.intent === 'STOP') return false;
   if (localCliOnly && req.method === 'POST') {
     const id = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}';
-    if (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|tasks/${id}/messages)$`).test(req.path)
+    if (new RegExp(`^/personal/v1/local-tasks/${id}/(?:task-preflights|tasks|history/questions|tasks/${id}/(?:messages|commands|questions))$`).test(req.path)
         || new RegExp(`^/personal/v1/approvals/${id}/decision$`).test(req.path)) return false;
   }
   return true;

@@ -148,6 +148,30 @@ class Fixture {
       send(200, { items: [{ engineId: 'pi', engineVersion: '1.0' }, { engineId: 'codex' }] });
       return;
     }
+    if (req.method === 'GET' && url === '/local/v1/history') {
+      record(undefined);
+      send(200, { schemaVersion: 'worker-local-history/1', items: [{ id: 'sess-1', title: 'demo session' }] });
+      return;
+    }
+    if (url === '/local/v1/history/questions') {
+      if (req.method === 'GET') {
+        record(undefined);
+        send(200, { schemaVersion: 'worker-local-questions/1', items: [{ sessionId: 'sess-1', questionId: 'q-1', state: 'SUCCEEDED' }] });
+        return;
+      }
+      if (req.method === 'POST') {
+        readBody((body) => {
+          record(body);
+          send(200, { requestKey: (body as Record<string, unknown>)?.requestKey, operation: 'SESSION_QUESTION', state: 'SUCCEEDED', result: { questionId: 'q-1' } });
+        });
+        return;
+      }
+    }
+    if (req.method === 'GET' && url.startsWith('/local/v1/history/questions/')) {
+      record(undefined);
+      send(200, { questionId: url.substring('/local/v1/history/questions/'.length), state: 'SUCCEEDED' });
+      return;
+    }
     if (req.method === 'POST' && url === '/local/v1/task-preflights') {
       readBody((body) => {
         record(body);
@@ -257,6 +281,7 @@ class Fixture {
           record(body);
           if (rest === '/commands') { send(200, { state: 'ACCEPTED' }); return; }
           if (rest === '/messages') { send(200, { state: 'SENT' }); return; }
+          if (rest === '/questions') { send(200, { state: 'ACCEPTED' }); return; }
           if (rest.startsWith('/input-requests/') && rest.endsWith('/responses')) {
             send(200, { accepted: true });
             return;
@@ -623,6 +648,54 @@ describe('LocalTaskAccess catalog', () => {
   });
 });
 
+// ---- session history + session questions -------------------------------------
+
+describe('LocalTaskAccess session history', () => {
+  it('GET history forwards the bridge session list', async () => {
+    const { access } = harness();
+    const out = await remote(access, 'GET', `${ROOT}/${STORE}/history`);
+    expect(out.status).toBe(200);
+    const body = out.body as Record<string, unknown>;
+    expect(body.backendStoreId).toBe(STORE);
+    expect((body.items as unknown[]).length).toBe(1);
+  });
+
+  it('GET history denies without LAUNCH scope', async () => {
+    const { access, devices } = harness();
+    devices.get('dev1')!.actions = ['OBSERVE'];
+    expect(await codeOf(remote(access, 'GET', `${ROOT}/${STORE}/history`)))
+      .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
+  });
+
+  it('POST history/questions forwards the validated body', async () => {
+    const { access } = harness();
+    const body = { requestKey: 'k-q1', sessionId: 'sess-1', question: 'what did it do', engine: 'pi', model: 'm1' };
+    const out = await remote(access, 'POST', `${ROOT}/${STORE}/history/questions`, body, 'k-q1');
+    expect(out.status).toBe(200);
+    const forwarded = fx.posts('/local/v1/history/questions').at(-1);
+    expect(forwarded?.body).toMatchObject({ sessionId: 'sess-1', question: 'what did it do', engine: 'pi', model: 'm1' });
+    expect((out.body as Record<string, unknown>).backendStoreId).toBe(STORE);
+  });
+
+  it('POST history/questions rejects an idempotency-key mismatch', async () => {
+    const { access } = harness();
+    const body = { requestKey: 'k-q2', sessionId: 'sess-1', question: 'x' };
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/history/questions`, body, 'other-key')))
+      .toEqual({ code: 'IDEMPOTENCY_KEY_MISMATCH', status: 400 });
+  });
+
+  it('GET history/questions forwards list and single-question reads', async () => {
+    const { access } = harness();
+    const list = await remote(access, 'GET', `${ROOT}/${STORE}/history/questions`);
+    expect(list.status).toBe(200);
+    expect(((list.body as Record<string, unknown>).items as unknown[]).length).toBe(1);
+    const one = await remote(access, 'GET', `${ROOT}/${STORE}/history/questions/q-1`);
+    expect(one.status).toBe(200);
+    expect((one.body as Record<string, unknown>).questionId).toBe('q-1');
+    expect(fx.gets('/local/v1/history/questions/q-1').length).toBe(1);
+  });
+});
+
 // ---- launches ----------------------------------------------------------------
 
 describe('LocalTaskAccess launches', () => {
@@ -832,6 +905,39 @@ describe('LocalTaskAccess inputs', () => {
     expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/commands`,
       inputBody({ requestKey: 'c-w', intent: 'STOP' }), 'c-w')))
       .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
+  });
+
+  it('dispatches a side question without target pins or a session capability', async () => {
+    const { access } = harness();
+    const out = await remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/questions`,
+      { requestKey: 'q-1', question: '为什么这样改？', engine: 'codex' }, 'q-1');
+    expect(out.status).toBe(200);
+    const view = out.body as Record<string, unknown>;
+    expect(view.operation).toBe('QUESTION');
+    const posted = fx.posts('/local/v1/tasks/native-t1/questions').at(-1)!;
+    const body = posted.body as Record<string, unknown>;
+    expect(body.question).toBe('为什么这样改？');
+    expect(body.engine).toBe('codex');
+    expect(body.requestKey).toMatch(/^mobile-/);
+  });
+
+  it('forwards a model pin on a side question', async () => {
+    const { access } = harness();
+    const out = await remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/questions`,
+      { requestKey: 'q-1m', question: '为什么这样改？', engine: 'claude', model: 'opus' }, 'q-1m');
+    expect(out.status).toBe(200);
+    const body = fx.posts('/local/v1/tasks/native-t1/questions').at(-1)!.body as Record<string, unknown>;
+    expect(body.model).toBe('opus');
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/questions`,
+      { requestKey: 'q-2m', question: 'x', context: 8192 }, 'q-2m')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+  });
+
+  it('rejects an empty question', async () => {
+    const { access } = harness();
+    expect(await codeOf(remote(access, 'POST', `${ROOT}/${STORE}/tasks/native-t1/questions`,
+      { requestKey: 'q-2', question: '  ' }, 'q-2')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
   });
 
   it('command requests replay by Idempotency-Key without re-posting', async () => {
