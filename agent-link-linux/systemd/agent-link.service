@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Link device gateway
+Documentation=https://example.invalid/agent-link
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/agent-link/env
+ExecStart=@NODE@ %h/.local/share/agent-link/device-gateway.mjs
+Restart=on-failure
+RestartSec=3
+# The gateway keeps owner/hooks surfaces loopback-only; the phone listener
+# binds per DEVICE_GATEWAY_BIND in the env file.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/agent-link %h/.config/agent-link
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

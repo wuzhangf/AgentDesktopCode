@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
@@ -65,6 +66,24 @@ internal static class Program
             menu.Show(point.X, point.Y);
         };
         menu.Items.Add("打开 Agent Link", null, (_, _) => ShowPanel());
+        // Member center entry (design 2026-11-15 §11.1): opens the account
+        // surface in the default browser. Only offered when the gateway
+        // reports a member origin — never guesses a URL.
+        menu.Items.Add("会员中心", null, async (_, _) =>
+        {
+            try
+            {
+                var reply = await LinkProtocol.CallAsync(new("status"));
+                var state = reply.Data?.Deserialize<LinkStatus>(LinkProtocol.Json);
+                if (state?.DailyOrigin is { Length: > 0 } daily)
+                {
+                    Process.Start(new ProcessStartInfo(daily.TrimEnd('/') + "/member") { UseShellExecute = true });
+                    return;
+                }
+            }
+            catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException) { }
+            MessageBox.Show("暂未连接会员服务。", "会员中心", MessageBoxButton.OK, MessageBoxImage.Information);
+        });
         menu.Items.Add("设置", null, (_, _) => { ShowPanel(); panel.OpenSettings(); });
         menu.Items.Add("退出 Agent Link…", null, async (_, _) =>
         {

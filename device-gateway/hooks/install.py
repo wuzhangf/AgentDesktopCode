@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Install agent-gateway hooks into ~/.claude/settings.json.
+"""Install agent-gateway hooks into ~/.claude/settings.json / ~/.codex/hooks.json.
 
-Merges ONE PreToolUse entry — our script — into the user's settings, replacing
-an earlier entry of ours if present and never touching the user's own hooks.
+Merges our hook entry — and only ours — into the user's settings per agent,
+replacing an earlier entry of ours if present and never touching the user's
+own hooks. Codex also gets a PermissionRequest entry: that is the event
+sandbox escapes, MCP prompts and blocked-access requests route through, so
+the phone card answers at the point Codex actually asks.
 Also writes ~/.agent-gateway/hooks.json telling the hook where the gateway's
 loopback surface and its token live.
 
@@ -87,20 +90,54 @@ AGENTS = {
     "codex": Path.home() / ".codex" / "hooks.json",
 }
 
+# ~/.agent-gateway/agent-hooks.json — OUR record of which agents the owner
+# asked us to hook and the exact command registered. It lives outside the
+# agents' config dirs so an agent reinstall (which wipes ~/.codex/hooks.json)
+# cannot erase the intent: the app detects entry-missing-vs-intent and
+# re-installs, and the bridge re-adds the recorded command at spawn time.
+INTENT = CONFIG_DIR / "agent-hooks.json"
+
+
+def record_intent(agent: str, enabled: bool) -> None:
+    try:
+        intent = json.loads(INTENT.read_text()) if INTENT.exists() else {}
+        if not isinstance(intent, dict):
+            intent = {}
+        if enabled:
+            intent[agent] = {"enabled": True,
+                             "command": hook_command(agent),
+                             "events": EVENTS.get(agent, ["PreToolUse"]),
+                             "timeout": PRE_TOOL_TIMEOUT}
+        else:
+            intent.pop(agent, None)
+        write_json(INTENT, intent)
+    except OSError:
+        pass  # intent bookkeeping must never break the install itself
+
+# Hook events our entry registers under, per agent. PreToolUse is the approval
+# surface for both; Codex additionally routes its own escalation prompts
+# (sandbox escapes, MCP approvals) through PermissionRequest so the same
+# phone card answers them.
+EVENTS = {
+    "claude": ["PreToolUse"],
+    "codex": ["PreToolUse", "PermissionRequest"],
+}
+
 
 def install(agent: str, settings_path: Path) -> None:
     settings = read_json(settings_path)
     hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    event = list(hooks.get("PreToolUse") or [])
     entry = {"matcher": "*",
              "hooks": [{"type": "command", "command": hook_command(agent),
                         "timeout": PRE_TOOL_TIMEOUT}]}
-    event = without_our_hooks(event)
-    event.append(entry)
-    hooks["PreToolUse"] = event
+    for name in EVENTS.get(agent, ["PreToolUse"]):
+        event = without_our_hooks(list(hooks.get(name) or []))
+        event.append(entry)
+        hooks[name] = event
     settings["hooks"] = hooks
     write_json(settings_path, settings)
-    print(f"installed: {settings_path} -> PreToolUse {hook_command(agent)}")
+    record_intent(agent, True)
+    print(f"installed: {settings_path} -> {EVENTS.get(agent, ['PreToolUse'])} {hook_command(agent)}")
 
 
 def without_our_hooks(event: list) -> list:
@@ -119,20 +156,27 @@ def without_our_hooks(event: list) -> list:
     return kept
 
 
-def uninstall(settings_path: Path) -> None:
+def uninstall(agent: str, settings_path: Path) -> None:
     settings = read_json(settings_path)
     hooks = settings.get("hooks")
-    if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse"), list):
+    if not isinstance(hooks, dict):
         return
-    event = hooks["PreToolUse"]
-    kept = without_our_hooks(event)
-    if kept == event:
-        return
-    if kept:
-        hooks["PreToolUse"] = kept
-    else:
-        hooks.pop("PreToolUse")
-    write_json(settings_path, settings)
+    changed = False
+    for name in EVENTS.get(agent, ["PreToolUse"]):
+        event = hooks.get(name)
+        if not isinstance(event, list):
+            continue
+        kept = without_our_hooks(event)
+        if kept == event:
+            continue
+        changed = True
+        if kept:
+            hooks[name] = kept
+        else:
+            hooks.pop(name)
+    if changed:
+        write_json(settings_path, settings)
+    record_intent(agent, False)
 
 
 def main() -> int:
@@ -148,7 +192,7 @@ def main() -> int:
     agents = [a.strip() for a in args.agents.split(",") if a.strip() in AGENTS]
     if args.uninstall:
         for agent in agents:
-            uninstall(AGENTS[agent])
+            uninstall(agent, AGENTS[agent])
         # Keep the shared script/config for other agents and in-flight calls.
         return 0
 

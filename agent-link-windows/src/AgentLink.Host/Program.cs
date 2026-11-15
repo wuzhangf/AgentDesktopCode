@@ -381,7 +381,8 @@ internal sealed class LinkHost : IDisposable
             requests?.Count(d => d?["state"]?.GetValue<string>() == "PENDING") ?? 0,
             cap?["personalHostId"]?.GetValue<string>(), cap?["storeId"]?.GetValue<string>(), gatewayPid, enabled,
             MemberStateName(member.Phase), member.UserCode ?? member.Detail
-                ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null));
+                ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null),
+            cap?["dailyOrigin"]?.GetValue<string>());
     }
 
     private static string MemberStateName(ConnectorSupervisor.Phase phase) => phase switch

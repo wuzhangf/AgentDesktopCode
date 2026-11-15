@@ -1,3 +1,4 @@
+import { taskFileBinding } from './sage-link-files.js';
 /**
  * Standalone entry: `node dist/device-gateway.mjs`.
  *
@@ -605,7 +606,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
       || opts.cliBridge !== undefined || workers !== undefined) {
     const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
-    localTasks = new LocalTaskAccess(devices, transport, store);
+    const socket = env('SAGE_LINK_FILE_SOCKET');
+    const key = env('SAGE_LINK_FILE_GATEWAY_KEY');
+    const mcp = env('SAGE_LINK_FILE_MCP');
+    const fileBinding = socket?.startsWith('/') && key && /^[a-f0-9]{64}$/.test(key) && mcp?.startsWith('/')
+      ? taskFileBinding(socket, key, mcp) : undefined;
+    localTasks = new LocalTaskAccess(devices, transport, store, fileBinding);
   }
 
   // OC-G: the supervisor's spawned bridges register into the same connection
@@ -623,8 +629,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       },
       {
         // upsertConnection is register-once; supervisor rows get a fresh port
-        // per spawn, so re-point the row when it already exists.
+        // per spawn, so re-point the row when it already exists. LOCAL_CLI
+        // reads the boot-scoped configuredWorkers map, not the store.
         upsertConnection: (row) => {
+          if (opts.localCliOnly) {
+            configuredWorkers.set(row.connectionId, row);
+            return;
+          }
           store.upsertConnection(row);
           if (row.baseUrl !== undefined) {
             store.updateConnectionBaseUrl(row.connectionId, row.baseUrl);

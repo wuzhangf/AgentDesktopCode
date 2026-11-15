@@ -441,7 +441,7 @@ function makeDevice(): Device {
   };
 }
 
-function harness() {
+function harness(binding?: ConstructorParameters<typeof LocalTaskAccess>[3]) {
   fx.reset();
   const devices = new Map<string, Device>([['dev1', makeDevice()]]);
   const auth = new Auth(devices);
@@ -457,7 +457,7 @@ function harness() {
     },
   };
   const transport = new LocalTransport(registry, (ref) => (ref === 'tok1' ? TOKEN : undefined));
-  const access = new LocalTaskAccess(auth, transport, store);
+  const access = new LocalTaskAccess(auth, transport, store, binding);
   return { devices, store, transport, access };
 }
 
@@ -476,6 +476,82 @@ async function codeOf(promise: Promise<unknown>): Promise<{ code: string; status
   }
   throw new Error('expected GatewayError');
 }
+
+describe('Sage Link task file', () => {
+  const base = { requestKey: 'link-task-1', projectId: 'p1', engineId: 'sage-pi',
+    optionsRevision: 'r1', instruction: 'Return a summary' };
+  const attachment = { transferID: 'a'.repeat(32), requestID: base.requestKey, projectID: base.projectId,
+    signature: Buffer.alloc(64).toString('base64'), expiresAt: 2_000_000_000 };
+
+  it('reports the actual file device only while the Mac broker is available', async () => {
+    let fileDevice: string | undefined = 'test-sage-link-file-device';
+    const binding = Object.assign(async () => {
+      throw new Error('preflight must not authorize a transfer');
+    }, { deviceId: async () => fileDevice });
+    const { access, devices } = harness(binding);
+    devices.get('dev1')!.launchScopes = [{ backendStoreId: STORE, projectId: 'p1', engineId: 'sage-pi' }];
+    fx.preflightReplies['p1|sage-pi'] = {
+      status: 200, body: { projectId: 'p1', engineId: 'sage-pi', optionsRevision: 'r1' },
+    };
+    const preflight = () => remote(access, 'POST', `/personal/v1/local-tasks/${STORE}/task-preflights`,
+      { projectId: 'p1', engineId: 'sage-pi' });
+    expect((await preflight()).body).toMatchObject({
+      sageLinkFiles: true, sageLinkFileDeviceId: 'test-sage-link-file-device',
+    });
+    fileDevice = undefined;
+    expect((await preflight()).body).not.toHaveProperty('sageLinkFileDeviceId');
+    expect(fx.posts('/local/v1/tasks')).toHaveLength(0);
+  });
+
+  it('dispatches only the local MCP binding and reuses the launch receipt', async () => {
+    let admissions = 0;
+    const binding = { id: 'sage-link', command: '/local/mcp', args: ['--bridge', '/local/socket', 'task-only'] };
+    const { access, devices } = harness(async (file, sourceKey) => {
+      expect(file).toEqual(attachment);
+      expect(sourceKey).toMatch(/^mobile-[a-f0-9]{64}$/);
+      admissions++;
+      return binding;
+    });
+    devices.get('dev1')!.launchScopes = [{ backendStoreId: STORE, projectId: 'p1', engineId: 'sage-pi' }];
+    fx.launchReply = { status: 200, body: { taskId: 'native-new1', engineId: 'sage-pi' } };
+    const path = `/personal/v1/local-tasks/${STORE}/tasks`;
+    const body = { ...base, linkFile: attachment };
+    const first = await remote(access, 'POST', path, body, base.requestKey);
+    const posted = fx.posts('/local/v1/tasks').at(-1)!.body as Record<string, unknown>;
+    expect(posted.mcpServers).toEqual([binding]);
+    expect(posted).not.toHaveProperty('linkFile');
+    expect(first.body).not.toHaveProperty('mcpServers');
+    await remote(access, 'POST', path, body, base.requestKey);
+    expect(admissions).toBe(1);
+    expect(fx.posts('/local/v1/tasks')).toHaveLength(1);
+    expect(await codeOf(remote(access, 'POST', path, { ...body, linkFile: { ...attachment, transferID: 'other' } }, base.requestKey)))
+      .toEqual({ code: 'IDEMPOTENCY_PAYLOAD_MISMATCH', status: 409 });
+  });
+
+  it('records a definitive rejection when Mac declines the attachment', async () => {
+    const { access, devices } = harness(async () => {
+      throw new GatewayError('LINK_FILE_ATTACHMENT_UNAVAILABLE', 409);
+    });
+    devices.get('dev1')!.launchScopes = [{ backendStoreId: STORE, projectId: 'p1', engineId: 'sage-pi' }];
+    const path = `/personal/v1/local-tasks/${STORE}`;
+    const result = await remote(access, 'POST', path + '/tasks', { ...base, linkFile: attachment }, base.requestKey);
+    expect(result.body).toMatchObject({ state: 'REJECTED', code: 'LINK_FILE_ATTACHMENT_UNAVAILABLE' });
+    const lookup = await remote(access, 'GET', path + '/task-requests/' + base.requestKey);
+    expect(lookup.body).toEqual(result.body);
+    expect(fx.posts('/local/v1/tasks')).toHaveLength(0);
+  });
+
+  it('rejects raw MCP configuration and mismatched attachment bindings before dispatch', async () => {
+    const { access, devices } = harness(async () => { throw new Error('must not authorize'); });
+    devices.get('dev1')!.launchScopes = [{ backendStoreId: STORE, projectId: 'p1', engineId: 'sage-pi' }];
+    const path = `/personal/v1/local-tasks/${STORE}/tasks`;
+    for (const body of [{ ...base, mcpServers: [] }, { ...base, linkFile: { ...attachment, requestID: 'other' } }]) {
+      expect(await codeOf(remote(access, 'POST', path, body, base.requestKey)))
+        .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+    }
+    expect(fx.posts('/local/v1/tasks')).toHaveLength(0);
+  });
+});
 
 const inputBody = (extra: Record<string, unknown>): Record<string, unknown> => ({
   generation: 'g1', nativeSessionId: 's1', nativeTurnId: 't9', targetCommandId: 'c3',

@@ -6,8 +6,9 @@ asks the paired phone through the gateway's loopback hooks surface, and prints
 the agent-dialect decision on stdout.
 
 Fail-open contract: any error, any unreachable gateway, no paired phone, or a
-poll timeout exits 0 with NO output — the agent then shows its own desktop
-dialog. The phone path must never strand a tool call.
+poll timeout exits 0 with NO output — the agent then falls back to its own
+permission flow (for codex that means the call proceeds; the phone path must
+never strand a tool call).
 
 Config: ~/.agent-gateway/hooks.json {"port": N, "tokenFile": path}
 Session auto-approve: ~/.agent-gateway/auto-{session_id} marker file.
@@ -92,16 +93,24 @@ def call(cfg: dict, token: str, method: str, path: str,
         return None
 
 
-def approve_out(agent: str) -> str:
-    # Codex PreToolUse can block. A positive response leaves sandbox and
-    # permission evaluation to Codex.
-    if agent == "codex":
-        return "{}"
+def approve_out(agent: str, event: str) -> str:
+    if event == "PermissionRequest":
+        return json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"}}})
+    # Codex wire dialect is allow/deny/ask. In "phone" posture the bridge
+    # spawns codex with danger-full-access, so the phone card here IS the
+    # permission layer — "allow" is a real grant, not a deferral to a second
+    # gate (this path only runs when agent_mode == "phone").
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "allow"}})
 
 
-def block_out(agent: str, reason: str) -> str:
+def block_out(agent: str, event: str, reason: str) -> str:
+    if event == "PermissionRequest":
+        return json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "deny", "message": reason}}})
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
@@ -111,7 +120,7 @@ def block_out(agent: str, reason: str) -> str:
 # Fields the phone needs to decide — everything else (file bodies, patches,
 # env blobs) stays on the Mac instead of riding the relay to the phone.
 SAFE_INPUT_KEYS = {"file_path", "path", "command", "url", "query", "pattern",
-                   "notebook_path", "old_path", "new_path"}
+                   "notebook_path", "old_path", "new_path", "files"}
 INPUT_VALUE_LIMIT = 500
 # "Allow this session" flags are session-scoped, not forever — expire them.
 AUTO_MARKER_TTL_S = 24 * 3600
@@ -154,7 +163,8 @@ def question_for(tool: str, tool_input: dict) -> str:
         return f"创建 / 覆写: {path or '一个文件'}"
     if tool in ("Edit", "MultiEdit", "NotebookEdit", "apply_patch", "replace_in_file"):
         return f"编辑: {path or '一个文件'}"
-    if tool in ("Bash", "shell", "run_shell_command", "Shell", "run_terminal_cmd"):
+    if tool in ("Bash", "shell", "run_shell_command", "Shell", "run_terminal_cmd",
+                "exec_command", "shell_command", "unified_exec", "local_shell"):
         return f"运行: {cmd[:140]}"
     if tool in ("WebFetch", "WebSearch"):
         detail = tool_input.get("url") or tool_input.get("query") or ""
@@ -162,6 +172,92 @@ def question_for(tool: str, tool_input: dict) -> str:
     if tool.startswith("mcp__"):
         return f"允许 MCP 工具 {tool}?"
     return f"允许 {tool}?"
+
+
+def agent_mode(agent: str) -> str:
+    """Owner-picked permission posture from ~/.agent-gateway/agent-modes.json
+    (Agent Link popover). "phone" asks the phone for risky calls. "workspace"
+    is OUR deterministic confinement: this script denies calls that touch
+    user files outside the project (the spawned OS sandbox is only a
+    backstop). "open" abstains — nothing decides."""
+    try:
+        modes = json.loads((Path.home() / ".agent-gateway" / "agent-modes.json").read_text())
+        mode = modes.get(agent)
+        if mode in ("workspace", "open"):
+            return mode
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "phone"
+
+
+# Credential dirs stay out of reach even in modes that otherwise ignore
+# hidden tool dirs — a confinement mode that leaks ~/.ssh confines nothing.
+SECRET_DIRS = (".ssh", ".gnupg", ".aws", ".azure", ".kube")
+
+
+def _violates_workspace(path: str, cwd_root: str, home: str) -> bool:
+    """True when a resolved path reaches user content outside the project:
+    anything under $HOME that is neither inside the project nor a hidden
+    tool dir (.cache/.npm/...). Paths outside $HOME (system dirs, /tmp
+    scratch) are the execution substrate and stay allowed."""
+    if path == cwd_root or path.startswith(cwd_root + os.sep):
+        return False
+    if not (path == home or path.startswith(home + os.sep)):
+        return False
+    rel = path[len(home):].lstrip(os.sep)
+    top = rel.split(os.sep, 1)[0] if rel else ""
+    if top in SECRET_DIRS:
+        return True
+    return not top.startswith(".")
+
+
+def _resolve_path(token: str, cwd_root: str) -> str:
+    t = os.path.expandvars(os.path.expanduser(token.strip()))
+    if not os.path.isabs(t):
+        t = os.path.join(cwd_root, t)
+    return os.path.realpath(t)
+
+
+def workspace_ok(tool_input: dict, cwd: str) -> bool:
+    """Agent Link's own confinement check — deterministic, engine-neutral.
+    Scans declared path fields and path-looking shell tokens; a call is
+    denied when any of them resolves to user content outside the project.
+    Heuristic by design: it guards the boundary, it is not a parser-proof
+    sandbox (the OS sandbox argv remains the write backstop)."""
+    cwd_root = os.path.realpath(cwd or os.sep)
+    home = os.path.realpath(str(Path.home()))
+    if not isinstance(tool_input, dict):
+        return True
+    for key in ("file_path", "path", "old_path", "new_path", "notebook_path"):
+        v = tool_input.get(key)
+        if isinstance(v, str) and v.strip():
+            if _violates_workspace(_resolve_path(v, cwd_root), cwd_root, home):
+                return False
+    files = tool_input.get("files")
+    if isinstance(files, list):
+        for v in files:
+            if isinstance(v, str) and v.strip():
+                if _violates_workspace(_resolve_path(v, cwd_root), cwd_root, home):
+                    return False
+    cmd = tool_input.get("command")
+    text = " ".join(str(c) for c in cmd) if isinstance(cmd, list) else cmd
+    if isinstance(text, str):
+        for tok in text.split():
+            t = tok.strip("\"'")
+            while t and (t[0].isdigit() or t[0] in "><"):
+                t = t[1:]  # attached redirections: >out, 2>log, <in
+            t = t.strip("\"'")
+            if "=" in t and not t.startswith(("/", "~", ".")):
+                t = t.split("=", 1)[1]  # FLAG=path / VAR=path → check RHS
+            if not t or "://" in t or t.startswith("/dev"):
+                continue
+            looks_path = (t.startswith(("/", "~", ".")) or "/" in t
+                          or "$HOME" in t or "${HOME}" in t)
+            if not looks_path:
+                continue
+            if _violates_workspace(_resolve_path(t, cwd_root), cwd_root, home):
+                return False
+    return True
 
 
 def session_auto(agent: str, session_id: str) -> bool:
@@ -190,6 +286,7 @@ def main() -> int:
         return 0  # not a payload we understand — desktop flow
 
     prune_markers()
+    event = payload.get("hook_event_name") or payload.get("hookEventName") or ""
     tool = payload.get("tool_name") or payload.get("toolName") or ""
     tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
     session_id = payload.get("session_id") or payload.get("conversation_id") or ""
@@ -206,10 +303,27 @@ def main() -> int:
     except (OSError, ValueError):
         pass  # no state file — cooperative mode stays on
 
-    if not tool or not worth_asking(agent, tool):
+    # Per-agent posture — the decision is OURS, never the engine's:
+    #   open      → abstain; the call proceeds (spawned with full access).
+    #   workspace → deterministic deny when the call reaches user content
+    #               outside the project; PermissionRequest escalations deny
+    #               too. Otherwise abstain — the OS sandbox argv backstops
+    #               writes the heuristic could miss.
+    #   phone     → the phone card decides below.
+    mode = agent_mode(agent)
+    if mode == "open":
+        return 0
+    if mode == "workspace":
+        if event == "PermissionRequest" or not workspace_ok(tool_input, cwd):
+            print(block_out(agent, event,
+                            "仅限工作区模式：不碰工作区外的用户文件。"))
+        return 0
+
+    asking = event == "PermissionRequest" or worth_asking(agent, tool)
+    if not tool or not asking:
         return 0
     if session_auto(agent, session_id):
-        print(approve_out(agent))
+        print(approve_out(agent, event))
         return 0
 
     cfg = load_config()
@@ -222,13 +336,18 @@ def main() -> int:
     if not enabled or not enabled.get("enabled"):
         return 0  # no paired phone — desktop dialog handles it
 
-    approval_id = f"{agent}-{tool_use_id or str(int(time.time() * 1000))}"[:128]
+    # PermissionRequest payloads carry no tool_use_id — pid keeps concurrent
+    # requests in the same turn from colliding on one approval id.
+    approval_id = f"{agent}-{tool_use_id or str(os.getpid())}-{int(time.time() * 1000)}"[:128]
+    question = question_for(tool, tool_input if isinstance(tool_input, dict) else {})
+    if event == "PermissionRequest":
+        question = f"越权请求 · {question}"
     ask = call(cfg, token, "POST", "/hooks/v1/approvals", body={
         "approvalId": approval_id,
         "agent": agent,
         "toolName": tool,
         "toolInput": safe_input(tool_input),
-        "question": question_for(tool, tool_input if isinstance(tool_input, dict) else {}),
+        "question": question,
         "options": ["允许一次", "本会话允许", "拒绝"],
         "projectDir": cwd,
         "sessionRef": session_id,
@@ -249,10 +368,10 @@ def main() -> int:
         if state == "APPROVED":
             if row.get("decision") == "APPROVED_SESSION":
                 mark_session_auto(agent, session_id)
-            print(approve_out(agent))
+            print(approve_out(agent, event))
             return 0
         if state == "DENIED":
-            print(block_out(agent, row.get("reason") or "已从手机拒绝。"))
+            print(block_out(agent, event, row.get("reason") or "已从手机拒绝。"))
             return 0
         return 0  # EXPIRED / CANCELLED / unknown → desktop flow
 

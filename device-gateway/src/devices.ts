@@ -14,6 +14,7 @@
  * read by normalize()); the personal_scope_v2_* triggers enforce that.
  */
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import {
   constantEqual,
   fail,
@@ -907,6 +908,10 @@ export class Devices {
         schemaVersion: 'personal-agent-access/1',
         personalHostId: h.id,
         storeId: this.storeId,
+        // Phones paired by invite/member store address-like names ("host:port")
+        // because pairing time is the only naming moment they get. Report the
+        // machine name here so synchronizeHost can heal the display name.
+        displayName: hostname().replace(/\.local$/, ''),
         bootId,
         origin: this.origin,
         alternateOrigins: this.alternateOrigins,
