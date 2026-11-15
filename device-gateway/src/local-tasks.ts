@@ -624,11 +624,9 @@ export class LocalTaskAccess {
     for (let i = 2; i < p.length; i++) id(p[i]);
     const messagesPage = method === 'GET' && p.length === 4 && p[1] === 'tasks' && p[3] === 'messages';
     const transcriptPage = method === 'GET' && p.length === 4 && p[1] === 'history' && p[2] === 'sessions';
-    const filesPage = p.length >= 2 && p[1] === 'files';
     if (query !== null && query !== '') {
       if (messagesPage) LocalTaskAccess.validateMessagesQuery(query);
       else if (transcriptPage) LocalTaskAccess.validateTranscriptQuery(query);
-      else if (filesPage) LocalTaskAccess.validateFileChunkQuery(query);
       else LocalTaskAccess.validateQuery(query);
     }
 
@@ -734,36 +732,6 @@ export class LocalTaskAccess {
         return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
       }
       fail('OPERATION_NOT_ALLOWED', 403);
-    }
-
-    // Staged phone↔PC file payloads: chunked base64 over the same
-    // authenticated channel, so LAN/Tailscale/relay behave identically.
-    // Gated like history — handing a file to a backend is a launch-adjacent
-    // act on the device that paired it.
-    if (p[1] === 'files' && p.length >= 2 && p.length <= 4) {
-      if (!(d.actions ?? []).includes('LAUNCH')
-          || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
-        fail('DEVICE_SCOPE_DENIED', 403);
-      }
-      const fid = p[2];
-      const create = method === 'POST' && p.length === 2;
-      const step = method === 'POST' && p.length === 4 && ['chunk', 'seal'].includes(p[3]!);
-      const read = method === 'GET'
-        && (p.length === 2 || p.length === 3 || (p.length === 4 && p[3] === 'chunk'));
-      if (!create && !step && !read) fail('OPERATION_NOT_ALLOWED', 403);
-      if (fid !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(fid)) {
-        fail('INVALID_REQUEST', 400);
-      }
-      if (create || step) {
-        if (!isRecord(body)) fail('INVALID_REQUEST', 400);
-        const allowed = create ? ['name', 'size', 'mime'] : ['seq', 'data'];
-        if (Object.keys(body).some((k) => !allowed.includes(k))) fail('INVALID_REQUEST', 400);
-      }
-      if (method === 'GET' && p.length === 4) LocalTaskAccess.validateFileChunkQuery(query);
-      const tail = '/files' + (p.length > 2 ? `/${p.slice(2).join('/')}` : '')
-        + (query !== null && query !== '' ? `?${query}` : '');
-      const out = this.ok(await this.source(backend, method as 'GET'|'POST', tail, body, key ?? undefined));
-      return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
     }
 
     if (p.length === 2 && p[1] === 'task-preflights' && method === 'POST') {
@@ -1076,19 +1044,6 @@ export class LocalTaskAccess {
       } else if (pair[0] === 'limit' || pair[0] === 'before') {
         if (!/^(0|[1-9][0-9]{0,9})$/.test(pair[1]!)) fail('INVALID_REQUEST', 400);
       } else fail('INVALID_REQUEST', 400);
-    }
-  }
-
-  /** Staged-file reads only take `seq` (chunk index); uploads carry their
-   * metadata in the JSON body, never the query. */
-  private static validateFileChunkQuery(query: string | null): void {
-    if (query === null || query === '') return;
-    const seen = new Set<string>();
-    for (const item of query.split('&')) {
-      const pair = item.split('=', 2);
-      if (pair.length !== 2 || seen.has(pair[0]!) || pair[0] !== 'seq'
-          || !/^(0|[1-9][0-9]{0,9})$/.test(pair[1]!)) fail('INVALID_REQUEST', 400);
-      seen.add(pair[0]!);
     }
   }
 
