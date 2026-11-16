@@ -112,7 +112,7 @@ internal static class Program
                     await RefreshMenuAsync();
                     break;
                 case "detachWorker":
-                    await CallQuietAsync(new("detachWorker"), showPanelOnError: true);
+                    await CallQuietAsync(new("detachWorker", entry.Id), showPanelOnError: true);
                     await RefreshMenuAsync();
                     break;
                 case "testWorker" when entry.Id is { } testPath:
@@ -201,11 +201,10 @@ internal static class Program
         static async Task<TraySnapshot> FetchSnapshotAsync()
         {
             var workers = WorkerCards.Enumerate();
-            var current = WorkerCards.CurrentPath();
-            if (current is not null
-                && workers.All(c => !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase))
-                && WorkerCards.TryRead(current) is { } attached)
-                workers.Add(attached);
+            var current = WorkerCards.CurrentPaths();
+            foreach (var path in current.Where(p => workers.All(c =>
+                !string.Equals(c.Path, p, StringComparison.OrdinalIgnoreCase))))
+                if (WorkerCards.TryRead(path) is { } attached) workers.Add(attached);
             try
             {
                 var reply = await LinkProtocol.CallAsync(new("status"));

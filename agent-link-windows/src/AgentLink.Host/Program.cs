@@ -67,7 +67,8 @@ internal sealed class LinkHost : IDisposable
     private volatile bool enabled;
     private volatile Ports? ports;
     private string WorkerPathFile => Path.Combine(LinkProtocol.Root, "worker-card.path");
-    private WorkerCard? registered;
+    private string AttachedFile => Path.Combine(LinkProtocol.Root, "worker-cards.json");
+    private readonly Dictionary<string, WorkerCard> registered = new(StringComparer.Ordinal);
     private readonly ManagedAgents managed;
     private readonly ConnectorSupervisor connector;
     private string? descriptorCertificatePem;
@@ -150,6 +151,15 @@ internal sealed class LinkHost : IDisposable
         }
         if (chosen.Phone is < 1024 or > 65535 || chosen.Owner is < 1024 or > 65535 || chosen.Phone == chosen.Owner)
             throw new InvalidDataException("Invalid saved ports.");
+        // A persisted port is only trustworthy while it still binds — Windows
+        // port-exclusion ranges and port thieves would otherwise wedge every
+        // restart. Re-pick all three at once rather than half-patching (same
+        // rule the Mac service uses on gateway respawn).
+        if (!persistPorts && !(PortFree(chosen.Phone) && PortFree(chosen.Owner) && PortFree(chosen.Relay)))
+        {
+            chosen = AllocatePorts();
+            persistPorts = true;
+        }
 
         var launch = ProcessInfo(Path.Combine(InstallRoot, "runtime", "gateway-node.exe"), data);
         launch.ArgumentList.Add("--import");
@@ -185,7 +195,7 @@ internal sealed class LinkHost : IDisposable
             await WaitForListenerAsync(gateway.Process.StandardOutput, chosen, startup.Token);
             stdout = DrainAsync(gateway.Process.StandardOutput);
             ports = chosen;
-            registered = null;
+            registered.Clear();
             managed.GatewayRestarted();
             await mutations.WaitAsync(cancellation);
             try
@@ -286,6 +296,21 @@ internal sealed class LinkHost : IDisposable
             if (attempt == 2 || chosen.Phone != chosen.Owner && chosen.Phone != chosen.Relay
                 && chosen.Owner != chosen.Relay) return chosen;
         }
+    }
+
+    private static bool PortFree(int port)
+    {
+        try
+        {
+            var v6 = new TcpListener(IPAddress.IPv6Any, port);
+            v6.Start();
+            v6.Stop();
+            var v4 = new TcpListener(IPAddress.Loopback, port);
+            v4.Start();
+            v4.Stop();
+            return true;
+        }
+        catch (SocketException) { return false; }
     }
 
     private static int FreeLoopbackPort()
@@ -451,39 +476,91 @@ internal sealed class LinkHost : IDisposable
         }
     }
 
-    private async Task RegisterWorkerAsync(WorkerCard? card, CancellationToken cancellation)
+    /// Attached worker-card paths — `worker-cards.json` holds the set; the
+    /// legacy single-slot `worker-card.path` is read once as a migration seed.
+    private HashSet<string> LoadAttachedPaths()
     {
-        if (registered == card) return;
-        if (card is not null)
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
         {
-            var (ok, detail) = await ProbeWorkerAsync(card, cancellation);
-            if (!ok) throw new HttpRequestException(detail);
-            await OwnerAsync(HttpMethod.Post, "worker-registrations", new
+            if (File.Exists(AttachedFile))
             {
-                card.ConnectionId, card.Url, card.Token,
-                displayName = card.DisplayName ?? card.ConnectionId,
-            }, cancellation);
+                foreach (var path in JsonSerializer.Deserialize<string[]>(
+                    File.ReadAllBytes(AttachedFile), LinkProtocol.Json) ?? [])
+                    if (path is { Length: > 0 }) set.Add(path);
+            }
+            else if (File.Exists(WorkerPathFile))
+            {
+                var path = File.ReadAllText(WorkerPathFile).Trim();
+                if (path.Length > 0) set.Add(path);
+            }
         }
-        if (registered is { } old && old.ConnectionId != card?.ConnectionId)
-            await OwnerAsync(HttpMethod.Delete, "worker-registrations/" + old.ConnectionId, null, cancellation);
-        registered = card;
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
+        return set;
+    }
+
+    private void SaveAttachedPaths(HashSet<string> set)
+    {
+        LinkIdentity.SaveAtomic(AttachedFile,
+            JsonSerializer.SerializeToUtf8Bytes(set.Order(StringComparer.Ordinal).ToArray(), LinkProtocol.Json));
+        if (File.Exists(WorkerPathFile)) File.Delete(WorkerPathFile);
+    }
+
+    /// The owner's attached set is the desired state; `registered` mirrors the
+    /// gateway. Dead workers lose their registration but keep the intent — a
+    /// returning worker rejoins without a second tray toggle. A card whose
+    /// file vanished withdrew consent, so its intent drops with it.
+    private async Task SyncWorkersAsync(CancellationToken cancellation)
+    {
+        var attached = LoadAttachedPaths();
+        var wanted = new Dictionary<string, WorkerCard>(StringComparer.Ordinal);
+        var stale = new List<string>();
+        foreach (var path in attached)
+        {
+            try { var card = await LoadWorkerAsync(path, cancellation); wanted[card.ConnectionId] = card; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException
+                || error is OperationCanceledException && !cancellation.IsCancellationRequested)
+            {
+                if (!File.Exists(path)) stale.Add(path);
+            }
+        }
+        if (stale.Count > 0) { attached.ExceptWith(stale); SaveAttachedPaths(attached); }
+        foreach (var id in registered.Keys.Where(id => !wanted.ContainsKey(id)).ToArray())
+        {
+            try { await OwnerAsync(HttpMethod.Delete, "worker-registrations/" + id, null, cancellation); }
+            catch (HttpRequestException) { }
+            registered.Remove(id);
+        }
+        foreach (var (id, card) in wanted)
+        {
+            if (registered.TryGetValue(id, out var cur) && cur.Url == card.Url && cur.Token == card.Token) continue;
+            var (ok, _) = await ProbeWorkerAsync(card, cancellation);
+            if (!ok)
+            {
+                if (registered.Remove(id))
+                    try { await OwnerAsync(HttpMethod.Delete, "worker-registrations/" + id, null, cancellation); }
+                    catch (HttpRequestException) { }
+                continue;
+            }
+            var body = new { card.ConnectionId, card.Url, card.Token, displayName = card.DisplayName ?? card.ConnectionId };
+            try { await OwnerAsync(HttpMethod.Post, "worker-registrations", body, cancellation); }
+            catch (HttpRequestException)
+            {
+                // The gateway may already hold a row for this connection
+                // (replay after respawn) — refresh it rather than failing.
+                try { await OwnerAsync(HttpMethod.Delete, "worker-registrations/" + id, null, cancellation); }
+                catch (HttpRequestException) { }
+                await OwnerAsync(HttpMethod.Post, "worker-registrations", body, cancellation);
+            }
+            registered[id] = card;
+        }
     }
 
     private async Task RefreshWorkerAsync(CancellationToken cancellation)
     {
-        WorkerCard? card = null;
-        try
-        {
-            if (File.Exists(WorkerPathFile))
-                card = await LoadWorkerAsync(await File.ReadAllTextAsync(WorkerPathFile, cancellation), cancellation);
-            await RegisterWorkerAsync(card, cancellation);
-        }
+        try { await SyncWorkersAsync(cancellation); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or HttpRequestException
-            || error is OperationCanceledException && !cancellation.IsCancellationRequested)
-        {
-            if (card is null && registered is not null)
-                await RegisterWorkerAsync(null, cancellation);
-        }
+            || error is OperationCanceledException && !cancellation.IsCancellationRequested) { }
     }
 
     private async Task ServeAsync(CancellationToken cancellation)
@@ -535,12 +612,23 @@ internal sealed class LinkHost : IDisposable
                     return new(true, Data: cap?["localSource"]?.DeepClone());
                 case "worker" when request.Id is { } path:
                     var card = await LoadWorkerAsync(path, cancellation);
-                    await RegisterWorkerAsync(card, cancellation);
-                    LinkIdentity.SaveAtomic(WorkerPathFile, System.Text.Encoding.UTF8.GetBytes(path));
+                    var (okAttach, attachDetail) = await ProbeWorkerAsync(card, cancellation);
+                    if (!okAttach) return new(false, attachDetail);
+                    var attached = LoadAttachedPaths();
+                    attached.Add(Path.GetFullPath(path));
+                    SaveAttachedPaths(attached);
+                    await SyncWorkersAsync(cancellation);
                     return new(true);
                 case "detachWorker":
-                    if (File.Exists(WorkerPathFile)) File.Delete(WorkerPathFile);
-                    await RegisterWorkerAsync(null, cancellation);
+                    var remaining = LoadAttachedPaths();
+                    if (request.Id is { } detachPath)
+                    {
+                        var full = Path.GetFullPath(detachPath);
+                        remaining.RemoveWhere(p => string.Equals(p, full, StringComparison.OrdinalIgnoreCase));
+                    }
+                    else remaining.Clear();
+                    SaveAttachedPaths(remaining);
+                    await SyncWorkersAsync(cancellation);
                     return new(true);
                 case "testWorker" when request.Id is { } testPath:
                     var tested = await LoadWorkerAsync(testPath, cancellation);
@@ -549,8 +637,6 @@ internal sealed class LinkHost : IDisposable
                 case "managedAgents":
                     return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
                 case "agentAdd" when request.Args is { } addArgs:
-                    try { File.AppendAllText(Path.Combine(LinkProtocol.Root, "pipe-errors.log"),
-                        DateTimeOffset.Now + " agentAdd enter " + request.Args + "\n"); } catch { }
                     managed.Add(
                         addArgs["engine"]?.GetValue<string>() is { Length: > 0 } engine ? engine
                             : throw new IOException("缺少引擎"),

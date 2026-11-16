@@ -280,14 +280,13 @@ public partial class LinkWindow : Window
         catch (Exception error) when (IsUnavailable(error)) { }
 
         var cards = WorkerCards.Enumerate();
-        var current = WorkerCards.CurrentPath();
-        if (current is not null
-            && cards.All(c => !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase))
-            && WorkerCards.TryRead(current) is { } attached)
-            cards.Add(attached);
+        var current = WorkerCards.CurrentPaths();
+        foreach (var path in current.Where(p => cards.All(c =>
+            !string.Equals(c.Path, p, StringComparison.OrdinalIgnoreCase))))
+            if (WorkerCards.TryRead(path) is { } attached) cards.Add(attached);
 
         var sig = JsonSerializer.Serialize(managed, LinkProtocol.Json)
-            + "|" + current
+            + "|" + string.Join(",", current)
             + "|" + string.Join(",", availability.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value))
             + "|" + string.Join(",", cards.Select(c => c.Path + "@" +
                 (File.Exists(c.Path) ? File.GetLastWriteTimeUtc(c.Path).Ticks : 0)))
@@ -791,9 +790,9 @@ public partial class LinkWindow : Window
         await RefreshAsync();
     }
 
-    private FrameworkElement AgentRow(TrayWorkerCard card, string? current, Dictionary<string, string> availability)
+    private FrameworkElement AgentRow(TrayWorkerCard card, IReadOnlyList<string> current, Dictionary<string, string> availability)
     {
-        var attached = string.Equals(card.Path, current, StringComparison.OrdinalIgnoreCase);
+        var attached = current.Contains(card.Path, StringComparer.OrdinalIgnoreCase);
         var tint = TintBrush(card.Engine);
         var stack = new StackPanel();
         var head = new Grid();
@@ -841,7 +840,7 @@ public partial class LinkWindow : Window
         toggle.Click += async (_, _) =>
         {
             toggle.IsEnabled = false;
-            try { await ActAsync(new(attached ? "detachWorker" : "worker", attached ? null : card.Path)); }
+            try { await ActAsync(new(attached ? "detachWorker" : "worker", card.Path)); }
             finally { toggle.IsEnabled = true; }
         };
 

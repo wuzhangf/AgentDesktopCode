@@ -101,12 +101,14 @@ internal static class ContractChecks
                "engines":[{"engineId":"codex"}]}]}
             """);
         var scopes = LaunchScopes.FromCatalog(catalog);
-        // proj-b unavailable, pi unavailable, gemini outside the gateway engine
-        // set, backend-3 offline, duplicate proj-a deduped → 2 expressible scopes.
-        if (scopes.Count != 2) throw new InvalidOperationException($"expected 2 scopes, got {scopes.Count}");
+        // proj-b unavailable, pi unavailable, backend-3 offline, duplicate
+        // proj-a deduped → 3 expressible scopes. Engine ids are backend-
+        // declared — gemini scopes now flow like any community engine.
+        if (scopes.Count != 3) throw new InvalidOperationException($"expected 3 scopes, got {scopes.Count}");
         if (!scopes.Any(s => s.BackendStoreId == "backend-1" && s.ProjectId == "proj-a" && s.EngineId == "codex")
+            || !scopes.Any(s => s.BackendStoreId == "backend-1" && s.ProjectId == "proj-a" && s.EngineId == "gemini")
             || !scopes.Any(s => s.BackendStoreId == "backend-2" && s.ProjectId == "proj-c" && s.EngineId == "claude")
-            || scopes.Any(s => s.EngineId is "pi" or "gemini")
+            || scopes.Any(s => s.EngineId == "pi")
             || scopes.Any(s => s.BackendStoreId == "backend-3"))
             throw new InvalidOperationException("scope filtering wrong");
 
@@ -114,7 +116,7 @@ internal static class ContractChecks
         if (LaunchScopes.FromCatalog(JsonNode.Parse("{\"available\":false}")).Count != 0)
             throw new InvalidOperationException("offline catalog not empty");
 
-        // 17 projects × the 6 allow-listed engines = 102 distinct scopes,
+        // 17 projects × 6 engine ids = 102 distinct scopes,
         // past the gateway's 100-scope bound.
         var many = new StringBuilderCatalog(17, 6);
         if (LaunchScopes.FromCatalog(many.Build()).Count != 0)
@@ -133,7 +135,7 @@ internal static class ContractChecks
             ?? entries.SelectMany(e => e.Children ?? []).FirstOrDefault(e => e.Action == action);
 
         // Unreachable: header + problem + refresh/global actions, no entity submenus.
-        var offline = TrayMenuModel.Build(new(false, null, null, null, [], null));
+        var offline = TrayMenuModel.Build(new(false, null, null, null, [], []));
         if (offline.Count != 6 || offline[0].Kind != TrayMenuEntryKind.Header || offline[0].Enabled
             || offline[1].Kind != TrayMenuEntryKind.Problem || offline[1].Action != "open"
             || offline.Any(e => e.Kind == TrayMenuEntryKind.Submenu)
@@ -146,7 +148,7 @@ internal static class ContractChecks
             [{"pairingRequestId":"req-1","label":"iPhone-吴","checkWords":"BLUE-CAT","state":"PENDING"},
              {"pairingRequestId":"req-2","label":"旧请求","checkWords":"DONE","state":"APPROVED"}]
             """)!.AsArray();
-        var ready = TrayMenuModel.Build(new(true, Status(devices: 2, pending: 1, member: "ERROR"), null, requests, [], null));
+        var ready = TrayMenuModel.Build(new(true, Status(devices: 2, pending: 1, member: "ERROR"), null, requests, [], []));
         if (!ready[0].Text.Contains("PC-1") || !ready[0].Text.Contains("2 台手机")
             || ready.Count(e => e.Kind == TrayMenuEntryKind.Problem) != 1)
             throw new InvalidOperationException("ready header/problems wrong");
@@ -163,7 +165,7 @@ internal static class ContractChecks
             [{"deviceGrantId":"g1","label":"iPhone-吴","state":"ACTIVE"},
              {"deviceGrantId":"g2-abcdefghij","state":"REVOKED"}]
             """)!.AsArray();
-        var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], null))
+        var phone = TrayMenuModel.Build(new(true, Status(), devices, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
         if (phone[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "iPhone-吴", Detail: "在线", DetailAccent: true }
             || phone[1].Kind != TrayMenuEntryKind.Separator
@@ -175,7 +177,7 @@ internal static class ContractChecks
             throw new InvalidOperationException("device rows wrong");
 
         // Phone off: invites disabled, toggle unchecked, lane says closed.
-        var off = TrayMenuModel.Build(new(true, Status(enabled: false), devices, null, [], null));
+        var off = TrayMenuModel.Build(new(true, Status(enabled: false), devices, null, [], []));
         var phoneOff = off.First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "手机连接" }).Children!;
         if (!off[0].Text.Contains("连接已关闭") || Find(phoneOff, "inviteQr")!.Enabled
             || Find(phoneOff, "inviteCopy")!.Enabled || Find(phoneOff, "togglePhone") is not { Checked: false })
@@ -188,7 +190,7 @@ internal static class ContractChecks
             new(@"D:\cards\pi.json", "Sage Pi", "sage-pi", "pi-workspace", @"D:\ws\pi"),
             new(@"D:\cards\codex.json", "Codex", "codex", "codex-proj"),
         };
-        var agents = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"d:\CARDS\pi.json"))
+        var agents = TrayMenuModel.Build(new(true, Status(), null, null, cards, [@"d:\CARDS\pi.json"]))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
         if (agents[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "Sage Pi", Detail: "接入中",
                 Tint: "#6366F1", Badge: "sage-pi" }
@@ -220,7 +222,7 @@ internal static class ContractChecks
             new("codex-def67890", "codex", @"D:\ws\old", null, "gpt-5.6-sol",
                 SkipPermissions: false, Enabled: false, Running: false, null, "已停用", null, null, null),
         };
-        var managedSection = TrayMenuModel.Build(new(true, Status(), null, null, [], null, managed))
+        var managedSection = TrayMenuModel.Build(new(true, Status(), null, null, [], [], managed))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" });
         if (managedSection.Detail != "Claude · proj · 运行中")
             throw new InvalidOperationException("managed agent detail wrong: " + managedSection.Detail);
@@ -243,29 +245,29 @@ internal static class ContractChecks
             throw new InvalidOperationException("stopped managed page wrong");
 
         // Orphan current path still shows an attached row; empty shows the hint.
-        var orphan = TrayMenuModel.Build(new(true, Status(), null, null, cards, @"D:\gone\old.json"))
+        var orphan = TrayMenuModel.Build(new(true, Status(), null, null, cards, [@"D:\gone\old.json"]))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
         if (orphan[0] is not { Kind: TrayMenuEntryKind.Submenu, Text: "old", Detail: "接入中" }
             || !orphan[0].Children!.Any(e => e.Action == "detachWorker"))
             throw new InvalidOperationException("orphan worker row wrong");
-        var none = TrayMenuModel.Build(new(true, Status(), null, null, [], null))
+        var none = TrayMenuModel.Build(new(true, Status(), null, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "Agent" }).Children!;
         if (none[0].Text != "尚未接入 Agent" || none[0].Enabled) throw new InvalidOperationException("empty workers wrong");
 
         // Member phases drive status text, action label and operation.
-        var linked = TrayMenuModel.Build(new(true, Status(member: "LINKED"), null, null, [], null))
+        var linked = TrayMenuModel.Build(new(true, Status(member: "LINKED"), null, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
         if (linked[0].Text != "会员连接可用" || linked[0].Enabled
             || linked[1].Text != "退出登录" || linked[1].Id != "memberLogout")
             throw new InvalidOperationException("member linked wrong");
-        var linking = TrayMenuModel.Build(new(true, Status(member: "LINKING", info: "ABCD-1234"), null, null, [], null))
+        var linking = TrayMenuModel.Build(new(true, Status(member: "LINKING", info: "ABCD-1234"), null, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
         if (!linking[0].Text.Contains("ABCD-1234") || linking[1].Text != "取消" || linking[1].Id != "memberCancel")
             throw new InvalidOperationException("member linking wrong");
-        var connecting = TrayMenuModel.Build(new(true, Status(member: "CONNECTING"), null, null, [], null))
+        var connecting = TrayMenuModel.Build(new(true, Status(member: "CONNECTING"), null, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
         if (connecting[1].Enabled) throw new InvalidOperationException("member connecting should be disabled");
-        var noneMember = TrayMenuModel.Build(new(true, Status(member: null, info: "此安装不包含会员连接组件"), null, null, [], null))
+        var noneMember = TrayMenuModel.Build(new(true, Status(member: null, info: "此安装不包含会员连接组件"), null, null, [], []))
             .First(e => e is { Kind: TrayMenuEntryKind.Submenu, Text: "会员账号" }).Children!;
         if (noneMember[0].Text != "此安装不包含会员连接组件" || noneMember[1].Text != "登录会员"
             || noneMember[1].Id != "memberLogin") throw new InvalidOperationException("member none wrong");

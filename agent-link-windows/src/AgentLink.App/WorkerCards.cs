@@ -62,15 +62,22 @@ internal static class WorkerCards
         return cards;
     }
 
-    internal static string? CurrentPath()
+    /// Attached card paths — worker-cards.json is the current set file; the
+    /// legacy single-slot worker-card.path is honoured once as a migration
+    /// seed (the host rewrites the json and deletes the pointer on next op).
+    internal static List<string> CurrentPaths()
     {
         try
         {
+            var json = Path.Combine(LinkProtocol.Root, "worker-cards.json");
+            if (File.Exists(json))
+                return (JsonSerializer.Deserialize<string[]>(File.ReadAllText(json)) ?? [])
+                    .Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
             var file = Path.Combine(LinkProtocol.Root, "worker-card.path");
             var text = File.Exists(file) ? File.ReadAllText(file).Trim() : null;
-            return string.IsNullOrWhiteSpace(text) ? null : text;
+            return string.IsNullOrWhiteSpace(text) ? [] : [text];
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return []; }
     }
 
     private static string? Field(JsonElement card, string name) =>

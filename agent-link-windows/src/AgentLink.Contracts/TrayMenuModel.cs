@@ -28,7 +28,7 @@ public sealed record TraySnapshot(
     JsonArray? Devices,
     JsonArray? Requests,
     IReadOnlyList<TrayWorkerCard> Workers,
-    string? CurrentWorkerPath,
+    IReadOnlyList<string> CurrentWorkerPaths,
     IReadOnlyList<ManagedAgent>? Managed = null);
 
 /// <summary>
@@ -72,7 +72,7 @@ public static class TrayMenuModel
             Detail: PhoneDetail(status), DetailAccent: status.Enabled && status.DeviceCount > 0,
             Children: PhoneChildren(snapshot)));
         entries.Add(new(TrayMenuEntryKind.Submenu, "Agent", Icon: "agent",
-            Detail: AgentDetail(snapshot), DetailAccent: snapshot.CurrentWorkerPath is not null,
+            Detail: AgentDetail(snapshot), DetailAccent: snapshot.CurrentWorkerPaths.Count > 0,
             Children: AgentChildren(snapshot)));
         entries.Add(new(TrayMenuEntryKind.Submenu, "会员账号", Icon: "member",
             Detail: MemberDetail(status), DetailAccent: status.MemberState == "LINKED",
@@ -104,13 +104,12 @@ public static class TrayMenuModel
         var enabled = snapshot.Managed?.Where(a => a.Enabled).ToArray() ?? [];
         if (enabled.Length > 0)
             parts.Add(string.Join("、", enabled.Select(ManagedTitle)) + " · 运行中");
-        var current = snapshot.CurrentWorkerPath;
-        if (current is not null)
-        {
-            var card = snapshot.Workers.FirstOrDefault(c =>
-                string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase));
-            parts.Add((card?.Name ?? Path.GetFileNameWithoutExtension(current)) + " · 接入中");
-        }
+        var attachedNames = snapshot.CurrentWorkerPaths
+            .Select(path => snapshot.Workers.FirstOrDefault(c =>
+                string.Equals(c.Path, path, StringComparison.OrdinalIgnoreCase))?.Name
+                ?? Path.GetFileNameWithoutExtension(path))
+            .ToArray();
+        if (attachedNames.Length > 0) parts.Add(string.Join("、", attachedNames) + " · 接入中");
         if (parts.Count > 0) return string.Join(" + ", parts);
         var total = snapshot.Workers.Count + (snapshot.Managed?.Count ?? 0);
         return total > 0 ? $"{total} 个可接入" : "未接入";
@@ -224,23 +223,23 @@ public static class TrayMenuModel
         }
         if (items.Count > 0 && snapshot.Workers.Count > 0)
             items.Add(new(TrayMenuEntryKind.Separator, ""));
-        var current = snapshot.CurrentWorkerPath;
-        if (current is not null && snapshot.Workers.All(c =>
-            !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase)))
+        var attached = new HashSet<string>(snapshot.CurrentWorkerPaths, StringComparer.OrdinalIgnoreCase);
+        foreach (var path in attached.Where(p => snapshot.Workers.All(c =>
+            !string.Equals(c.Path, p, StringComparison.OrdinalIgnoreCase))))
         {
-            var orphan = new TrayWorkerCard(current, Path.GetFileNameWithoutExtension(current));
+            var orphan = new TrayWorkerCard(path, Path.GetFileNameWithoutExtension(path));
             items.Add(new(TrayMenuEntryKind.Submenu, orphan.Name, Icon: "agent",
                 Detail: "接入中", DetailAccent: true, Tint: EngineTint(orphan.Engine),
                 Badge: orphan.Engine,
-                Children: AgentCardChildren(orphan, current)));
+                Children: AgentCardChildren(orphan, true)));
         }
         foreach (var card in snapshot.Workers)
         {
-            var attached = string.Equals(card.Path, current, StringComparison.OrdinalIgnoreCase);
+            var on = attached.Contains(card.Path);
             items.Add(new(TrayMenuEntryKind.Submenu, card.Name, Icon: "agent",
-                Detail: attached ? "接入中" : CardSubtitle(card),
-                DetailAccent: attached, Tint: EngineTint(card.Engine), Badge: card.Engine,
-                Children: AgentCardChildren(card, attached ? current : null)));
+                Detail: on ? "接入中" : CardSubtitle(card),
+                DetailAccent: on, Tint: EngineTint(card.Engine), Badge: card.Engine,
+                Children: AgentCardChildren(card, on)));
         }
         if (items.Count == 0)
             items.Add(new(TrayMenuEntryKind.Item, "尚未接入 Agent", Enabled: false));
@@ -276,16 +275,15 @@ public static class TrayMenuModel
         return items;
     }
 
-    private static IReadOnlyList<TrayMenuEntry> AgentCardChildren(TrayWorkerCard card, string? current)
+    private static IReadOnlyList<TrayMenuEntry> AgentCardChildren(TrayWorkerCard card, bool attached)
     {
-        var attached = current is not null;
         var items = new List<TrayMenuEntry>
         {
             new(TrayMenuEntryKind.Item, CardSubtitle(card) + (attached ? " · 接入中" : ""),
                 Enabled: false, Icon: "agent", Tint: EngineTint(card.Engine), Badge: card.Engine),
         };
         if (attached)
-            items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Icon: "reject"));
+            items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Id: card.Path, Icon: "reject"));
         else
             items.Add(new(TrayMenuEntryKind.Item, "接入此 Agent", Action: "attachWorker", Id: card.Path, Icon: "check"));
         items.Add(new(TrayMenuEntryKind.Item, "测试引擎", Action: "testWorker", Id: card.Path, Icon: "refresh"));
