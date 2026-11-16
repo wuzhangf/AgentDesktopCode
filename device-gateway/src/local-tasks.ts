@@ -920,6 +920,11 @@ export class LocalTaskAccess {
           publicView.graphicsAccess = await this.graphicsAccess(token, backend, task, result);
         }
         if (p.length === 3) {
+          delete publicView.sessionFiles;
+          if (!graphicsPublicRead && result.recipeID !== WORKFLOW_RECIPE) {
+            const summary = LocalTaskAccess.sessionFileSummary(result.sessionFiles);
+            if (summary !== undefined) publicView.sessionFiles = summary;
+          }
           publicView.clientAccess = await this.nativeTaskProjection(
             token, backend, task, asText(result.engineId));
         }
@@ -962,6 +967,24 @@ export class LocalTaskAccess {
       }
     }
     fail('OPERATION_NOT_ALLOWED', 403);
+  }
+
+  private static sessionFileSummary(raw: unknown): Json | undefined {
+    if (!isRecord(raw) || raw.schemaVersion !== 'worker-session-files/1'
+        || !Array.isArray(raw.artifacts) || !Array.isArray(raw.staged)) return undefined;
+    const items = new Map<string, Json>();
+    for (const [lane, rows] of [['artifact', raw.artifacts], ['staged', raw.staged]] as const) {
+      for (const row of rows.slice(0, 200)) {
+        if (!isRecord(row)) continue;
+        if (lane === 'artifact' && !['AVAILABLE', 'AVAILABLE_CHUNKED', 'WITHHELD_SIZE', 'WITHHELD_UNREADABLE', 'WITHHELD_CHANGED'].includes(String(row.status))) continue;
+        const id = asText(lane === 'artifact' ? row.artifactId : row.id);
+        if (!/^file-[a-f0-9]{64}$/.test(id)) continue;
+        const digest = asText(row.sha256);
+        const key = lane + ':' + id;
+        items.set(key, { key, ...(/^[a-f0-9]{64}$/.test(digest) ? { sha256: digest } : {}) });
+      }
+    }
+    return { schemaVersion: 'personal-session-files/1', complete: raw.complete === true, items: [...items.values()] };
   }
 
   private async verifyArtifactChunk(backend: string, task: string, artifact: string, digest: string, rawOffset: string, result: Json): Promise<void> {

@@ -5,6 +5,13 @@ import type { Device } from './protocol.js';
 import { fail, isRecord } from './protocol.js';
 import type { GatewayConfig, HttpRequest, JsonObject } from './context.js';
 
+/** Voice is the paid capability itself, not a generic write — transcription
+ *  submit stays member-gated on every ingress. Cancel rides the same free
+ *  safety valve as STOP commands. */
+export function requiresMembershipIngress(req: Pick<HttpRequest,'method'|'path'>): boolean {
+  return req.method === 'POST' && req.path === '/personal/v1/transcriptions';
+}
+
 /** Explicit safety/read exceptions. Unknown mutations require online rights. */
 export function requiresCommercialAccess(req: Pick<HttpRequest,'method'|'path'|'body'|'rawBody'>, localCliOnly = false): boolean {
   if (req.method === 'GET' || req.method === 'HEAD') return false;

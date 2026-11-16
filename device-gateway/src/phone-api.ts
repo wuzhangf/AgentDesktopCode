@@ -318,7 +318,7 @@ const phoneProblem = (path: string, error: unknown): HttpResponse => {
 // Route dispatch — Java remote().
 // ---------------------------------------------------------------------------
 
-import { requiresCommercialAccess } from './commercial.js';
+import { requiresCommercialAccess, requiresMembershipIngress } from './commercial.js';
 
 export async function handlePhoneRoute(ctx: GatewayContext, req: HttpRequest): Promise<HttpResponse> {
   try {
@@ -406,7 +406,11 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     if (!ctx.commercial) fail('DAILY_SERVICE_NOT_CONFIGURED',503);
     return {status:200,body:await ctx.commercial.attach(device,exact(jsonBody(req),'controlToken'))};
   }
-  if (requiresCommercialAccess(req, ctx.config.localCliOnly)) {
+  // Lane split: LAN writes ride the device bearer alone (pairing = consent,
+  // the app-store purchase is the license); only relay/public-network writes
+  // and the voice capability itself require membership.
+  if (requiresCommercialAccess(req, ctx.config.localCliOnly)
+      && (req.relayIngress === true || requiresMembershipIngress(req))) {
     if (ctx.commercial) await ctx.commercial.authorize(device,req);
     else if (ctx.config.allowUnlicensedDevelopment !== true) fail('ENTITLEMENT_CHECK_REQUIRED',503);
   }
@@ -440,6 +444,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   if (path === '/personal/v1/host' && method === 'GET') {
     const view = await ctx.auth.host(device, ctx.config.bootId);
     view.commercial = {required:ctx.config.allowUnlicensedDevelopment !== true && ctx.config.localCliOnly !== true,
+      lanes:{lan:'free',relay:'member',voice:'member'},
       dailyOrigin:ctx.commercial?.dailyOrigin ?? null};
     const capabilities = asObj(view.capabilities);
     capabilities.executionPolicy = true;
@@ -475,6 +480,14 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     const page = await ctx.approvals.list(device, waitRaw === undefined ? 0 : Number.parseInt(waitRaw, 10));
     if ((await ctx.auth.authenticate(token)).revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
     return { status: 200, body: page };
+  }
+
+  if (/^\/personal\/v1\/approvals\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(path) && method === 'GET') {
+    if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
+    if (ctx.config.localCliOnly && !actions.has('APPROVE')) fail('DEVICE_SCOPE_DENIED', 403);
+    const out = await ctx.approvals.lookup(device, path.split('/')[4]!);
+    if ((await ctx.auth.authenticate(token)).revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
+    return { status: 200, body: out };
   }
 
   if (/^\/personal\/v1\/approvals\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/decision$/.test(path) && method === 'POST') {

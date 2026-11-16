@@ -541,7 +541,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     if (ref.startsWith('cli-supervisor:')) {
       return extraTokens.get(`cli:${ref.slice('cli-supervisor:'.length)}`);
     }
-    if (ref.startsWith('worker:')) return extraTokens.get(ref);
+    if (ref.startsWith('worker:')) {
+      const cached = extraTokens.get(ref);
+      if (cached !== undefined) return cached;
+      // Registered worker rows survive restart; their bearers now do too.
+      const persisted = store.getConnectionToken(ref.slice('worker:'.length));
+      if (persisted !== undefined) { extraTokens.set(ref, persisted); return persisted; }
+      return undefined;
+    }
     if (ref === 'env:PERSONAL_ENV_TOKEN') return opts.personalEnv?.token;
     return undefined;
   };
@@ -566,6 +573,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       store.updateConnectionBaseUrl(connectionId, parsed!.origin);
     }
     extraTokens.set(`worker:${connectionId}`, token);
+    if (!opts.localCliOnly) store.putConnectionToken(connectionId, token);
     return { connectionId, registeredAt: new Date().toISOString() };
   };
   const workers: import('./context.js').GatewayWorkers = {
