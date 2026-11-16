@@ -65,6 +65,7 @@ internal sealed class LinkHost : IDisposable
     private volatile LinkStatus status;
     private LinkIdentity? identity;
     private volatile bool enabled;
+    private volatile bool pairingApproval;
     private volatile Ports? ports;
     private string WorkerPathFile => Path.Combine(LinkProtocol.Root, "worker-card.path");
     private string AttachedFile => Path.Combine(LinkProtocol.Root, "worker-cards.json");
@@ -83,7 +84,7 @@ internal sealed class LinkHost : IDisposable
     }
 
     private LinkStatus NewStatus(string message) => new(false, message, computer, null, 0, 0, null, null, null, enabled,
-        MemberStateName(connector.GetSnapshot().Phase), null);
+        MemberStateName(connector.GetSnapshot().Phase), null, PairingApprovalRequired: pairingApproval);
 
     internal async Task RunAsync()
     {
@@ -95,6 +96,7 @@ internal sealed class LinkHost : IDisposable
             {
                 identity = LinkIdentity.Load();
                 enabled = !File.Exists(Path.Combine(LinkProtocol.Root, "disabled"));
+                pairingApproval = File.Exists(Path.Combine(LinkProtocol.Root, "pairing-approval"));
                 await SuperviseAsync(stop.Token);
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException
@@ -185,6 +187,10 @@ internal sealed class LinkHost : IDisposable
         variables["DEVICE_GATEWAY_TLS_CERT"] = certificate.ExportCertificatePem();
         variables["DEVICE_GATEWAY_STOP_ON_STDIN_END"] = "1";
         variables["DEVICE_GATEWAY_PHONE_START_DISABLED"] = enabled ? "0" : "1";
+        // Discovery pairing: default auto-approve; marker file opts the owner
+        // into manual approval. Invite/QR pairing always approves — scanning
+        // the QR is the approval.
+        variables["DEVICE_GATEWAY_PAIRING_AUTO_APPROVE"] = pairingApproval ? "0" : "1";
         using var gateway = new OwnedProcess(launch);
         var stderr = DrainAsync(gateway.Process.StandardError);
         Task? stdout = null;
@@ -429,7 +435,7 @@ internal sealed class LinkHost : IDisposable
             cap?["personalHostId"]?.GetValue<string>(), cap?["storeId"]?.GetValue<string>(), gatewayPid, enabled,
             MemberStateName(member.Phase), member.UserCode ?? member.Detail
                 ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null),
-            cap?["dailyOrigin"]?.GetValue<string>());
+            cap?["dailyOrigin"]?.GetValue<string>(), pairingApproval);
     }
 
     private static string MemberStateName(ConnectorSupervisor.Phase phase) => phase switch
@@ -683,6 +689,17 @@ internal sealed class LinkHost : IDisposable
                     deviceId.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.'):
                     await OwnerAsync(HttpMethod.Delete,
                         "devices/" + Uri.EscapeDataString(deviceId), null, cancellation);
+                    return new(true);
+                case "pairingApproval":
+                    // Discovery-pairing approval toggle only — invite/QR
+                    // pairing always auto-approves and never reads this.
+                    var required = request.Args?["required"]?.GetValue<bool>() == true;
+                    var approvalMarker = Path.Combine(LinkProtocol.Root, "pairing-approval");
+                    if (required) LinkIdentity.SaveAtomic(approvalMarker, []);
+                    await OwnerAsync(HttpMethod.Post, "pairing-approval", new { required }, cancellation);
+                    if (!required) File.Delete(approvalMarker);
+                    pairingApproval = required;
+                    status = status with { PairingApprovalRequired = required };
                     return new(true);
                 case "enable" or "disable":
                     var on = request.Operation == "enable";

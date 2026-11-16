@@ -100,6 +100,8 @@ public partial class LinkWindow : Window
             Address.ToolTip = state.Origin;
             PhoneEnabled.IsEnabled = state.Ready;
             PhoneEnabled.IsChecked = state.Enabled;
+            PairingApproval.IsEnabled = state.Ready;
+            PairingApproval.IsChecked = state.PairingApprovalRequired;
             Invite.IsEnabled = state.Ready && state.Enabled;
             memberPhase = state.MemberState ?? "NONE";
             var memberDetail = state.MemberInfo;
@@ -1096,6 +1098,13 @@ public partial class LinkWindow : Window
     {
         if (working) return;
         await ActAsync(new(PhoneEnabled.IsChecked == true ? "enable" : "disable"));
+    }
+
+    private async void PairingApproval_Click(object sender, RoutedEventArgs e)
+    {
+        if (working) return;
+        await ActAsync(new("pairingApproval",
+            Args: new JsonObject { ["required"] = PairingApproval.IsChecked == true }));
     }
 
     private async Task ActAsync(LinkRequest request)

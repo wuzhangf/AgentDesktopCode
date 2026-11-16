@@ -254,6 +254,11 @@
                             <CheckBox x:Name="Autostart" Click="Autostart_Click" Content="登录 Windows 后自动启动"
                                       Style="{StaticResource Switch}"/>
                         </Border>
+                        <Border Padding="11" Background="{DynamicResource LinkSubtle}" CornerRadius="8" Margin="0,8,0,0">
+                            <CheckBox x:Name="PairingApproval" Click="PairingApproval_Click" IsEnabled="False"
+                                      Content="附近的电脑配对需批准" Style="{StaticResource Switch}"
+                                      ToolTip="扫码配对始终直接通过；此开关只管附近发现的电脑"/>
+                        </Border>
                         <TextBlock x:Name="StartupNotice" Style="{StaticResource SecondaryText}" Margin="0,8,0,0"/>
                     </StackPanel>
                 </TabItem>

@@ -11,7 +11,8 @@ public sealed record LinkRequest(string Operation, string? Id = null, JsonNode? 
 public sealed record LinkReply(bool Ok, string? Error = null, JsonNode? Data = null);
 public sealed record LinkStatus(bool Ready, string Message, string Computer, string? Origin, int DeviceCount,
     int PendingCount, string? PersonalHostId, string? StoreId, int? GatewayPid, bool Enabled,
-    string? MemberState = null, string? MemberInfo = null, string? DailyOrigin = null);
+    string? MemberState = null, string? MemberInfo = null, string? DailyOrigin = null,
+    bool PairingApprovalRequired = false);
 
 public static class LinkProtocol
 {

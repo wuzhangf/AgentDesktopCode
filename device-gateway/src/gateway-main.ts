@@ -37,9 +37,10 @@ import { taskFileBinding } from './sage-link-files.js';
  *   DEVICE_GATEWAY_ADVERTISE_IP   IPv4 the mDNS A record announces
  *                                  (multi-homed hosts; default = first LAN iface)
  *   DEVICE_GATEWAY_MAX_RAW_BODY        listener drain cap bytes (default 16MiB)
- *   DEVICE_GATEWAY_PAIRING_AUTO_APPROVE  invite secret / LAN discovery ⇒
- *                                  instant approval (default on; '0'
- *                                  requires an owner decision for both)
+ *   DEVICE_GATEWAY_PAIRING_AUTO_APPROVE  LAN discovery ⇒ instant approval
+ *                                  (default on; '0' requires an owner
+ *                                  decision). Invite-secret pairing always
+ *                                  approves — the QR is the approval.
  *   DEVICE_GATEWAY_HOOKS_PORT        optional loopback agent-hook surface
  *   DEVICE_GATEWAY_HOOKS_TOKEN       local hook bearer (else generated
  *                                  {dataDir}/hooks.token, mode 0600)

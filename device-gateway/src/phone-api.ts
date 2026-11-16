@@ -234,10 +234,12 @@ const memberPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonOb
 
 /**
  * LAN discovery pairing — the Bonjour-discovered phone has no sealed invite.
- * LAN presence alone is not a grant, so the request is created PENDING and
- * the owner approves it (Agent Link pairing surface); the approved scope is
- * the same local catalog. Only the public listener honors `discovery` — the
- * relay ingress always carries member attestation and rejects it.
+ * Whether the tap on 配对 is itself the owner's intent (auto-approve, the
+ * product default) or must wait for an explicit owner decision (PENDING)
+ * is governed by the pairing-approval setting, not this route; the approved
+ * scope is the same local catalog either way. Only the public listener
+ * honors `discovery` — the relay ingress always carries member attestation
+ * and rejects it.
  */
 const discoveryPairing = async (ctx: GatewayContext, b: JsonObject): Promise<JsonObject> => {
   if (b.discovery !== true) fail('INVALID_REQUEST', 400);
@@ -352,7 +354,8 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     // host, so the channel itself is the grant — no sealed invitation. The
     // member marker is meaningless on the public listener and rejected there.
     if (b.member !== undefined && req.relayIngress !== true) fail('INVALID_REQUEST', 400);
-    // Discovery pairing is the LAN inverse: no attestation, always PENDING.
+    // Discovery pairing is the LAN inverse: no attestation, approval mode
+    // decided by Devices.pairingApprovalRequired (default auto-approve).
     // It is meaningless via relay (member attestation already applies).
     if (b.discovery !== undefined && req.relayIngress === true) fail('INVALID_REQUEST', 400);
     if (req.relayIngress === true && b.inviteId === undefined) {

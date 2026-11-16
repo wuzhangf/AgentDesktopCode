@@ -220,11 +220,13 @@ describe('invitations', () => {
     let last: Json = first;
     for (let i = 0; i < 6; i++) last = invite([`s${i}`]);
     expectFail(() => requestPairing(first), 'PAIRING_EXPIRED', 410);
-    expect(requestPairing(last).state).toBe('PENDING');
+    expect(requestPairing(last).state).toBe('APPROVED');
   });
 
   it('frees an invitation slot after redemption without making the QR reusable', () => {
     const paired = mintDevice();
+    for (let i = 0; i < 2; i++) fakeDevice(next('fd'));
+    // APPROVED-but-unredeemed pairings still hold their invite slots.
     for (let i = 0; i < 4; i++) requestPairing(invite([`s${i}`]));
     expectFail(() => requestPairing(paired.invite), 'INVITATION_BOUND', 409);
     expectFail(() => invite(['s5']), 'PAIRING_LIMIT', 429);
@@ -276,7 +278,7 @@ describe('pairing flow: request → decide → redeem', () => {
     const poll = secret();
     const view = requestPairing(inv, rid, poll);
     expect(view.pairingRequestId).toBe(rid);
-    expect(view.state).toBe('PENDING');
+    expect(view.state).toBe('APPROVED');
     expect(view.checkWords).toBe(hash(`${rid}:${inv.inviteId}`).substring(0, 12));
     expect(view.sessions).toEqual(['sess-1', 'sess-2']);
     expect(view.actions).toEqual(['CONTROL', 'OBSERVE']);
@@ -576,18 +578,24 @@ describe('LAN discovery pairing (Bonjour)', () => {
 });
 
 describe('decide', () => {
+  const pendingDiscovery = (rid: string, poll: string, label = 'Phone'): Json =>
+    devices.discoveryRequest!({
+      pairingRequestId: rid,
+      installationId: 'inst-decide',
+      label,
+      pollingSecretHash: hash(poll),
+      discovery: true,
+    }, { resources: [], launchScopes: [], actions: ['OBSERVE'] });
+
   it('approves and rejects with idempotent same-state replay', () => {
-    const inv = invite();
     const rid = next('pr');
-    const poll = secret();
-    requestPairing(inv, rid, poll);
+    pendingDiscovery(rid, secret());
     expect(devices.decide(rid, false).state).toBe('REJECTED');
     expect(devices.decide(rid, false).state).toBe('REJECTED'); // idempotent
     expectFail(() => devices.decide(rid, true), 'PAIRING_DECIDED', 409);
 
-    const inv2 = invite();
     const rid2 = next('pr');
-    requestPairing(inv2, rid2, secret());
+    pendingDiscovery(rid2, secret());
     expect(devices.decide(rid2, true).state).toBe('APPROVED');
     expect(devices.decide(rid2, true).state).toBe('APPROVED');
     expectFail(() => devices.decide(rid2, false), 'PAIRING_DECIDED', 409);
@@ -599,9 +607,8 @@ describe('decide', () => {
 
   it('enforces DEVICE_LIMIT at approve time', () => {
     for (let i = 0; i < 4; i++) fakeDevice(next('fd'));
-    const inv = invite();
     const rid = next('pr');
-    requestPairing(inv, rid, secret());
+    pendingDiscovery(rid, secret());
     expectFail(() => devices.decide(rid, true), 'DEVICE_LIMIT', 429);
     // rejection is still allowed under the limit
     expect(devices.decide(rid, false).state).toBe('REJECTED');
@@ -610,10 +617,15 @@ describe('decide', () => {
 
 describe('redeem', () => {
   it('requires APPROVED state', () => {
-    const inv = invite();
     const rid = next('pr');
     const poll = secret();
-    requestPairing(inv, rid, poll);
+    devices.discoveryRequest!({
+      pairingRequestId: rid,
+      installationId: 'inst-redeem',
+      label: 'Phone',
+      pollingSecretHash: hash(poll),
+      discovery: true,
+    }, { resources: [], launchScopes: [], actions: ['OBSERVE'] });
     expectFail(() => devices.redeem(rid, poll, `red-${rid}`), 'PAIRING_NOT_APPROVED', 409);
     devices.decide(rid, false);
     expectFail(() => devices.redeem(rid, poll, `red-${rid}`), 'PAIRING_NOT_APPROVED', 409);

@@ -38,6 +38,8 @@ import { releaseBinding } from './bindings.js';
  */
 type OwnerAuth = GatewayAuth & {
   decide?(rid: string, approve: boolean): MaybePromise<JsonObject>;
+  pairingApprovalRequired?(): boolean;
+  setPairingApprovalRequired?(required: boolean): void;
 };
 
 const ROOT = '/api/v2/personal-access';
@@ -299,6 +301,24 @@ export async function handleOwnerRoute(
       if (typeof b.enabled !== 'boolean') fail('INVALID_REQUEST', 400);
       await ctx.link.setPhoneEnabled(b.enabled);
       return { status: 200, body: { enabled: ctx.link.phoneEnabled() } };
+    }
+
+    // Pairing approval mode — owner-visible toggle for whether invite/discovery
+    // requests land PENDING (required=true) or auto-approve (default). Runtime
+    // switch like link-state; the boot default stays the env var.
+    if (method === 'GET' && path === `${ROOT}/pairing-approval`) {
+      const auth = ctx.auth as OwnerAuth;
+      if (auth.pairingApprovalRequired === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: { required: auth.pairingApprovalRequired() } };
+    }
+    if (method === 'POST' && path === `${ROOT}/pairing-approval`) {
+      const b = exact(jsonBody(req), 'required');
+      const auth = ctx.auth as OwnerAuth;
+      if (auth.setPairingApprovalRequired === undefined || auth.pairingApprovalRequired === undefined)
+        fail('OPERATION_NOT_ALLOWED', 403);
+      if (typeof b.required !== 'boolean') fail('INVALID_REQUEST', 400);
+      auth.setPairingApprovalRequired(b.required);
+      return { status: 200, body: { required: auth.pairingApprovalRequired() } };
     }
 
     if (method === 'GET' && path === `${ROOT}/pairing-requests`) {

@@ -124,7 +124,7 @@ export class Devices {
     storeId?: string,
     origin?: string,
     clock?: () => number,
-    private readonly pairingAutoApprove = false,
+    private pairingAutoApprove = false,
     alternateOrigins: string[] = [],
   ) {
     this.keyFn = typeof sealKey === 'function' ? sealKey : () => sealKey;
@@ -387,10 +387,11 @@ export class Devices {
         return this.pairingView(previous);
       }
       if (i.requestId != null) fail('INVITATION_BOUND', 409);
-      // Auto-approve: possession of the invite secret (carried in the QR the
-      // owner just generated) is the authorization, so the pairing skips the
-      // PENDING owner decision. The active-device cap still applies.
-      if (this.pairingAutoApprove) this.requireDeviceSlot();
+      // Possession of the invite secret IS the owner's approval — the QR the
+      // owner just generated is the consent surface, so invite pairing always
+      // skips PENDING regardless of the discovery-approval toggle. The
+      // active-device cap still applies.
+      this.requireDeviceSlot();
       i.requestId = rid;
       this.putScope('invite', i.id, i);
       const p: Pairing = {
@@ -401,7 +402,7 @@ export class Devices {
         pollHash: poll,
         fingerprint: fp,
         expiresAt: i.expiresAt,
-        state: this.pairingAutoApprove ? 'APPROVED' : 'PENDING',
+        state: 'APPROVED',
         checkWords: hash(`${rid}:${inviteId}`).substring(0, 12),
         recoverUntil: 0,
         resources: i.resources,
@@ -460,8 +461,9 @@ export class Devices {
    * pairingAutoApprove (default on) treats tapping 配对 on the discovered
    * computer as sufficient owner intent — the product's LAN-pairing flow
    * carries no approval step — while DEVICE_GATEWAY_PAIRING_AUTO_APPROVE=0
-   * restores the owner decision for hostile-network installs. Scope is the
-   * same local catalog member pairing grants.
+   * (or the owner pairing-approval toggle) restores the owner decision for
+   * hostile-network installs. Scope is the same local catalog member
+   * pairing grants.
    */
   discoveryRequest(body: Json, scope: ScopeRecord): Json {
     const rid = text(body, 'pairingRequestId');
@@ -514,6 +516,17 @@ export class Devices {
 
   observePairing(rid: string, poll: string): Json {
     return this.store.transaction(() => this.pairingView(this.pairing(rid, poll)));
+  }
+
+  /** Owner-facing pairing mode toggle: whether requests land PENDING for a
+   *  human decision. Flipped live through the owner surface; the boot default
+   *  stays DEVICE_GATEWAY_PAIRING_AUTO_APPROVE. */
+  pairingApprovalRequired(): boolean {
+    return !this.pairingAutoApprove;
+  }
+
+  setPairingApprovalRequired(required: boolean): void {
+    this.pairingAutoApprove = !required;
   }
 
   requests(): Json[] {
