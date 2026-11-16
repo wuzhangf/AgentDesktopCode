@@ -181,6 +181,24 @@ const MIGRATIONS: Migration[] = [
       db.exec(`CREATE TRIGGER IF NOT EXISTS personal_scope_v2_update BEFORE UPDATE ON personal_access_record${guard}`);
     },
   },
+  {
+    version: 3,
+    name: 'worker-token-durability',
+    up(db) {
+      // Self-registered workers (worker-registrations / registerDirect) used
+      // to keep their bearer only in the boot-scoped extraTokens map — the
+      // connection row survived a restart but the token did not, leaving an
+      // unresolvable zombie row. Tokens now persist beside the row; the
+      // tokenRef indirection stays (workers never read this table directly).
+      db.exec(`
+        CREATE TABLE registry_tokens(
+          connection_id TEXT PRIMARY KEY,
+          token_value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -459,6 +477,26 @@ export class GatewayStore implements ConnectionRegistry {
   /** Runtime removal for self-registered/direct rows (worker leaves, config retracted). */
   deleteConnection(connectionId: string): void {
     this.db.prepare('DELETE FROM registry_connections WHERE connection_id=?').run(connectionId);
+    this.db.prepare('DELETE FROM registry_tokens WHERE connection_id=?').run(connectionId);
+  }
+
+  /** Durable bearer for worker-scoped tokenRefs — written at registration,
+   *  read lazily when the boot-scoped extraTokens map misses after restart. */
+  putConnectionToken(connectionId: string, token: string): void {
+    this.db.prepare(`INSERT INTO registry_tokens(connection_id, token_value, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(connection_id) DO UPDATE SET token_value=excluded.token_value, updated_at=excluded.updated_at`)
+      .run(connectionId, token, new Date().toISOString());
+  }
+
+  getConnectionToken(connectionId: string): string | undefined {
+    const row = this.db.prepare('SELECT token_value FROM registry_tokens WHERE connection_id=?')
+      .get(connectionId) as { token_value: string } | undefined;
+    return row?.token_value;
+  }
+
+  deleteConnectionToken(connectionId: string): void {
+    this.db.prepare('DELETE FROM registry_tokens WHERE connection_id=?').run(connectionId);
   }
 
   getConnection(connectionId: string): ConnectionRow | undefined {
