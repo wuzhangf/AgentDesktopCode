@@ -913,11 +913,11 @@ export async function main(): Promise<void> {
       if (origins.join('|') === currentAlternates.join('|')) return;
       currentAlternates = origins;
       built.devices.setAlternateOrigins(origins);
-      const lan = lanIPv4Addresses();
       mdns.update({
-        ...(advertiseIp !== undefined
-          ? { address: advertiseIp }
-          : lan.length === 0 ? {} : { address: lan[0] }),
+        // Only an explicit pin overrides the per-interface A record —
+        // refreshing with lan[0] would re-pin to whatever enumerates first
+        // (on this machine: a VMware host-only subnet phones cannot dial).
+        ...(advertiseIp !== undefined ? { address: advertiseIp } : {}),
         txt: { alts: altsTxt(origins) ?? '' },
       });
     } catch { /* interface flap mid-scan — retry next round */ }

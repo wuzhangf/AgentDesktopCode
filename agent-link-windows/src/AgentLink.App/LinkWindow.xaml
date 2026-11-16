@@ -273,8 +273,8 @@
                         <TextBlock Text="扫码配对手机" FontWeight="SemiBold" FontSize="14"
                                    HorizontalAlignment="Center"/>
                         <Border Background="White" CornerRadius="8" Padding="6" Margin="0,10,0,0">
-                            <Image x:Name="Qr" Width="204" Height="204"
-                                   RenderOptions.BitmapScalingMode="NearestNeighbor"
+                            <Image x:Name="Qr" Width="312" Height="312"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
                                    AutomationProperties.Name="手机配对二维码"/>
                         </Border>
                         <TextBlock x:Name="QrHelp" Style="{StaticResource SecondaryText}" FontSize="11"

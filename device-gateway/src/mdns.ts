@@ -25,7 +25,9 @@ export interface MdnsAdvert {
   /** Bonjour instance label shown to phones (e.g. "Control Mac"). */
   instance: string;
   port: number;
-  /** LAN IPv4 the phone should dial; when empty pick the first non-internal. */
+  /** Operator-pinned LAN IPv4 for the A record; when empty each LAN
+   *  interface advertises its own address (correct on multi-homed hosts —
+   *  a phone on the WLAN must not be told a VMware/WSL address). */
   address?: string;
   txt: Record<string, string>;
   log?: (event: string, fields?: Record<string, unknown>) => void;
@@ -99,9 +101,9 @@ const lanInterfaces = (): string[] => {
 
 const pickAddress = (hint?: string): string | undefined => {
   // A wildcard bind (0.0.0.0/::) is a listen-any instruction, not an
-  // address a phone can dial — fall through to the interface pick.
+  // address a phone can dial — only a literal non-zero IPv4 pins the advert.
   if (hint !== undefined && /^(\d{1,3}\.){3}\d{1,3}$/.test(hint) && !hint.split('.').every((p) => p === '0')) return hint;
-  return lanInterfaces()[0];
+  return undefined;
 };
 
 export interface MdnsHandle {
@@ -114,25 +116,25 @@ export interface MdnsHandle {
 
 export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
   const log = advert.log ?? (() => {});
-  let ip = pickAddress(advert.address);
+  let pinned = pickAddress(advert.address);
   const hostname = `${os.hostname().replace(/\.local$/, '')}.local`;
   const instance = `${advert.instance.replace(/\.local$/, '').replace(/\.$/, '')}.${SERVICE_TYPE}`;
   let txtFields = { ...advert.txt };
 
-  if (ip === undefined) {
+  if (pinned === undefined && lanInterfaces().length === 0) {
     log('mdns.no-address');
     return { stop: () => {}, update: () => {} };
   }
 
-  const answers = (): Buffer[] => [
+  const answers = (aAddr: string): Buffer[] => [
     ptr(SERVICE_TYPE, instance),
     srv(instance, advert.port, hostname),
     txt(instance, txtFields),
-    a(hostname, ip as string),
+    a(hostname, aAddr),
   ];
 
-  const response = (): Buffer => {
-    const records = answers();
+  const response = (aAddr: string): Buffer => {
+    const records = answers(aAddr);
     const head = Buffer.alloc(12);
     head.writeUInt16BE(0, 0);            // id — always 0 in mDNS
     head.writeUInt16BE(0x8400, 2);       // QR | AA
@@ -161,7 +163,7 @@ export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
         const name = q.name.toLowerCase();
         if (wanted.has(qtype) && (name === SERVICE_TYPE || name === instance.toLowerCase() || name === hostname.toLowerCase())) hit = true;
       }
-      if (hit) sendAll(response());
+      if (hit) sendAll();
     } catch { /* malformed query — ignore */ }
   });
 
@@ -183,30 +185,41 @@ export const startMdns = (advert: MdnsAdvert): MdnsHandle => {
     burst();
     setTimeout(burst, 1_000).unref();
     setTimeout(burst, 2_500).unref();
-    log('mdns.advertising', { instance, port: advert.port, address: ip });
+    log('mdns.advertising', { instance, port: advert.port, address: pinned ?? 'per-interface' });
   });
 
   // One copy per LAN interface — multicast egress must not follow the
   // unicast table (a VPN's covering routes would eat it), and pinning a
-  // single interface silently abandons phones on other subnets.
-  const sendAll = (packet: Buffer): void => {
-    for (const addr of lanInterfaces()) {
+  // single interface silently abandons phones on other subnets. Each
+  // interface's copy advertises THAT interface's own address in the A
+  // record unless an operator pin overrides it: a phone on the WLAN can
+  // only dial the address reachable on the WLAN.
+  // Sends must chain through the send callback: setMulticastInterface is a
+  // synchronous setsockopt, but Node defers sendto to the libuv queue — a
+  // tight loop would race every datagram out on the LAST-set interface.
+  const sendAll = (): void => {
+    const ifaces = lanInterfaces();
+    let i = 0;
+    const step = (): void => {
+      const addr = ifaces[i++];
+      if (addr === undefined) return;
       try {
         socket.setMulticastInterface(addr);
-        socket.send(packet, MDNS_PORT, MDNS_ADDRESS, () => {});
-      } catch { /* iface flap mid-send */ }
-    }
+        socket.send(response(pinned ?? addr), MDNS_PORT, MDNS_ADDRESS, () => step());
+      } catch { step(); /* iface flap mid-send */ }
+    };
+    step();
   };
-  const burst = (): void => sendAll(response());
+  const burst = (): void => sendAll();
 
   const announce = setInterval(() => {
-    try { sendAll(response()); } catch { /* socket closed */ }
+    try { sendAll(); } catch { /* socket closed */ }
   }, ANNOUNCE_EVERY_MS);
   announce.unref();
 
   return {
     update: (fields) => {
-      if (fields.address !== undefined) ip = fields.address;
+      if (fields.address !== undefined) pinned = fields.address;
       if (fields.txt !== undefined) txtFields = { ...txtFields, ...fields.txt };
       try { burst(); } catch { /* socket closed */ }
     },
