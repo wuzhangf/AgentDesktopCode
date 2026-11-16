@@ -488,6 +488,24 @@ describe('pairing routes', () => {
 // ---------------------------------------------------------------------------
 
 describe('host + inbox + local-tasks', () => {
+  it('checks an approval receipt by its original identity and rechecks the grant', async () => {
+    const ctx = fakeCtx();
+    ctx.approvals = {
+      enabled: () => true,
+      submit: () => ({}), poll: () => ({}), cancel: () => ({}), pending: () => ({}), list: () => ({}),
+      decide: () => { throw new Error('receipt read must not submit a decision'); },
+      lookup: (device, approvalId) => ({ approvalId, state: 'APPROVED', decision: 'APPROVED', decidedByThisDevice: device.id === 'dev-1' }),
+    };
+    const path = '/personal/v1/approvals/request-1';
+    const result = await handlePhoneRoute(ctx, req('GET', path, authed()));
+    expect(result).toMatchObject({ status: 200, body: { approvalId: 'request-1', decision: 'APPROVED', decidedByThisDevice: true } });
+    const stale = fakeCtx();
+    stale.approvals = ctx.approvals;
+    stale.revisionAfter = 2;
+    const changed = await handlePhoneRoute(stale, req('GET', path, authed()));
+    expect(changed).toMatchObject({ status: 409 });
+  });
+
   it('GET /personal/v1/host merges capabilities per Java', async () => {
     const ctx = fakeCtx({ withLocalTasks: true });
     const res = await handlePhoneRoute(ctx, req('GET', '/personal/v1/host', authed()));

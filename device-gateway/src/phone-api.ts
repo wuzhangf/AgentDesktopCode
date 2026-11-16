@@ -482,6 +482,14 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     return { status: 200, body: page };
   }
 
+  if (/^\/personal\/v1\/approvals\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(path) && method === 'GET') {
+    if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
+    if (ctx.config.localCliOnly && !actions.has('APPROVE')) fail('DEVICE_SCOPE_DENIED', 403);
+    const out = await ctx.approvals.lookup(device, path.split('/')[4]!);
+    if ((await ctx.auth.authenticate(token)).revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
+    return { status: 200, body: out };
+  }
+
   if (/^\/personal\/v1\/approvals\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/decision$/.test(path) && method === 'POST') {
     if (ctx.approvals === undefined) fail('NOT_FOUND', 404);
     if (ctx.config.localCliOnly && !actions.has('APPROVE')) fail('DEVICE_SCOPE_DENIED', 403);
