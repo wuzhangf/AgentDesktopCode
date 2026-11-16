@@ -10,11 +10,9 @@ public sealed record LaunchScope(string BackendStoreId, string ProjectId, string
 /// invitation and the set the owner scope-sync grants after pairing.
 public static class LaunchScopes
 {
-    // device-gateway checkedLaunchScopes allow-list; an engine outside it
-    // fails the whole request, so it is dropped here instead of poisoning
-    // every invitation the host signs.
-    private static readonly HashSet<string> Engines = new(StringComparer.Ordinal)
-        { "pi", "codex", "claude", "macos", "sage-pi", "sage-codex" };
+    // Engines are backend-declared: scope refs carry any well-formed engineId
+    // and the backend's own catalog/preflight decides whether it exists —
+    // community/third-party engines flow without a core allow-list.
     private static readonly Regex IdShape = new(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -37,7 +35,7 @@ public static class LaunchScopes
                 foreach (var engine in Rows(backend["engines"]))
                 {
                     var engineId = Text(engine, "engineId");
-                    if (engineId is null || !Engines.Contains(engineId) || !Available(engine)) continue;
+                    if (engineId is null || !IdShape.IsMatch(engineId) || !Available(engine)) continue;
                     var scope = new LaunchScope(backendId, projectId, engineId);
                     if (seen.Add(scope)) wanted.Add(scope);
                 }

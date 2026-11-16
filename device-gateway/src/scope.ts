@@ -6,7 +6,7 @@
  *   checkedResources(acsStoreId, input)   — ≤100, kind-specific id() checks,
  *                                           ACS_SESSION bound to acsStoreId,
  *                                           canonical-key dedup, TreeMap-sorted
- *   checkedLaunchScopes(input)            — ≤100, engine set, dedup, sorted
+ *   checkedLaunchScopes(input)            — ≤100, id shapes, dedup, sorted
  *   validateScope(sessions, actions)      — legacy sessions form
  *   validateResourceActions(r, l, a)      — resources form
  *
@@ -43,7 +43,10 @@ export const ACTION_SET = new Set([
   'GRAPHICS_OBSERVE', 'GRAPHICS_CAPTURE', 'GRAPHICS_ACT',
 ]);
 
-const ENGINE_SET = new Set(['pi', 'codex', 'claude', 'macos', 'sage-pi', 'sage-codex']);
+// Engines are self-declared by each backend's catalog — a scope only needs a
+// well-formed id; whether the engine exists and is launchable is decided by
+// that backend at preflight, so community/third-party engines flow without a
+// core allow-list.
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** Java checkedResources / checkedLaunchScopes bound. */
@@ -95,8 +98,9 @@ export function checkedResources(acsStore: string, input: Resource[] | undefined
 }
 
 /**
- * Java checkedLaunchScopes: bounded, engine allow-list, canonical-key dedup,
- * returned sorted by canonical key.
+ * Java checkedLaunchScopes: bounded, canonical-key dedup, sorted by key.
+ * engineId is shape-checked only — existence/launchability is the backend's
+ * own catalog decision at preflight, keeping engine support data-driven.
  */
 export function checkedLaunchScopes(input: LaunchScope[] | undefined): LaunchScope[] {
   const list = input ?? [];
@@ -106,7 +110,7 @@ export function checkedLaunchScopes(input: LaunchScope[] | undefined): LaunchSco
     if (s == null || !isRecord(s)) fail('INVALID_SCOPE', 400);
     id(s.backendStoreId);
     id(s.projectId);
-    if (!ENGINE_SET.has(s.engineId as string)) fail('INVALID_SCOPE', 400);
+    id(s.engineId);
     const copy: LaunchScope = { backendStoreId: s.backendStoreId, projectId: s.projectId, engineId: s.engineId };
     const key = launchScopeKey(copy);
     if (out.has(key)) fail('INVALID_SCOPE', 400);
@@ -190,7 +194,7 @@ export function validLaunchScope(value: unknown): value is LaunchScope {
   }
   return typeof value.backendStoreId === 'string' && ID_PATTERN.test(value.backendStoreId)
     && typeof value.projectId === 'string' && ID_PATTERN.test(value.projectId)
-    && typeof value.engineId === 'string' && ENGINE_SET.has(value.engineId);
+    && typeof value.engineId === 'string' && ID_PATTERN.test(value.engineId);
 }
 
 export function validSessionList(value: unknown): value is string[] {

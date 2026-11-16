@@ -1181,7 +1181,9 @@ export class LocalTaskAccess {
     for (const [name, value] of new URLSearchParams(query)) {
       if (seen.has(name)) fail('INVALID_REQUEST', 400);
       seen.add(name);
-      if (name === 'engine' && ['codex', 'claude', 'gemini', 'devin'].includes(value)) continue;
+      // Engine ids are backend-declared — only the id shape is checked here;
+      // the bridge itself rejects engines it does not serve.
+      if (name === 'engine' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) continue;
       if (name === 'limit' && /^[1-9][0-9]?$/.test(value) && Number(value) <= (transcript ? 20 : 50)) continue;
       if (transcript && name === 'before' && /^[1-9][0-9]{0,14}$/.test(value)) continue;
       if (!transcript && name === 'cursor' && /^[A-Za-z0-9_-]{1,1024}$/.test(value)) continue;
@@ -1250,7 +1252,9 @@ export class LocalTaskAccess {
           parsed.adoptSessionId = body.adoptSessionId;
         }
         if (body.adoptEngine !== undefined) {
-          if (typeof body.adoptEngine !== 'string' || !['codex', 'claude', 'gemini', 'devin'].includes(body.adoptEngine)) fail('INVALID_REQUEST', 400);
+          // Backend-declared engine ids: shape-check only; the bridge owns
+          // which source engines it can actually adopt from.
+          if (typeof body.adoptEngine !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(body.adoptEngine)) fail('INVALID_REQUEST', 400);
           parsed.adoptEngine = body.adoptEngine;
         }
       }

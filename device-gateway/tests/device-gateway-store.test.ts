@@ -298,7 +298,10 @@ describe('scope helpers (Java validators)', () => {
   it('checkedLaunchScopes validates engine/dedup and sorts', () => {
     const checked = checkedLaunchScopes([launch('pi'), launch('codex')]);
     expect(checked.map((s) => s.engineId)).toEqual(['codex', 'pi']);
-    expect(() => checkedLaunchScopes([launch('vim')])).toThrowError(/INVALID_SCOPE/);
+    // Community/third-party engines pass by shape — a registered backend's
+    // catalog, not a core allow-list, decides whether the engine exists.
+    expect(checkedLaunchScopes([launch('vim')]).map((s) => s.engineId)).toEqual(['vim']);
+    expect(() => checkedLaunchScopes([launch('not an engine')])).toThrowError(/INVALID_REQUEST/);
     expect(() => checkedLaunchScopes([launch('pi'), launch('pi')])).toThrowError(/INVALID_SCOPE/);
     expect(() => checkedLaunchScopes([{ backendStoreId: 'x', projectId: '!!', engineId: 'pi' }]))
       .toThrowError(/INVALID_REQUEST/);
@@ -366,7 +369,7 @@ describe('scope helpers (body parse / fingerprints)', () => {
     expect(() => parseScope({ resources: Array.from({ length: 129 }, (_, i) => localRes(`t${i}`)) }))
       .toThrowError(/INVALID_REQUEST/);
     expect(() => parseScope({ actions: ['OBSERVE', 'NOT_A_THING'] })).toThrowError(/INVALID_ACTION/);
-    expect(() => parseScope({ launchScopes: [launch('vim')] })).toThrowError(/INVALID_REQUEST/);
+    expect(() => parseScope({ launchScopes: [launch('bad engine!!')] })).toThrowError(/INVALID_REQUEST/);
     expect(() => parseScope({ resources: [{ kind: 'ACS_SESSION', backendStoreId: 'wl-1', sessionId: 's', taskId: 't' }] }))
       .toThrowError(/INVALID_REQUEST/);
   });

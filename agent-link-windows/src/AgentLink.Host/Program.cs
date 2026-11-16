@@ -505,6 +505,12 @@ internal sealed class LinkHost : IDisposable
                     catch (HttpRequestException error) { reply = new(false, error.Message); }
                     catch (IOException error) { reply = new(false, error.Message); }
                     catch (UnauthorizedAccessException) { reply = new(false, "无法访问本机配置"); }
+                    catch (Exception unexpected)
+                    {
+                        try { File.AppendAllText(Path.Combine(LinkProtocol.Root, "pipe-errors.log"),
+                            DateTimeOffset.Now + " " + request.Operation + " " + unexpected + "\n"); } catch { }
+                        reply = new(false, "内部错误：" + unexpected.GetType().Name);
+                    }
                     await LinkProtocol.WriteAsync(channel, reply, deadline.Token);
                     if (request.Operation == "exit" && reply.Ok) stop.Cancel();
                 }
@@ -543,6 +549,8 @@ internal sealed class LinkHost : IDisposable
                 case "managedAgents":
                     return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
                 case "agentAdd" when request.Args is { } addArgs:
+                    try { File.AppendAllText(Path.Combine(LinkProtocol.Root, "pipe-errors.log"),
+                        DateTimeOffset.Now + " agentAdd enter " + request.Args + "\n"); } catch { }
                     managed.Add(
                         addArgs["engine"]?.GetValue<string>() is { Length: > 0 } engine ? engine
                             : throw new IOException("缺少引擎"),

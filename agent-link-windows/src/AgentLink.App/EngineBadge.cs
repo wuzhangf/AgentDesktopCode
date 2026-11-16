@@ -17,6 +17,8 @@ internal static class EngineBadge
         // devin: a document/list glyph — the store engine surfaces sessions,
         // it never runs turns.
         ["devin"] = Parse("M7,4 L17,4 L17,20 L7,20 Z M10,9 L14,9 M10,12 L14,12 M10,15 L13,15"),
+        // opencode: a terminal-prompt pair — angle brackets of a CLI tool.
+        ["opencode"] = Parse("M8,6 L4,12 L8,18 M16,6 L20,12 L16,18 M12,18 L13,18"),
         ["gemini"] = Parse("M12,4 L20,12 L12,20 L4,12 Z"),
         ["macos"] = Parse("M5,6 L19,6 L19,18 L5,18 Z M5,9.5 L19,9.5"),
         ["agent"] = Parse("M8.5,8.5 L15.5,8.5 L15.5,15.5 L8.5,15.5 Z M5,10.5 L8.5,10.5 M5,13.5 L8.5,13.5 M15.5,10.5 L19,10.5 M15.5,13.5 L19,13.5 M10.5,5 L10.5,8.5 M13.5,5 L13.5,8.5 M10.5,15.5 L10.5,19 M13.5,15.5 L13.5,19"),
@@ -26,6 +28,7 @@ internal static class EngineBadge
     {
         { } e when e.Contains("codex") => "codex",
         { } e when e.Contains("devin") => "devin",
+        { } e when e.Contains("opencode") => "opencode",
         { } e when e.Contains("claude") => "claude",
         { } e when e.Contains("gemini") => "gemini",
         { } e when e.Contains("macos") => "macos",

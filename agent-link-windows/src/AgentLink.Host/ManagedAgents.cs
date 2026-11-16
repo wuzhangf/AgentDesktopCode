@@ -19,7 +19,7 @@ namespace AgentLink;
 /// </summary>
 internal sealed class ManagedAgents : IDisposable
 {
-    internal static readonly string[] Engines = ["claude", "codex", "pi", "devin"];
+    internal static readonly string[] Engines = ["claude", "codex", "pi", "devin", "opencode"];
     private static readonly TimeSpan RespawnCooldown = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(12);
 
@@ -287,15 +287,20 @@ internal sealed class ManagedAgents : IDisposable
                 throw new IOException("cc-switch 未给 " + entry.Engine + " 挂接路由");
             if (child.CcRoute is { } ccRoute) CcSwitch.Apply(ccRoute, entry.Engine, launch);
         }
-        var projectId = Path.GetFileName(entry.Project.TrimEnd(Path.DirectorySeparatorChar));
+        // The project id crosses the wire inside scope grants where only the
+        // gateway's id shape is legal — a basename that isn't (e.g. a
+        // non-ASCII profile dir like %USERPROFILE%) is hashed instead so the
+        // backend stays reachable instead of being silently dropped.
+        var projectId = ProjectId(entry.Project);
+        var projectName = Path.GetFileName(entry.Project.TrimEnd(Path.DirectorySeparatorChar)) ?? "workspace";
         launch.ArgumentList.Add(bridge);
         launch.ArgumentList.Add("serve");
         launch.ArgumentList.Add("--engine"); launch.ArgumentList.Add(entry.Engine);
         launch.ArgumentList.Add("--state"); launch.ArgumentList.Add(Path.Combine(stateRoot, entry.Key));
         launch.ArgumentList.Add("--port"); launch.ArgumentList.Add(port.ToString());
         launch.ArgumentList.Add("--project"); launch.ArgumentList.Add(entry.Project);
-        launch.ArgumentList.Add("--project-id"); launch.ArgumentList.Add(projectId ?? "workspace");
-        launch.ArgumentList.Add("--project-name"); launch.ArgumentList.Add(projectId ?? "workspace");
+        launch.ArgumentList.Add("--project-id"); launch.ArgumentList.Add(projectId);
+        launch.ArgumentList.Add("--project-name"); launch.ArgumentList.Add(projectName);
         if (entry.Executable is { } exe)
         {
             launch.ArgumentList.Add("--executable"); launch.ArgumentList.Add(exe);
@@ -514,6 +519,21 @@ internal sealed class ManagedAgents : IDisposable
                     if (File.Exists(p)) return p;
                 }
         }
+        if (engine == "opencode")
+        {
+            // The desktop app bundles resources\opencode-cli.exe under
+            // @opencode-* folders, including updater's .update-<hash> twins —
+            // newest folder name first so an update-in-place wins.
+            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs");
+            if (Directory.Exists(root))
+                foreach (var dir in Directory.EnumerateDirectories(root, "@opencode*")
+                             .OrderByDescending(d => d))
+                {
+                    var p = Path.Combine(dir, "resources", "opencode-cli.exe");
+                    if (File.Exists(p)) return p;
+                }
+        }
         return null;
     }
 
@@ -523,8 +543,24 @@ internal sealed class ManagedAgents : IDisposable
         "codex" => "Codex",
         "pi" => "Sage Pi",
         "devin" => "Devin",
+        "opencode" => "OpenCode",
         _ => engine,
     };
+
+    /// Wire-safe project id: the directory basename when it already matches
+    /// the gateway's id shape, otherwise a stable hash of the full path so a
+    /// non-ASCII basename (e.g. the profile dir under a CJK username) cannot
+    /// make the backend's scope grants unwritable.
+    internal static string ProjectId(string project)
+    {
+        var name = Path.GetFileName(project.TrimEnd(Path.DirectorySeparatorChar));
+        if (!string.IsNullOrEmpty(name) && System.Text.RegularExpressions.Regex.IsMatch(
+                name, @"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))
+            return name;
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(project)));
+        return "project-" + Convert.ToHexStringLower(hash)[..12];
+    }
 
     private static int FreePort()
     {
