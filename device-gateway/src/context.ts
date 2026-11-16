@@ -240,6 +240,7 @@ export interface GatewayApprovals {
   cancel(approvalId: string): MaybePromise<JsonObject>;
   pending(): MaybePromise<JsonObject>;
   list(device: Device, waitMillis?: number): MaybePromise<JsonObject>;
+  lookup(device: Device, approvalId: string): MaybePromise<JsonObject>;
   decide(device: Device, approvalId: string, body: unknown): MaybePromise<JsonObject>;
 }
 

@@ -165,17 +165,26 @@ export class GatewayApprovals {
    * serialized transports (PAC relay lanes) must not use it — a held request
    * occupies the lane.
    */
-  async list(_device: Device, waitMillis = 0): Promise<JsonObject> {
+  async list(device: Device, waitMillis = 0): Promise<JsonObject> {
     const deadline = this.now() + Math.max(0, Math.min(15_000, waitMillis));
     for (;;) {
-      const page = this.page();
+      const page = this.page(device);
       const hasPending = (page.items as JsonObject[]).some((i) => i.state === 'PENDING');
       if (hasPending || this.now() >= deadline) return page;
       await new Promise((r) => setTimeout(r, 400));
     }
   }
 
-  private page(): JsonObject {
+  lookup(device: Device, approvalId: string): JsonObject {
+    id(approvalId);
+    return this.store.transaction(() => {
+      const row = this.settle(this.get(approvalId));
+      if (row === undefined) fail('NOT_FOUND', 404);
+      return this.view(row, device);
+    });
+  }
+
+  private page(device: Device): JsonObject {
     return this.store.transaction(() => {
       const horizon = this.now() - KEEP_DECIDED_MS;
       const items = this.store.list<Approval>(APPROVAL_KIND)
@@ -184,7 +193,7 @@ export class GatewayApprovals {
           && (r.state === 'PENDING' || (r.decidedAt ?? 0) >= horizon))
         .sort((a, b) => a.createdAt - b.createdAt)
         .slice(-100)
-        .map((r) => this.view(r));
+        .map((r) => this.view(r, device));
       return { schemaVersion: 'personal-approvals/1', items };
     });
   }
@@ -200,8 +209,8 @@ export class GatewayApprovals {
       let row = this.settle(this.get(approvalId));
       if (row === undefined) fail('NOT_FOUND', 404);
       if (TERMINAL.has(row.state)) {
-        if (row.state === 'APPROVED' && decision !== 'DENIED') return this.view(row);
-        if (row.state === 'DENIED' && decision === 'DENIED') return this.view(row);
+        if (row.state === 'APPROVED' && decision !== 'DENIED') return this.view(row, device);
+        if (row.state === 'DENIED' && decision === 'DENIED') return this.view(row, device);
         fail('APPROVAL_RESOLVED', 409);
       }
       const mapped = decision === 'APPROVED_SESSION' ? 'APPROVED' : decision;
@@ -211,11 +220,11 @@ export class GatewayApprovals {
         ...(reason !== undefined ? { reason } : {}),
       };
       this.store.put(APPROVAL_KIND, row.approvalId, row);
-      return this.view(row);
+      return this.view(row, device);
     });
   }
 
-  private view(row: Approval): JsonObject {
+  private view(row: Approval, device?: Device): JsonObject {
     const out: JsonObject = {
       approvalId: row.approvalId,
       agent: row.agent,
@@ -232,6 +241,7 @@ export class GatewayApprovals {
     if (row.decision !== undefined) out.decision = row.decision;
     if (row.reason !== undefined) out.reason = row.reason;
     if (row.decidedAt !== undefined) out.decidedAt = row.decidedAt;
+    if (device && row.decidedByDeviceId !== undefined) out.decidedByThisDevice = row.decidedByDeviceId === device.id;
     return out;
   }
 }

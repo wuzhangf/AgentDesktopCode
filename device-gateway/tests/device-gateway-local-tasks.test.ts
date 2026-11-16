@@ -837,6 +837,30 @@ describe('LocalTaskAccess launches', () => {
 // ---- task reads ----------------------------------------------------------------
 
 describe('LocalTaskAccess task reads', () => {
+  it('exposes only scoped file identities and versions on the existing task read', async () => {
+    const { access, devices } = harness();
+    const report = 'file-' + '1'.repeat(64);
+    const restricted = 'file-' + '2'.repeat(64);
+    const withheld = 'file-' + '3'.repeat(64);
+    const sha256 = 'a'.repeat(64);
+    fx.tasks['native-t1']!.sessionFiles = {
+      schemaVersion: 'worker-session-files/1', complete: true,
+      artifacts: [
+        { artifactId: report, status: 'AVAILABLE', sha256, path: '/local/report.md' },
+        { artifactId: restricted, status: 'WITHHELD_SIZE' },
+        { artifactId: withheld, status: 'WITHHELD_SECRET', sha256 },
+      ], staged: [],
+    };
+    const path = `${ROOT}/${STORE}/tasks/native-t1`;
+    const result = await remote(access, 'GET', path);
+    expect(result.body).toHaveProperty('sessionFiles', {
+      schemaVersion: 'personal-session-files/1', complete: true,
+      items: [{ key: 'artifact:' + report, sha256 }, { key: 'artifact:' + restricted }],
+    });
+    devices.get('dev1')!.resources = [];
+    expect(await codeOf(remote(access, 'GET', path))).toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
+  });
+
   it.each(['before=9223372036854775807&limit=100', 'cursor=0&limit=1'])('forwards bounded message paging: %s', async query => {
     const { access } = harness();
     fx.taskErrors[`native-t1|/messages?${query}`] = {status: 200, body: {
