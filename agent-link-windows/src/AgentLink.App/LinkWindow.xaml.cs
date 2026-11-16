@@ -325,6 +325,7 @@ public partial class LinkWindow : Window
             "claude" => "Claude",
             "codex" => "Codex",
             "pi" => "Sage Pi",
+            "devin" => "Devin",
             _ => agent.Engine,
         };
         return engine + " · " + (name is { Length: > 0 } ? name : "workspace");
@@ -455,6 +456,10 @@ public partial class LinkWindow : Window
         actions.Children.Add(remove);
         panel.Children.Add(actions);
 
+        // devin is read-only (store listing + adopt + questions) — no spawned
+        // CLI exists for skip-permissions or a provider route to act on.
+        if (agent.Engine != "devin")
+        {
         var skip = new CheckBox
         {
             Content = "免审批执行（跳过工具确认；关闭后按各家 CLI 默认规则，可能被拒）",
@@ -471,6 +476,7 @@ public partial class LinkWindow : Window
             finally { skip.IsEnabled = true; }
         };
         panel.Children.Add(skip);
+        }
 
         var row = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
         var pick = new Button
@@ -537,6 +543,8 @@ public partial class LinkWindow : Window
 
         // Provider choice: official login vs cc-switch route — the same
         // decision the desktop model picker encodes, as a plain either/or.
+        // Read-only engines (devin) get no picker: nothing here could route.
+        if (agent.Engine != "devin")
         {
             var provRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
             provRow.Children.Add(new TextBlock

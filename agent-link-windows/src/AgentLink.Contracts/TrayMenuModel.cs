@@ -304,6 +304,7 @@ public static class TrayMenuModel
 
     public static string? EngineTint(string? engine) => engine switch
     {
+        { } e when e.Contains("devin") => "#E8590C",
         { } e when e.Contains("claude") => "#D97757",
         { } e when e.Contains("codex") => "#10A37F",
         { } e when e.Contains("pi") => "#6366F1",

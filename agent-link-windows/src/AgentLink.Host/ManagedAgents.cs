@@ -19,7 +19,7 @@ namespace AgentLink;
 /// </summary>
 internal sealed class ManagedAgents : IDisposable
 {
-    internal static readonly string[] Engines = ["claude", "codex", "pi"];
+    internal static readonly string[] Engines = ["claude", "codex", "pi", "devin"];
     private static readonly TimeSpan RespawnCooldown = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(12);
 
@@ -72,6 +72,31 @@ internal sealed class ManagedAgents : IDisposable
         {
             entries = [];
         }
+        // The devin entry is a read-only store bridge (sessions list + adopt +
+        // side questions) — it needs no CLI and no setup, so it self-seeds
+        // whenever a Devin desktop store exists. The card stays a normal
+        // entry: disabling it hides Devin sessions from the phone honestly.
+        if (entries.All(e => e.Engine != "devin") && DevinStoreFile() is { })
+        {
+            entries.Add(new Entry("devin-" + Convert.ToHexStringLower(
+                System.Security.Cryptography.RandomNumberGenerator.GetBytes(4)),
+                "devin", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                null, null, false, Enabled: true));
+            Save();
+        }
+    }
+
+    /// <summary>Devin's session store — first existing location wins (same
+    /// precedence as the bridge's DEVIN_DBS).</summary>
+    internal static string? DevinStoreFile()
+    {
+        var roaming = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Devin", "cli", "sessions.db");
+        if (File.Exists(roaming)) return roaming;
+        var local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".local", "share", "devin", "cli", "sessions.db");
+        return File.Exists(local) ? local : null;
     }
 
     internal IReadOnlyList<ManagedAgent> List() => entries
@@ -95,8 +120,11 @@ internal sealed class ManagedAgents : IDisposable
         project = Path.GetFullPath(project);
         if (project.StartsWith(@"\\") || project.Length > 1024 || !Directory.Exists(project))
             throw new IOException("工作区目录不存在：" + project);
-        executable = string.IsNullOrWhiteSpace(executable) ? FindExecutable(engine) : Path.GetFullPath(executable);
-        if (executable is null || !File.Exists(executable))
+        // devin is a store-only engine — it wraps no CLI, so there is no
+        // executable to resolve or validate.
+        executable = engine == "devin" ? null
+            : string.IsNullOrWhiteSpace(executable) ? FindExecutable(engine) : Path.GetFullPath(executable);
+        if (engine != "devin" && (executable is null || !File.Exists(executable)))
             throw new IOException($"未找到 {engine} 可执行文件，请手动指定路径");
         if (model is { Length: > 128 } || model?.Any(c => c is '\r' or '\n') == true)
             throw new IOException("模型名无效");
@@ -244,10 +272,21 @@ internal sealed class ManagedAgents : IDisposable
                 launch.Environment[name] = secret;
         // "official" skips cc entirely; auto/cc resolve the attach state —
         // a proxied route wins over ambient env for metering/failover.
-        child.CcRoute = entry.Provider == "official" ? null : CcSwitch.Resolve(entry.Engine);
-        if (entry.Provider == "cc" && child.CcRoute is null)
-            throw new IOException("cc-switch 未给 " + entry.Engine + " 挂接路由");
-        if (child.CcRoute is { } ccRoute) CcSwitch.Apply(ccRoute, entry.Engine, launch);
+        // A devin child spawns no CLI itself but side questions may spawn any
+        // engine — hand it every attached engine's proxy env up front.
+        if (entry.Engine == "devin")
+        {
+            child.CcRoute = null;
+            foreach (var qe in new[] { "claude", "codex" })
+                if (CcSwitch.Resolve(qe) is { } qRoute) CcSwitch.Apply(qRoute, qe, launch);
+        }
+        else
+        {
+            child.CcRoute = entry.Provider == "official" ? null : CcSwitch.Resolve(entry.Engine);
+            if (entry.Provider == "cc" && child.CcRoute is null)
+                throw new IOException("cc-switch 未给 " + entry.Engine + " 挂接路由");
+            if (child.CcRoute is { } ccRoute) CcSwitch.Apply(ccRoute, entry.Engine, launch);
+        }
         var projectId = Path.GetFileName(entry.Project.TrimEnd(Path.DirectorySeparatorChar));
         launch.ArgumentList.Add(bridge);
         launch.ArgumentList.Add("serve");
@@ -257,7 +296,10 @@ internal sealed class ManagedAgents : IDisposable
         launch.ArgumentList.Add("--project"); launch.ArgumentList.Add(entry.Project);
         launch.ArgumentList.Add("--project-id"); launch.ArgumentList.Add(projectId ?? "workspace");
         launch.ArgumentList.Add("--project-name"); launch.ArgumentList.Add(projectId ?? "workspace");
-        launch.ArgumentList.Add("--executable"); launch.ArgumentList.Add(entry.Executable!);
+        if (entry.Executable is { } exe)
+        {
+            launch.ArgumentList.Add("--executable"); launch.ArgumentList.Add(exe);
+        }
         launch.ArgumentList.Add("--skip-permissions"); launch.ArgumentList.Add(entry.SkipPermissions ? "on" : "off");
         var model = entry.Model
             ?? (child.CcRoute is { Proxied: true } ? child.CcRoute.Models?.FirstOrDefault() : null);
@@ -480,6 +522,7 @@ internal sealed class ManagedAgents : IDisposable
         "claude" => "Claude",
         "codex" => "Codex",
         "pi" => "Sage Pi",
+        "devin" => "Devin",
         _ => engine,
     };
 

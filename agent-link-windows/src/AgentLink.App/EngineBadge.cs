@@ -14,6 +14,9 @@ internal static class EngineBadge
     {
         ["codex"] = Parse("M6,7 L11,12 L6,17 M13,17 L18,17"),
         ["claude"] = Parse("M12,5 L12,19 M5,12 L19,12 M7.5,7.5 L16.5,16.5 M16.5,7.5 L7.5,16.5"),
+        // devin: a document/list glyph — the store engine surfaces sessions,
+        // it never runs turns.
+        ["devin"] = Parse("M7,4 L17,4 L17,20 L7,20 Z M10,9 L14,9 M10,12 L14,12 M10,15 L13,15"),
         ["gemini"] = Parse("M12,4 L20,12 L12,20 L4,12 Z"),
         ["macos"] = Parse("M5,6 L19,6 L19,18 L5,18 Z M5,9.5 L19,9.5"),
         ["agent"] = Parse("M8.5,8.5 L15.5,8.5 L15.5,15.5 L8.5,15.5 Z M5,10.5 L8.5,10.5 M5,13.5 L8.5,13.5 M15.5,10.5 L19,10.5 M15.5,13.5 L19,13.5 M10.5,5 L10.5,8.5 M13.5,5 L13.5,8.5 M10.5,15.5 L10.5,19 M13.5,15.5 L13.5,19"),
@@ -22,6 +25,7 @@ internal static class EngineBadge
     internal static string FamilyOf(string? engine) => engine switch
     {
         { } e when e.Contains("codex") => "codex",
+        { } e when e.Contains("devin") => "devin",
         { } e when e.Contains("claude") => "claude",
         { } e when e.Contains("gemini") => "gemini",
         { } e when e.Contains("macos") => "macos",
