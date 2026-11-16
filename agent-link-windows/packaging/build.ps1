@@ -62,6 +62,13 @@ $cliBridgeSha = git -C (Split-Path $cliBridgeSrc -Parent) rev-parse HEAD
 if ($LASTEXITCODE) { throw 'Could not read cli-bridge source revision.' }
 $bridgeOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/cli-bridge')).FullName
 Copy-Item -LiteralPath $cliBridgeSrc -Destination (Join-Path $bridgeOutput 'cli-bridge.mjs')
+# Bundled worker adapters (worker-adapter/1): the bridge scans
+# <bridge-dir>/adapters/<id>/adapter.mjs — ship the source adapters dir
+# beside the copied host so devin/opencode resolve at runtime.
+$adaptersSrc = Join-Path (Split-Path $cliBridgeSrc -Parent) 'adapters'
+if (Test-Path -LiteralPath $adaptersSrc) {
+    Copy-Item -LiteralPath $adaptersSrc -Destination $bridgeOutput -Recurse -Force
+}
 
 # Optional locked PAC relay connector (control-relay-package/1 from
 # AgentCodeService build/package-control-relay.py). Its contents land at
