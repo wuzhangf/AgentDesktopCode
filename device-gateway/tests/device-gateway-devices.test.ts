@@ -415,6 +415,29 @@ describe('pairing auto-approve', () => {
     expectFail(() => requestPairing(inv, rid, secret()), 'DEVICE_LIMIT', 429);
     expect(store.get('pairing', rid)).toBeUndefined();
   });
+
+  it('auto-approves LAN discovery requests — tapping 配对 is the owner intent', () => {
+    enableAutoApprove();
+    const rid = next('pr');
+    const poll = secret();
+    const view = devices.discoveryRequest!({
+      pairingRequestId: rid,
+      installationId: 'inst-disc-auto',
+      label: 'Phone',
+      pollingSecretHash: hash(poll),
+      discovery: true,
+    }, {
+      resources: [localRes('task-1')],
+      launchScopes: [launch('macos', 'p1')],
+      actions: ['OBSERVE', 'CONTROL', 'INTERACT', 'LAUNCH'],
+    });
+    expect(view.state).toBe('APPROVED');
+    const issued = devices.redeem(rid, poll, `red-${rid}`);
+    expect(issued.deviceGrantId).toBeTruthy();
+    const d = deviceRecord(issued.deviceGrantId as string);
+    expect(d.state).toBe('ACTIVE');
+    expect(d.launchScopes).toEqual([launch('macos', 'p1')]);
+  });
 });
 
 describe('member-attested pairing (relay ingress)', () => {

@@ -456,11 +456,12 @@ export class Devices {
   }
 
   /**
-   * LAN discovery pairing — a Bonjour-discovered phone has no sealed invite,
-   * and LAN presence alone proves nothing (shared networks are hostile), so
-   * the request is created PENDING and the owner decides through the normal
-   * pairing-requests surface. Scope is the same local catalog member pairing
-   * grants: the owner's explicit approval is the grant.
+   * LAN discovery pairing — a Bonjour-discovered phone has no sealed invite.
+   * pairingAutoApprove (default on) treats tapping 配对 on the discovered
+   * computer as sufficient owner intent — the product's LAN-pairing flow
+   * carries no approval step — while DEVICE_GATEWAY_PAIRING_AUTO_APPROVE=0
+   * restores the owner decision for hostile-network installs. Scope is the
+   * same local catalog member pairing grants.
    */
   discoveryRequest(body: Json, scope: ScopeRecord): Json {
     const rid = text(body, 'pairingRequestId');
@@ -491,6 +492,7 @@ export class Devices {
       const pending = this.store.list<Pairing>('pairing')
         .filter((p) => p.state === 'PENDING' && p.inviteId == null && p.expiresAt > this.now()).length;
       if (pending >= MAX_PENDING_DISCOVERY) fail('PAIRING_LIMIT', 429);
+      if (this.pairingAutoApprove) this.requireDeviceSlot();
       const p: Pairing = {
         id: rid,
         installationId: installation,
@@ -498,7 +500,7 @@ export class Devices {
         pollHash: poll,
         fingerprint: fp,
         expiresAt: this.now() + INVITE_TTL,
-        state: 'PENDING',
+        state: this.pairingAutoApprove ? 'APPROVED' : 'PENDING',
         checkWords: hash(`discovery:${rid}`).substring(0, 12),
         recoverUntil: 0,
         resources: scope.resources ?? [],
