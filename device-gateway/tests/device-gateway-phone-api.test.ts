@@ -945,14 +945,30 @@ describe('assignment-options + agent proxy', () => {
 // ---------------------------------------------------------------------------
 
 describe('client access', () => {
-  it('production refuses mutations before forwarding when rights are unconfigured', async () => {
+  it('production refuses relay-ingress mutations before forwarding when rights are unconfigured', async () => {
+    const ctx = fakeCtx({ withClient: true });
+    delete ctx.config.allowUnlicensedDevelopment;
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/client/conversations/c1.x/messages',
+      { requestId: 'r1' }, { ...authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 }), relayIngress: true }));
+    expect(res.status).toBe(503);
+    expect(ctx.calls.client).toHaveLength(0);
+    expect(ctx.calls.acs).toHaveLength(0);
+  });
+  it('LAN-ingress mutations ride the free lane when rights are unconfigured', async () => {
     const ctx = fakeCtx({ withClient: true });
     delete ctx.config.allowUnlicensedDevelopment;
     const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/client/conversations/c1.x/messages',
       { requestId: 'r1' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(res.status).toBe(202);
+    expect(ctx.calls.client).toHaveLength(1);
+  });
+  it('voice submit stays member-gated even on LAN ingress', async () => {
+    const ctx = fakeCtx({ withClient: true });
+    delete ctx.config.allowUnlicensedDevelopment;
+    const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/transcriptions',
+      { sessionId: 'c1.x' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(503);
     expect(ctx.calls.client).toHaveLength(0);
-    expect(ctx.calls.acs).toHaveLength(0);
   });
   it('POST delegates to clientAccess.handle → 202', async () => {
     const ctx = fakeCtx({ withClient: true });

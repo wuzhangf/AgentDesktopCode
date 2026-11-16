@@ -100,19 +100,20 @@ describe('migrations', () => {
     expect(() => new GatewayStore(dir)).toThrowError(/GATEWAY_STORE_IN_USE/);
     store.close();
     store = new GatewayStore(dir);
-    expect(store.schemaVersion()).toBe(2);
+    expect(store.schemaVersion()).toBe(3);
   });
 
   it('applies versioned steps and reports schemaVersion', () => {
-    expect(store.schemaVersion()).toBe(2);
+    expect(store.schemaVersion()).toBe(3);
     const rows = store.db.prepare('SELECT version, name FROM migrations ORDER BY version').all() as { name: string }[];
-    expect(rows.map((r) => r.name)).toEqual(['device-gateway-core', 'personal-access-model']);
+    expect(rows.map((r) => r.name)).toEqual(['device-gateway-core', 'personal-access-model', 'worker-token-durability']);
     const tables = (store.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
       .map((r) => r.name);
     expect(tables).toContain('personal_access_record');
     expect(tables).toContain('personal_access_record_order');
     expect(tables).toContain('personal_access_sequence');
     expect(tables).toContain('registry_connections');
+    expect(tables).toContain('registry_tokens');
     // the invented specialized tables are gone
     expect(tables).not.toContain('records');
     expect(tables).not.toContain('device_requests');
