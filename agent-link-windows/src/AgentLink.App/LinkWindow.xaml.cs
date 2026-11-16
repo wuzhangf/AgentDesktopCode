@@ -145,8 +145,14 @@ public partial class LinkWindow : Window
     private static string AddressText(string? origin) =>
         Uri.TryCreate(origin, UriKind.Absolute, out var uri) ? $"{uri.Host}:{uri.Port}" : "局域网连接";
 
+    private string? deviceListSig;
+    private string? agentListSig;
+
     private void ShowDevices(JsonArray? devices)
     {
+        var sig = devices?.ToJsonString() ?? "null";
+        if (sig == deviceListSig) return;
+        deviceListSig = sig;
         DeviceList.Children.Clear();
         DeviceList.Children.Add(new Border
         {
@@ -279,6 +285,16 @@ public partial class LinkWindow : Window
             && cards.All(c => !string.Equals(c.Path, current, StringComparison.OrdinalIgnoreCase))
             && WorkerCards.TryRead(current) is { } attached)
             cards.Add(attached);
+
+        var sig = JsonSerializer.Serialize(managed, LinkProtocol.Json)
+            + "|" + current
+            + "|" + string.Join(",", availability.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value))
+            + "|" + string.Join(",", cards.Select(c => c.Path + "@" +
+                (File.Exists(c.Path) ? File.GetLastWriteTimeUtc(c.Path).Ticks : 0)))
+            + "|" + string.Join(",", probeCache.OrderBy(kv => kv.Key).Select(kv =>
+                kv.Key + "=" + kv.Value.Ok + ":" + kv.Value.Detail));
+        if (sig == agentListSig) { if (!agentProbing) _ = ProbeAgentsAsync(cards); return; }
+        agentListSig = sig;
 
         AgentList.Children.Clear();
         foreach (var agent in managed ?? [])
@@ -986,8 +1002,13 @@ public partial class LinkWindow : Window
             or System.ComponentModel.Win32Exception) { }
     }
 
+    private string? requestsSig;
+
     private void ShowRequests(JsonArray? requests)
     {
+        var sig = requests?.ToJsonString() ?? "null";
+        if (sig == requestsSig) return;
+        requestsSig = sig;
         PairingRequests.Children.Clear();
         foreach (var request in requests?.OfType<JsonObject>() ?? [])
         {
