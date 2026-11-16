@@ -455,9 +455,9 @@ public partial class LinkWindow : Window
         actions.Children.Add(remove);
         panel.Children.Add(actions);
 
-        // devin is read-only (store listing + adopt + questions) — no spawned
-        // CLI exists for skip-permissions or a provider route to act on.
-        if (agent.Engine != "devin")
+        // Store engines are read-only (store listing + adopt + questions) —
+        // no spawned CLI exists for skip-permissions or a route to act on.
+        if (agent.Executable is not null)
         {
         var skip = new CheckBox
         {
@@ -542,8 +542,8 @@ public partial class LinkWindow : Window
 
         // Provider choice: official login vs cc-switch route — the same
         // decision the desktop model picker encodes, as a plain either/or.
-        // Read-only engines (devin) get no picker: nothing here could route.
-        if (agent.Engine != "devin")
+        // Read-only store engines get no picker: nothing here could route.
+        if (agent.Executable is not null)
         {
             var provRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
             provRow.Children.Add(new TextBlock
@@ -769,7 +769,8 @@ public partial class LinkWindow : Window
             WorkerNotice.Text = "请选择存在的工作区目录。";
             return;
         }
-        var engine = (RegisterEngine.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "claude";
+        var engine = RegisterEngine.Text?.Trim() is { Length: > 0 } typed
+            ? typed : "claude";
         var args = new JsonObject
         {
             ["engine"] = engine,

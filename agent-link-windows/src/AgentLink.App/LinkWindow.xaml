@@ -205,11 +205,12 @@
                             <TextBlock Text="注册工作区" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6"/>
                             <DockPanel Margin="0,0,0,6">
                                 <TextBlock Text="引擎" Width="72" VerticalAlignment="Center"/>
-                                <ComboBox x:Name="RegisterEngine" SelectedIndex="0">
+                                <ComboBox x:Name="RegisterEngine" SelectedIndex="0" IsEditable="True">
                                     <ComboBoxItem Content="claude"/>
                                     <ComboBoxItem Content="codex"/>
                                     <ComboBoxItem Content="pi"/>
                                     <ComboBoxItem Content="devin"/>
+                                    <ComboBoxItem Content="opencode"/>
                                 </ComboBox>
                             </DockPanel>
                             <DockPanel Margin="0,0,0,6">

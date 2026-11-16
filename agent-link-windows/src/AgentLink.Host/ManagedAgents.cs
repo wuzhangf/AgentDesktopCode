@@ -19,16 +19,17 @@ namespace AgentLink;
 /// </summary>
 internal sealed class ManagedAgents : IDisposable
 {
-    internal static readonly string[] Engines = ["claude", "codex", "pi", "devin", "opencode"];
     private static readonly TimeSpan RespawnCooldown = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(12);
+    private static readonly System.Text.RegularExpressions.Regex EngineShape =
+        new("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$");
 
     internal sealed record Entry(string Key, string Engine, string Project,
         string? Executable, string? Model, bool SkipPermissions, bool Enabled,
         // "cc" forces the cc-switch proxy route, "official" forces the
         // engine's own login/config; null = auto (cc when attached).
         string? Provider = null);
-    private sealed record Registry(List<Entry> Agents);
+    private sealed record Registry(List<Entry> Agents, List<string>? DisabledStores = null);
 
     private sealed class Child
     {
@@ -51,6 +52,10 @@ internal sealed class ManagedAgents : IDisposable
     private readonly Dictionary<string, Child> children = new(StringComparer.Ordinal);
     private List<Entry> entries = [];
     private bool gatewayUp;
+    private bool detectRan;
+    private readonly HashSet<string> detectedStores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> detectedBins = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> disabledStores = new(StringComparer.OrdinalIgnoreCase);
 
     internal ManagedAgents(string installRoot,
         Func<HttpMethod, string, object?, CancellationToken, Task<JsonNode?>> owner)
@@ -66,37 +71,16 @@ internal sealed class ManagedAgents : IDisposable
             {
                 var registry = JsonSerializer.Deserialize<Registry>(File.ReadAllBytes(file), LinkProtocol.Json);
                 entries = registry?.Agents ?? [];
+                if (registry?.DisabledStores is { } gone)
+                    disabledStores.UnionWith(gone);
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         {
             entries = [];
         }
-        // The devin entry is a read-only store bridge (sessions list + adopt +
-        // side questions) — it needs no CLI and no setup, so it self-seeds
-        // whenever a Devin desktop store exists. The card stays a normal
-        // entry: disabling it hides Devin sessions from the phone honestly.
-        if (entries.All(e => e.Engine != "devin") && DevinStoreFile() is { })
-        {
-            entries.Add(new Entry("devin-" + Convert.ToHexStringLower(
-                System.Security.Cryptography.RandomNumberGenerator.GetBytes(4)),
-                "devin", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                null, null, false, Enabled: true));
-            Save();
-        }
-    }
-
-    /// <summary>Devin's session store — first existing location wins (same
-    /// precedence as the bridge's DEVIN_DBS).</summary>
-    internal static string? DevinStoreFile()
-    {
-        var roaming = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Devin", "cli", "sessions.db");
-        if (File.Exists(roaming)) return roaming;
-        var local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".local", "share", "devin", "cli", "sessions.db");
-        return File.Exists(local) ? local : null;
+        // Store engines seed in DetectOnceAsync from the bridge's own adapter
+        // knowledge — the host carries no vendor store locations of its own.
     }
 
     internal IReadOnlyList<ManagedAgent> List() => entries
@@ -116,15 +100,18 @@ internal sealed class ManagedAgents : IDisposable
     internal Entry Add(string engine, string? executable, string project,
         string? model, bool skipPermissions)
     {
-        if (!Engines.Contains(engine)) throw new IOException("不支持的引擎：" + engine);
+        if (!EngineShape.IsMatch(engine)) throw new IOException("引擎名无效：" + engine);
         project = Path.GetFullPath(project);
         if (project.StartsWith(@"\\") || project.Length > 1024 || !Directory.Exists(project))
             throw new IOException("工作区目录不存在：" + project);
-        // devin is a store-only engine — it wraps no CLI, so there is no
-        // executable to resolve or validate.
-        executable = engine == "devin" ? null
-            : string.IsNullOrWhiteSpace(executable) ? FindExecutable(engine) : Path.GetFullPath(executable);
-        if (engine != "devin" && (executable is null || !File.Exists(executable)))
+        // Store engines wrap no CLI — they serve a vendor session db read-only.
+        // "devin" stays a backstop literal for adds that race the first detect.
+        var storeOnly = engine == "devin" || detectedStores.Contains(engine);
+        executable = storeOnly ? null
+            : string.IsNullOrWhiteSpace(executable)
+                ? detectedBins.GetValueOrDefault(engine) ?? FindExecutable(engine)
+                : Path.GetFullPath(executable);
+        if (!storeOnly && (executable is null || !File.Exists(executable)))
             throw new IOException($"未找到 {engine} 可执行文件，请手动指定路径");
         if (model is { Length: > 128 } || model?.Any(c => c is '\r' or '\n') == true)
             throw new IOException("模型名无效");
@@ -135,6 +122,8 @@ internal sealed class ManagedAgents : IDisposable
         for (var i = 0; i < entries.Count; i++)
             if (entries[i].Engine == engine) entries[i] = entries[i] with { Enabled = false };
         entries.Add(entry);
+        // An explicit add rescinds a prior remove's "don't seed" tombstone.
+        disabledStores.Remove(engine);
         Save();
         return entry;
     }
@@ -193,8 +182,12 @@ internal sealed class ManagedAgents : IDisposable
 
     internal async Task RemoveAsync(string key, CancellationToken cancellation)
     {
-        IndexOf(key);
+        var removed = entries[IndexOf(key)];
         entries.RemoveAll(e => e.Key == key);
+        // Removing a store row means "don't auto-seed it again" — tombstone the
+        // engine so DetectOnceAsync stays honest across restarts.
+        if (removed.Executable is null)
+            disabledStores.Add(removed.Engine);
         Save();
         if (children.TryGetValue(key, out var child))
             await StopChildAsync(key, child, unregister: true);
@@ -211,7 +204,7 @@ internal sealed class ManagedAgents : IDisposable
     {
         Directory.CreateDirectory(LinkProtocol.Root);
         LinkIdentity.SaveAtomic(file, JsonSerializer.SerializeToUtf8Bytes(
-            new Registry(entries), LinkProtocol.Json));
+            new Registry(entries, [.. disabledStores]), LinkProtocol.Json));
     }
 
     /// <summary>Gateway (re)started: all owner-side registrations are gone —
@@ -227,6 +220,7 @@ internal sealed class ManagedAgents : IDisposable
     internal async Task ReconcileAsync(CancellationToken cancellation)
     {
         if (!gatewayUp) return;
+        await DetectOnceAsync(cancellation);
         var wanted = new HashSet<string>(entries.Where(e => e.Enabled).Select(e => e.Key), StringComparer.Ordinal);
         foreach (var (key, child) in children.ToArray())
             if (!wanted.Contains(key)) await StopChildAsync(key, child, unregister: true);
@@ -251,6 +245,69 @@ internal sealed class ManagedAgents : IDisposable
         }
     }
 
+    /// Bridge-declared discovery (worker-adapter/1 §detect): `cli-bridge.mjs
+    /// detect` reports what every loaded adapter can see — a resolved binary
+    /// for spawn engines, existing data dirs for stores. Store engines with
+    /// data present seed a managed row; spawn bins feed FindExecutable. Runs
+    /// once per host start — failures fall back to the built-in guesses.
+    private async Task DetectOnceAsync(CancellationToken cancellation)
+    {
+        if (detectRan || !File.Exists(nodeExe) || !File.Exists(bridge)) return;
+        detectRan = true;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(nodeExe, $"\"{bridge}\" detect")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            if (process is null) return;
+            var stdout = await process.StandardOutput.ReadToEndAsync(cancellation);
+            await process.WaitForExitAsync(cancellation);
+            if (process.ExitCode != 0) return;
+            foreach (var row in JsonNode.Parse(stdout)?["engines"]?.AsArray() ?? [])
+            {
+                var id = row?["id"]?.GetValue<string>();
+                if (id is not { Length: > 0 }) continue;
+                var hasData = row?["dataDirs"] is JsonArray { Count: > 0 };
+                var binPath = row?["binPath"]?.GetValue<string>();
+                switch (row?["kind"]?.GetValue<string>())
+                {
+                    case "store" when hasData:
+                        detectedStores.Add(id);
+                        break;
+                    case "both" or "spawn" when binPath is { Length: > 0 }:
+                        detectedBins[id] = binPath;
+                        break;
+                    // A both-kind engine whose CLI is gone but whose session
+                    // store remains still earns a read-only row.
+                    case "both" when hasData:
+                        detectedStores.Add(id);
+                        break;
+                }
+            }
+            var seeded = false;
+            foreach (var id in detectedStores)
+            {
+                if (disabledStores.Contains(id) || entries.Any(e => e.Engine == id)) continue;
+                entries.Add(new Entry(id + "-" + Convert.ToHexStringLower(
+                    System.Security.Cryptography.RandomNumberGenerator.GetBytes(4)),
+                    id, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    null, null, false, Enabled: true));
+                seeded = true;
+            }
+            if (seeded) Save();
+        }
+        catch (Exception error) when (error is IOException or Win32Exception or JsonException
+            or InvalidOperationException || error is OperationCanceledException && !cancellation.IsCancellationRequested)
+        {
+            // node/bridge missing or malformed output — the per-engine
+            // hardcoded discovery below still covers the built-ins.
+        }
+    }
+
     private async Task SpawnAsync(Entry entry, Child child, CancellationToken cancellation)
     {
         if (!File.Exists(nodeExe)) throw new IOException("安装缺少 gateway-node.exe");
@@ -272,9 +329,9 @@ internal sealed class ManagedAgents : IDisposable
                 launch.Environment[name] = secret;
         // "official" skips cc entirely; auto/cc resolve the attach state —
         // a proxied route wins over ambient env for metering/failover.
-        // A devin child spawns no CLI itself but side questions may spawn any
+        // A store child spawns no CLI itself but side questions may spawn any
         // engine — hand it every attached engine's proxy env up front.
-        if (entry.Engine == "devin")
+        if (entry.Executable is null)
         {
             child.CcRoute = null;
             foreach (var qe in new[] { "claude", "codex" })
