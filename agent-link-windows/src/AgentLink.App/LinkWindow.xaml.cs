@@ -15,11 +15,12 @@ public partial class LinkWindow : Window
 {
     private readonly DispatcherTimer refresh = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer dismiss = new() { Interval = TimeSpan.FromMilliseconds(160) };
-    private readonly Dictionary<string, (bool Ok, string? Detail, DateTime At)> probeCache = new();
+    private readonly Dictionary<string, (bool? Ok, DateTime At)> probeCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> expanded = new(StringComparer.OrdinalIgnoreCase);
     private bool working;
     private bool choosingWorker;
     private bool agentProbing;
+    private int statusMisses;
     private long inviteExpires;
     private long dismissedAt = long.MinValue / 2;
     private string memberPhase = "NONE";
@@ -89,9 +90,16 @@ public partial class LinkWindow : Window
         working = true;
         try
         {
+            if (inviteExpires <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() && Qr.Source is not null)
+                ClearInvite();
             var reply = await LinkProtocol.CallAsync(new("status"));
-            var state = reply.Data?.Deserialize<LinkStatus>(LinkProtocol.Json);
-            if (!reply.Ok || state is null) return;
+            var state = reply.Ok ? reply.Data?.Deserialize<LinkStatus>(LinkProtocol.Json) : null;
+            if (state is null)
+            {
+                ShowStatusMiss();
+                return;
+            }
+            statusMisses = 0;
             Summary.Text = state.Message == "后台已就绪" ? "手机连接已开启" : state.Message;
             Computer.Text = state.Computer;
             MachineAddress.Text = state.Ready ? AddressText(state.Origin) : "未连接";
@@ -125,27 +133,53 @@ public partial class LinkWindow : Window
                 _ => "登录会员",
             };
             MemberButton.IsEnabled = state.Ready && memberPhase is not "CONNECTING";
-            if (inviteExpires <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() && Qr.Source is not null)
-                ClearInvite();
-            if (!state.Enabled) ClearInvite();
-            if (Tabs.SelectedIndex == 1 && state.Ready) await BuildAgentListAsync();
-            if (Tabs.SelectedIndex == 0 && state.Ready)
+            if (state.Ready && !state.Enabled) ClearInvite();
+            AgentList.IsEnabled = state.Ready;
+            DeviceList.IsEnabled = state.Ready;
+            PairingRequests.IsEnabled = state.Ready;
+            if (!state.Ready) return;
+
+            if (Tabs.SelectedIndex == 1) await BuildAgentListAsync();
+            else if (Tabs.SelectedIndex == 0)
             {
-                ShowDevices((await LinkProtocol.CallAsync(new("devices"))).Data as JsonArray);
-                if (state.PendingCount > 0)
-                    ShowRequests((await LinkProtocol.CallAsync(new("requests"))).Data as JsonArray);
-                else PairingRequests.Children.Clear();
+                if (await ReadListAsync("devices") is { } devices) ShowDevices(devices);
+                if (state.PendingCount == 0) ShowRequests(new JsonArray());
+                else if (await ReadListAsync("requests") is { } requests) ShowRequests(requests);
             }
-            else if (Tabs.SelectedIndex == 0) { DeviceList.Children.Clear(); PairingRequests.Children.Clear(); }
         }
         catch (Exception error) when (IsUnavailable(error))
         {
-            Summary.Text = "正在连接后台";
-            StatusDot.SetResourceReference(ShapeFill, "LinkSecondary");
-            PhoneEnabled.IsEnabled = false;
-            Invite.IsEnabled = false;
+            ShowStatusMiss();
         }
         finally { working = false; }
+    }
+
+    private void ShowStatusMiss()
+    {
+        // One missed poll can be caused by another caller using the same pipe.
+        if (statusMisses < 3) statusMisses++;
+        if (statusMisses < 3) return;
+        Summary.Text = "正在重连后台";
+        StatusDot.SetResourceReference(ShapeFill, "LinkSecondary");
+        PhoneEnabled.IsEnabled = false;
+        PairingApproval.IsEnabled = false;
+        Invite.IsEnabled = false;
+        InviteAcs.IsEnabled = false;
+        MemberButton.IsEnabled = false;
+        MemberFiles.IsEnabled = false;
+        AgentList.IsEnabled = false;
+        DeviceList.IsEnabled = false;
+        PairingRequests.IsEnabled = false;
+    }
+
+    private static async Task<JsonArray?> ReadListAsync(string operation)
+    {
+        try
+        {
+            var reply = await LinkProtocol.CallAsync(new(operation));
+            return reply.Ok ? reply.Data as JsonArray : null;
+        }
+        catch (Exception error) when (IsUnavailable(error)) { return null; }
     }
 
     private static string AddressText(string? origin) =>
@@ -154,9 +188,12 @@ public partial class LinkWindow : Window
     private string? deviceListSig;
     private string? agentListSig;
 
-    private void ShowDevices(JsonArray? devices)
+    private void ShowDevices(JsonArray devices)
     {
-        var sig = devices?.ToJsonString() ?? "null";
+        var list = devices.OfType<JsonObject>()
+            .Where(d => Text(d, "state") != "REVOKED").ToArray();
+        var sig = JsonSerializer.Serialize(list.Select(d =>
+            new { Id = Text(d, "deviceGrantId"), Label = Text(d, "label"), State = Text(d, "state") }), LinkProtocol.Json);
         if (sig == deviceListSig) return;
         deviceListSig = sig;
         DeviceList.Children.Clear();
@@ -170,8 +207,6 @@ public partial class LinkWindow : Window
             Text = "手机", FontWeight = FontWeights.SemiBold, FontSize = 12,
             Margin = new Thickness(2, 8, 0, 0),
         });
-        var list = devices?.OfType<JsonObject>()
-            .Where(d => Text(d, "state") != "REVOKED").ToArray() ?? [];
         if (list.Length == 0)
         {
             DeviceList.Children.Add(new TextBlock
@@ -262,28 +297,15 @@ public partial class LinkWindow : Window
 
     private async Task BuildAgentListAsync()
     {
-        var availability = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        List<ManagedAgent>? managed;
         try
         {
-            var reply = await LinkProtocol.CallAsync(new("agents"));
-            var source = reply.Data;
-            var backends = (source?["backends"] as JsonArray)?.OfType<JsonObject>().ToArray();
-            if (backends is null || backends.Length == 0)
-                backends = source is JsonObject primary ? [primary] : [];
-            foreach (var backend in backends ?? [])
-                foreach (var engine in (backend["engines"] as JsonArray)?.OfType<JsonObject>() ?? [])
-                    if (Text(engine, "engineId") is { } id)
-                        availability[id] = Text(engine, "availability") ?? "";
+            var reply = await LinkProtocol.CallAsync(new("managedAgents"));
+            managed = reply.Ok && reply.Data is JsonArray rows
+                ? rows.Deserialize<List<ManagedAgent>>(LinkProtocol.Json) : null;
         }
-        catch (Exception error) when (IsUnavailable(error)) { }
-
-        List<ManagedAgent>? managed = null;
-        try
-        {
-            managed = (await LinkProtocol.CallAsync(new("managedAgents"))).Data
-                ?.Deserialize<List<ManagedAgent>>(LinkProtocol.Json);
-        }
-        catch (Exception error) when (IsUnavailable(error)) { }
+        catch (Exception error) when (IsUnavailable(error)) { return; }
+        if (managed is null) return;
 
         var cards = WorkerCards.Enumerate();
         var current = WorkerCards.CurrentPaths();
@@ -291,20 +313,33 @@ public partial class LinkWindow : Window
             !string.Equals(c.Path, p, StringComparison.OrdinalIgnoreCase))))
             if (WorkerCards.TryRead(path) is { } attached) cards.Add(attached);
 
-        var sig = JsonSerializer.Serialize(managed, LinkProtocol.Json)
-            + "|" + string.Join(",", current)
-            + "|" + string.Join(",", availability.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value))
-            + "|" + string.Join(",", cards.Select(c => c.Path + "@" +
-                (File.Exists(c.Path) ? File.GetLastWriteTimeUtc(c.Path).Ticks : 0)))
-            + "|" + string.Join(",", probeCache.OrderBy(kv => kv.Key).Select(kv =>
-                kv.Key + "=" + kv.Value.Ok + ":" + kv.Value.Detail));
-        if (sig == agentListSig) { if (!agentProbing) _ = ProbeAgentsAsync(cards); return; }
+        RenderAgentList(managed, cards, current);
+        if (agentProbing || !IsVisible || Tabs.SelectedIndex != 1) return;
+        var stale = DateTime.UtcNow.AddSeconds(-30);
+        var due = cards.FirstOrDefault(card =>
+            !probeCache.TryGetValue(card.Path, out var cached) || cached.At <= stale);
+        if (due is not null) _ = ProbeAgentAsync(due.Path);
+    }
+
+    private void RenderAgentList(List<ManagedAgent> managed, List<TrayWorkerCard> cards, IReadOnlyList<string> current)
+    {
+        var sig = JsonSerializer.Serialize(new
+        {
+            Managed = managed,
+            External = cards.Select(card => new
+            {
+                Card = card,
+                Attached = current.Contains(card.Path, StringComparer.OrdinalIgnoreCase),
+                Reachable = probeCache.TryGetValue(card.Path, out var result) ? result.Ok : null,
+            }),
+        }, LinkProtocol.Json);
+        if (sig == agentListSig) return;
         agentListSig = sig;
 
         AgentList.Children.Clear();
-        foreach (var agent in managed ?? [])
+        foreach (var agent in managed)
             AgentList.Children.Add(ManagedRow(agent));
-        if ((managed?.Count ?? 0) == 0 && cards.Count == 0)
+        if (managed.Count == 0 && cards.Count == 0)
         {
             AgentList.Children.Add(new Border
             {
@@ -318,8 +353,7 @@ public partial class LinkWindow : Window
             });
         }
         foreach (var card in cards)
-            AgentList.Children.Add(AgentRow(card, current, availability));
-        if (!agentProbing) _ = ProbeAgentsAsync(cards);
+            AgentList.Children.Add(AgentRow(card, current));
     }
 
     private static string ManagedTitle(ManagedAgent agent)
@@ -797,7 +831,7 @@ public partial class LinkWindow : Window
         await RefreshAsync();
     }
 
-    private FrameworkElement AgentRow(TrayWorkerCard card, IReadOnlyList<string> current, Dictionary<string, string> availability)
+    private FrameworkElement AgentRow(TrayWorkerCard card, IReadOnlyList<string> current)
     {
         var attached = current.Contains(card.Path, StringComparer.OrdinalIgnoreCase);
         var tint = TintBrush(card.Engine);
@@ -818,8 +852,8 @@ public partial class LinkWindow : Window
         var sub = card.Engine ?? "Worker";
         if (card.ProjectId is { Length: > 0 } project) sub += " · " + project;
         if (attached) sub += " · 接入中";
-        else if (probeCache.TryGetValue(card.Path, out var probe))
-            sub += probe.Ok ? " · 可达" : " · 不可达";
+        else if (probeCache.TryGetValue(card.Path, out var probe) && probe.Ok is { } reachable)
+            sub += reachable ? " · 可达" : " · 不可达";
         texts.Children.Add(new TextBlock
         {
             Text = sub, FontSize = 11,
@@ -895,13 +929,11 @@ public partial class LinkWindow : Window
             test.IsEnabled = false;
             try
             {
-                var reply = await LinkProtocol.CallAsync(new("testWorker", card.Path));
-                probeCache[card.Path] = (reply.Ok, reply.Ok
-                    ? reply.Data?.GetValue<string>() : reply.Error, DateTime.UtcNow);
+                await ProbeWorkerAsync(card.Path);
             }
             catch (Exception error) when (IsUnavailable(error))
             {
-                probeCache[card.Path] = (false, "后台暂不可用", DateTime.UtcNow);
+                WorkerNotice.Text = "后台暂不可用。";
             }
             finally { test.IsEnabled = true; }
             await RefreshAsync();
@@ -912,8 +944,8 @@ public partial class LinkWindow : Window
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        if (probeCache.TryGetValue(card.Path, out var probe))
-            probeText.Text = probe.Ok ? "引擎可达" : "引擎不可达";
+        if (probeCache.TryGetValue(card.Path, out var probe) && probe.Ok is { } reachable)
+            probeText.Text = reachable ? "引擎可达" : "引擎不可达";
         else probeText.Text = "等待探测";
         actions.Children.Add(test);
         actions.Children.Add(probeText);
@@ -959,29 +991,19 @@ public partial class LinkWindow : Window
         return panel;
     }
 
-    private async Task ProbeAgentsAsync(List<TrayWorkerCard> cards)
+    private async Task ProbeAgentAsync(string path)
     {
         agentProbing = true;
-        try
-        {
-            var stale = DateTime.UtcNow.AddSeconds(-30);
-            foreach (var card in cards)
-            {
-                if (probeCache.TryGetValue(card.Path, out var cached) && cached.At > stale) continue;
-                try
-                {
-                    var reply = await LinkProtocol.CallAsync(new("testWorker", card.Path));
-                    probeCache[card.Path] = (reply.Ok,
-                        reply.Ok ? reply.Data?.GetValue<string>() : reply.Error, DateTime.UtcNow);
-                }
-                catch (Exception error) when (IsUnavailable(error))
-                {
-                    probeCache[card.Path] = (false, "后台暂不可用", DateTime.UtcNow);
-                }
-            }
-        }
+        try { await ProbeWorkerAsync(path); }
+        catch (Exception error) when (IsUnavailable(error)) { }
         finally { agentProbing = false; }
-        if (IsVisible && Tabs.SelectedIndex == 1) await BuildAgentListAsync();
+    }
+
+    private async Task ProbeWorkerAsync(string path)
+    {
+        probeCache[path] = (probeCache.GetValueOrDefault(path).Ok, DateTime.UtcNow);
+        var reply = await LinkProtocol.CallAsync(new("testWorker", path));
+        if (reply.Error != "后台网关暂未就绪") probeCache[path] = (reply.Ok, DateTime.UtcNow);
     }
 
     private static bool Inside(DependencyObject? node, DependencyObject root)
@@ -1018,13 +1040,13 @@ public partial class LinkWindow : Window
 
     private string? requestsSig;
 
-    private void ShowRequests(JsonArray? requests)
+    private void ShowRequests(JsonArray requests)
     {
-        var sig = requests?.ToJsonString() ?? "null";
+        var sig = requests.ToJsonString();
         if (sig == requestsSig) return;
         requestsSig = sig;
         PairingRequests.Children.Clear();
-        foreach (var request in requests?.OfType<JsonObject>() ?? [])
+        foreach (var request in requests.OfType<JsonObject>())
         {
             var id = Text(request, "pairingRequestId");
             if (id is null || Text(request, "state") != "PENDING") continue;
