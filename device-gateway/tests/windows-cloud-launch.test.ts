@@ -1,0 +1,145 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { expect, it, vi } from 'vitest';
+import { GatewayStore } from '../src/store';
+import { LocalTaskAccess, type LocalAuthLike, type LocalTransportLike } from '../src/local-tasks';
+import { LocalTransportError } from '../src/local-transport';
+import { WindowsCloudLaunch } from '../src/windows-cloud-launch';
+
+it('publishes only owner-approved targets and recovers both replies across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'windows-cloud-test-'));
+  const session = join(dir, 'connector.env');
+  const grant = join(dir, 'grant.json');
+  const origin = 'https://hosted.test';
+  writeFileSync(session, [
+    `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+    'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+    'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+  ].join('\n'));
+  const target = { sourceKind: 'NATIVE', backendId: 'store', projectId: 'project', engineId: 'pi', capabilityRevision: '1' };
+  writeFileSync(grant, JSON.stringify({ schemaVersion: 'windows-cloud-launch-grant/1', revision: 1,
+    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance', controls: true,
+    launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }] }));
+  const command = { commandId: 'delivery', workId: 'work', kind: 'link.task.launch.v2', deliveryGeneration: 1,
+    payload: { target: { ...target, instanceId: 'instance' }, payloadDigest: 'digest', nativeRequestKey: 'original-key',
+      instruction: { text: 'Run fixture' }, attachments: [], parameters: {} } };
+  const row = { connectionId: 'backend', kind: 'WORKER_LOCAL' };
+  const task = { taskId: 'native-task', engineId: 'pi', state: 'RUNNING', generation: 'generation',
+    nativeSessionId: 'session', nativeTurnId: 'turn', currentCommandId: 'run', capabilities: { stop: true } };
+  let sourceKey: string | undefined;
+  let launches = 0;
+  let stops = 0;
+  let stopKey: string | undefined;
+  const stopReceipt = { state: 'SUCCEEDED', result: { taskId: task.taskId, state: 'CANCELLED' } };
+  const transport: LocalTransportLike = {
+    workerLocal: () => row, workerLocalRows: () => [row], identity: async () => 'store',
+    rawBytes: async () => { throw Error('not used'); },
+    raw: async (_connection, method, tail, body, key) => {
+      switch (`${method} ${tail}`) {
+        case 'POST /task-preflights': return { status: 200, data: { optionsRevision: 'options' } };
+        case 'POST /tasks':
+          launches++;
+          sourceKey = key;
+          throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
+        case `GET /task-requests/${sourceKey}`: return { status: 200, data: task };
+        case 'GET /tasks/native-task': return { status: 200, data: task };
+        case 'POST /tasks/native-task/commands':
+          expect(body).toEqual({ requestKey: key, intent: 'STOP', generation: 'generation',
+            nativeSessionId: 'session', nativeTurnId: 'turn', targetCommandId: 'run' });
+          stops++;
+          stopKey = key;
+          task.state = 'CANCELLED';
+          return { status: 200, data: stopReceipt };
+        case `GET /tasks/native-task/interaction-requests/${stopKey}`: return { status: 200, data: stopReceipt };
+        default: return { status: 404, data: { code: 'NOT_FOUND' } };
+      }
+    },
+  };
+  let receiptPosts = 0;
+  let accepted = false;
+  const publications: unknown[] = [];
+  const events: Record<string, unknown>[] = [];
+  const results: unknown[] = [];
+  let actionAccepted = false;
+  let staleRejected = false;
+  const hosted: typeof fetch = async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : String(input));
+    expect(url.origin).toBe(origin);
+    const path = url.pathname.replace('/api/daily/v1/member/link/v2', '');
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+    switch (`${init?.method} ${path}`) {
+      case 'GET /instances/instance/targets': return Response.json({ revision: publications.length });
+      case 'PUT /instances/instance/targets': publications.push(body.targets); return Response.json({});
+      case 'GET /task-claims': {
+        if (!accepted) return Response.json({ commands: [command] });
+        const execution = events[0];
+        if (!execution || actionAccepted) return Response.json({ commands: [] });
+        const expiresAt = new Date(Date.now() + 25_000).toISOString();
+        const stop = (commandId: string, activeRunId: unknown) => ({
+          commandId, workId: 'work', kind: 'link.task.action.v2', deliveryGeneration: 1, claimUntil: expiresAt,
+          payload: { operationId: commandId, kind: 'stop', workId: 'work', expiresAt,
+            payload: { activeRunId, executionEpoch: execution.executionEpoch } },
+        });
+        return Response.json({ commands: [stop('stale-stop', 'retired-run'), stop('stop', execution.activeRunId)] });
+      }
+      case 'POST /task-claims/delivery/authorize': return Response.json({
+        action: 'dispatch', requestKey: 'original-key', payloadDigest: 'digest',
+        dispatchBefore: new Date(Date.now() + 25_000).toISOString(),
+      });
+      case 'GET /tasks/work/agent': return Response.json({ nativeRequestKey: 'original-key', payloadDigest: 'digest', execution: events.at(-1),
+        dispatch: { commandId: 'delivery', deliveryGeneration: 1 } });
+      case 'POST /task-claims/delivery/receipt':
+        expect(body).toEqual({ deliveryGeneration: 1, outcome: 'accepted', nativeTaskId: 'native-task' });
+        accepted = true;
+        if (++receiptPosts === 1) throw Error('lost receipt response after acceptance');
+        return Response.json({});
+      case 'POST /task-claims/stale-stop/receipt':
+        expect(body).toEqual({ deliveryGeneration: 1, outcome: 'conflict', detail: 'stale_execution' });
+        staleRejected = true;
+        return Response.json({});
+      case 'POST /task-claims/stop/receipt':
+        expect(body).toEqual({ deliveryGeneration: 1, outcome: 'executed' });
+        actionAccepted = true;
+        return Response.json({});
+      case 'POST /tasks/work/observations': events.push(body); return Response.json({});
+      case 'PUT /tasks/work/results/primary': results.push(body); return Response.json({});
+      default: throw Error(`Unexpected Hosted call ${path}`);
+    }
+  };
+
+  let store = new GatewayStore(dir);
+  const build = () => {
+    const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
+    vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
+      projects: [{ projectId: 'project' }, { projectId: 'another-project' }], engines: [{ engineId: 'pi' }] });
+    return new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted);
+  };
+  try {
+    await build().tick();
+    expect(publications).toEqual([[target]]);
+    expect(launches).toBe(1);
+    expect(sourceKey).toMatch(/^mobile-[a-f0-9]{64}$/);
+    expect(receiptPosts).toBe(1);
+    store.close();
+    store = new GatewayStore(dir);
+    await build().tick();
+    expect(launches).toBe(1);
+    expect(receiptPosts).toBe(2);
+    expect(staleRejected).toBe(true);
+    expect(actionAccepted).toBe(true);
+    expect(stops).toBe(1);
+    await build().tick();
+    expect(events).toEqual([
+      expect.objectContaining({ state: 'running', nativeTaskId: 'native-task', supportedActions: ['stop'] }),
+      expect.objectContaining({ state: 'cancelled', nativeTaskId: 'native-task' }),
+    ]);
+    expect(results).toEqual([expect.objectContaining({ refs: [{ ref: 'native://store/tasks/native-task', mediaType: 'application/json' }] })]);
+    writeFileSync(grant, '{}');
+    await build().tick();
+    expect(publications).toEqual([[target], []]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

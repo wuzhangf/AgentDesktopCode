@@ -294,7 +294,12 @@ internal sealed class ConnectorSupervisor : IDisposable
         info.ArgumentList.Add($"https://127.0.0.1:{active.Relay}");
         info.ArgumentList.Add("--pac-descriptor");
         info.ArgumentList.Add(descriptorFile);
-        if (link) info.ArgumentList.Add("--link");
+        if (link)
+        {
+            info.ArgumentList.Add("--link");
+            info.ArgumentList.Add("--client-id");
+            info.ArgumentList.Add("agent-link");
+        }
         info.Environment["PAC_RELAY_ENV_FILE"] = MemberCredentials.EnvFilePath;
         foreach (var name in ProxyVariables)
             if (Environment.GetEnvironmentVariable(name) is { } value) info.Environment[name] = value;

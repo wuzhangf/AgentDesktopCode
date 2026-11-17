@@ -225,6 +225,7 @@ export class LocalTaskAccess {
     private readonly transport: LocalTransportLike,
     private readonly store: LocalStoreLike,
     private readonly taskFileBinding?: TaskFileBinding,
+    private readonly launchDeadline?: () => number,
   ) {}
 
   // ---- store/ledger plumbing -------------------------------------------------
@@ -320,8 +321,10 @@ export class LocalTaskAccess {
     body?: unknown,
     key?: string,
     deadlineMillis?: number,
+    recheckDeadline?: () => number,
   ): Promise<RawResult> {
     const conn: ConnectionRowLite = await this.connectionForStore(expectedStore, deadlineMillis);
+    deadlineMillis = recheckDeadline?.() ?? deadlineMillis;
     const result = await this.transport.raw(conn.connectionId, method, tail, body, key, expectedStore, deadlineMillis);
     if (await this.transport.identity(conn.connectionId, deadlineMillis) !== expectedStore) {
       fail('LOCAL_SOURCE_IDENTITY_CHANGED', 409);
@@ -1478,7 +1481,9 @@ export class LocalTaskAccess {
     });
     if (recover) return this.recoverLaunch(token, backend, key!);
     try {
-      const reply = await this.source(backend, 'POST', '/tasks', request.wire, request.sourceKey);
+      const deadline = this.launchDeadline?.();
+      const reply = await this.source(backend, 'POST', '/tasks', request.wire, request.sourceKey,
+        deadline, this.launchDeadline);
       await this.acceptLaunch(request, reply);
     } catch (error) {
       if (isIo(error)) {
@@ -1896,7 +1901,8 @@ export class LocalTaskAccess {
 
     const tail = `/tasks/${task}${stop ? '/commands' : question ? '/questions' : response ? `/input-requests/${p[4]}/responses` : '/messages'}`;
     try {
-      const reply = await this.source(backend, 'POST', tail, r.wire, r.sourceKey);
+      const deadline = this.launchDeadline?.();
+      const reply = await this.source(backend, 'POST', tail, r.wire, r.sourceKey, deadline, this.launchDeadline);
       r.result = reply.data;
       r.state = reply.status >= 200 && reply.status < 300 ? 'OBSERVED'
         : REJECTED.has(reply.status) ? 'REJECTED' : 'UNKNOWN';

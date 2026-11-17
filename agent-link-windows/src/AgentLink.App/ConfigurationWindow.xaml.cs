@@ -282,6 +282,21 @@ public partial class ConfigurationWindow : Window
 
     private void Phone_Click(object sender, RoutedEventArgs e) => openPhone();
 
+    private async void CloudLaunch_Click(object sender, RoutedEventArgs e)
+    {
+        await RunAsync(async () =>
+        {
+            var reply = await call(new("cloudLaunch"));
+            if (!reply.Ok || reply.Data is not JsonObject directory)
+            {
+                SetNotice(reply.Error ?? "暂时读不到云任务授权。", error: true);
+                return;
+            }
+            new CloudLaunchWindow(call, directory) { Owner = this }.ShowDialog();
+            SetNotice(null);
+        });
+    }
+
     private async Task RunAsync(Func<Task> action)
     {
         if (busy) return;

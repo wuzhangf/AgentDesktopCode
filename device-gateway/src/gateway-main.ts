@@ -63,6 +63,7 @@ import { GatewayStore } from './store.js';
 import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
+import { WindowsCloudLaunch } from './windows-cloud-launch.js';
 import { PersonalInbox, type InboxSourceReader } from './inbox.js';
 import { LocalTransport, type ConnectionRowLite } from './local-transport.js';
 import { createAcsClient } from './acs.js';
@@ -487,6 +488,7 @@ export interface BuiltGateway {
   inbox: PersonalInbox;
   config: GatewayConfig;
   cliSupervisor?: CliSupervisor;
+  cloudLaunch?: WindowsCloudLaunch;
 }
 
 export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
@@ -821,7 +823,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     });
   }
 
-  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor };
+  const cloudOrigin = env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN')?.replace(/\/$/, '');
+  const cloudSession = env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
+  const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
+    ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
+      join(opts.dataDir, 'windows-cloud-launch.json')) : undefined;
+  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 
 // ---------------------------------------------------------------------------
@@ -962,6 +969,7 @@ export async function main(): Promise<void> {
   if (built.cliSupervisor !== undefined) {
     void built.cliSupervisor.start();
   }
+  built.cloudLaunch?.start();
 
   // Bonjour advertisement — phones discover this host as "_agentlink._tcp".
   // The advert is public discovery facts only; pairing still needs owner
@@ -1021,6 +1029,7 @@ export async function main(): Promise<void> {
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     clearInterval(refreshAlternates);
+    built.cloudLaunch?.stop();
     mdns.stop();
     let pending = listeners.length;
     const done = (): void => {

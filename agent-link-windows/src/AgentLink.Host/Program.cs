@@ -190,6 +190,8 @@ internal sealed class LinkHost : IDisposable
                 variables["DEVICE_GATEWAY_DAILY_ORIGIN"] = dailyOrigin;
         }
         variables["DEVICE_GATEWAY_DATA_DIR"] = data;
+        variables["DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN"] = MemberOrigin.TrimEnd('/');
+        variables["DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION"] = MemberCredentials.EnvFilePath;
         variables["DEVICE_GATEWAY_BIND"] = "::";
         variables["DEVICE_GATEWAY_PORT"] = chosen.Phone.ToString();
         variables["DEVICE_GATEWAY_OWNER_PORT"] = chosen.Owner.ToString();
@@ -638,6 +640,10 @@ internal sealed class LinkHost : IDisposable
             if (!status.Ready || ports is null) return new(false, "后台网关暂未就绪");
             switch (request.Operation)
             {
+                case "cloudLaunch" or "setCloudLaunch":
+                    var cloudCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
+                    return request.Operation == "cloudLaunch"
+                        ? CloudLaunchGrant.Read(cloudCap) : CloudLaunchGrant.Save(cloudCap, request.Args);
                 case "agents":
                     var cap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
                     return new(true, Data: cap?["localSource"]?.DeepClone());
