@@ -241,6 +241,7 @@ const fakeCtx = (opts: {
       },
       signal: () => fail('SOURCE_NOT_READY', 503),
       ownerCatalog: () => ({ available: true, backendStoreId: 'local-1' }),
+      linkTargets: () => ({ schemaVersion: 'link-targets/2', targets: [] }),
       validateOwnerResources: (resources, launches) => { calls.validateOwner.push([resources, launches]); },
       verifyTaskEngine: () => {},
       recordedInput: () => false,

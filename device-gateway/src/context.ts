@@ -161,6 +161,9 @@ export interface GatewayLocalTasks {
   signal(device: Device, resource: Resource, deadlineMillis: number): MaybePromise<SourceRead>;
   /** Owner capabilities → localSource catalog (Java ownerCatalog()). */
   ownerCatalog(): MaybePromise<JsonObject>;
+  /** v2 targets snapshot the Link consumer uploads to /member/link/v2 —
+   *  pure projection of an ownerCatalog() result (M02-Mac). */
+  linkTargets(catalog: JsonObject): JsonObject;
   /** Owner invite/scope validation for WORKER_LOCAL resources + launch scopes. */
   validateOwnerResources(resources: Resource[], launchScopes: LaunchScope[]): MaybePromise<void>;
   /** Immutable engine binding check for client-access native projections. */

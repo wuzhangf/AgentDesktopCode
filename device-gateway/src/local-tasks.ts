@@ -561,6 +561,45 @@ export class LocalTaskAccess {
     return { ...out, projects, engines, tasks };
   }
 
+  /** v2 targets directory projection (M00 freeze §2.1): the dispatchable
+   *  (project × engine) pairs of every reachable backend, expressed in the
+   *  typed target vocabulary the consumer PUTs to /member/link/v2. The
+   *  upstream engines feed's own sourceKind field is design-source metadata
+   *  (DRAFT/SEALED) — execution sourceKind is synthesized here: the managed
+   *  macos engine is MAC_OWNED, everything else NATIVE. */
+  linkTargets(catalog: Json): Json {
+    const seen = new Set<string>();
+    const targets: Json[] = [];
+    const catalogs = [catalog,
+      ...(Array.isArray(catalog.backends) ? catalog.backends.filter(isRecord) : [])];
+    for (const c of catalogs) {
+      const backend = asText(c.backendStoreId);
+      if (backend === '') continue;
+      const projects = (Array.isArray(c.projects) ? c.projects : [])
+        .filter((p: unknown) => isRecord(p) && (asText((p as Json).availability) || 'AVAILABLE') === 'AVAILABLE')
+        .map((p: unknown) => asText((p as Json).projectId)).filter((id: string) => id !== '');
+      const engines = (Array.isArray(c.engines) ? c.engines : [])
+        .filter((e: unknown) => isRecord(e) && (asText((e as Json).availability) || 'AVAILABLE') === 'AVAILABLE');
+      for (const p of projects) {
+        for (const e of engines) {
+          const engineId = asText(e.engineId);
+          if (engineId === '') continue;
+          const key = `${backend}|${p}|${engineId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const revision = [asText(e.engineVersion), asText(e.version)]
+            .filter((v) => v !== '').join('|') || '1';
+          targets.push({
+            sourceKind: engineId === 'macos' ? 'MAC_OWNED' : 'NATIVE',
+            backendId: backend, projectId: p, engineId,
+            capabilityRevision: revision,
+          });
+        }
+      }
+    }
+    return { schemaVersion: 'link-targets/2', targets };
+  }
+
   /** Owner sees registered public choices — every reachable worker-local backend. */
   async ownerCatalog(): Promise<Json> {
     const backends = await this.identities();

@@ -70,6 +70,10 @@ describe('owner capabilities over HTTP', () => {
             expect(body.localSource.backends[0].projects).toEqual(body.localSource.projects);
             expect(body.localSource.backends.every((row: object) => !('backends' in row))).toBe(true);
           } else { expect(body.localSource.backends).toBeUndefined(); }
+          // M02-Mac: the same catalog read feeds the v2 targets projection —
+          // the fixture's only project is UNAVAILABLE so nothing advertises.
+          expect(body.linkTargets).toMatchObject({
+            schemaVersion: 'link-targets/2', targets: [] });
           for (const secret of ['fixture-worker-token', 'fixture-owner-token', 'fixture-client-token', 'must-not-leak',
             '/private/fixture-workspace', '/private/fixture-engine']) expect(text).not.toContain(secret);
         }

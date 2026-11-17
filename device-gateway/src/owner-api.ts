@@ -237,12 +237,23 @@ export async function handleOwnerRoute(
       out.resourceScopeVersion = 2;
       if (ctx.localTasks !== undefined) {
         try {
-          out.localSource = await ctx.localTasks.ownerCatalog();
+          const catalog = await ctx.localTasks.ownerCatalog();
+          out.localSource = catalog;
+          // One catalog read feeds both views — a second ownerCatalog() call
+          // could observe a different backend set mid-flap.
+          const linkTargets = ctx.localTasks.linkTargets(catalog);
+          if (ctx.acs !== undefined && Array.isArray(linkTargets.targets)) {
+            linkTargets.targets.push({
+              sourceKind: 'ACS', backendId: ctx.config.acsStoreId,
+              capabilityRevision: 'agent-sessions/1',
+            });
+          }
+          out.linkTargets = linkTargets;
         } catch (unavailable) {
-          out.localSource = {
-            available: false,
-            reasonCode: unavailable instanceof GatewayError ? unavailable.code : 'LOCAL_SOURCE_UNAVAILABLE',
-          };
+          const reasonCode = unavailable instanceof GatewayError
+            ? unavailable.code : 'LOCAL_SOURCE_UNAVAILABLE';
+          out.localSource = { available: false, reasonCode };
+          out.linkTargets = { schemaVersion: 'link-targets/2', targets: [], reasonCode };
         }
       }
       return { status: 200, body: out };

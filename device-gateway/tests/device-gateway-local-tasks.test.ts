@@ -1112,6 +1112,39 @@ describe('LocalTaskAccess owner + signal', () => {
     expect((out.engines as unknown[]).length).toBe(2);
   });
 
+  it('linkTargets projects the catalog into the v2 targets vocabulary', () => {
+    const { access } = harness();
+    const catalog = {
+      backendStoreId: 'b1',
+      projects: [
+        { projectId: 'p1', availability: 'AVAILABLE' },
+        { projectId: 'p2', availability: 'UNAVAILABLE' },
+      ],
+      engines: [
+        { engineId: 'pi', engineVersion: '2.0', version: '9', availability: 'AVAILABLE' },
+        { engineId: 'macos', availability: 'AVAILABLE' },
+        { engineId: 'codex', availability: 'UNAVAILABLE' },
+      ],
+      backends: [
+        { backendStoreId: 'b1', projects: [{ projectId: 'p1' }],
+          engines: [{ engineId: 'pi' }] },
+        { backendStoreId: 'b2', projects: [{ projectId: 'p3' }],
+          engines: [{ engineId: 'sage-pi' }] },
+      ],
+    };
+    const out = access.linkTargets(catalog) as {
+      schemaVersion: string; targets: Record<string, unknown>[] };
+    expect(out.schemaVersion).toBe('link-targets/2');
+    expect(out.targets).toEqual([
+      { sourceKind: 'NATIVE', backendId: 'b1', projectId: 'p1',
+        engineId: 'pi', capabilityRevision: '2.0|9' },
+      { sourceKind: 'MAC_OWNED', backendId: 'b1', projectId: 'p1',
+        engineId: 'macos', capabilityRevision: '1' },
+      { sourceKind: 'NATIVE', backendId: 'b2', projectId: 'p3',
+        engineId: 'sage-pi', capabilityRevision: '1' },
+    ]);
+  });
+
   it('signal() maps pending inputs and terminal states', async () => {
     const { access, devices } = harness();
     const device = devices.get('dev1')!;
