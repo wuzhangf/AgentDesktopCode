@@ -170,6 +170,25 @@ export interface GatewayLocalTasks {
   verifyTaskEngine(token: string, backendStoreId: string, taskId: string, engineId: string): MaybePromise<void>;
   /** local-input ledger presence check for client-access input.respond. */
   recordedInput(token: string, backendStoreId: string, taskId: string, key: string): MaybePromise<boolean>;
+  /** Java NativePort.call() — raw pinned worker call for the handoff coordinator. */
+  nativeCall(
+    backend: string,
+    method: 'GET' | 'POST',
+    tail: string,
+    body: unknown,
+    key: string | undefined,
+  ): MaybePromise<LocalTaskResult>;
+  /** Java NativePort.callBytes() — material-chunk PUT with caller headers. */
+  nativeCallBytes(
+    backend: string,
+    method: 'PUT' | 'POST',
+    tail: string,
+    body: Uint8Array,
+    headers: Record<string, string> | undefined,
+    key: string | undefined,
+  ): MaybePromise<LocalTaskResult>;
+  /** Java okNative() — 2xx → body; else the source's own code propagates. */
+  okNative(result: LocalTaskResult): JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +301,32 @@ export interface GatewayAgentSessions {
 export interface GatewayChildMessages {
   /** GET .../runs/{rid}/collaboration-groups/{gid}/executions/{eid}/messages. */
   messages(token: string, runId: string, groupId: string, childId: string, rawQuery: string | null): MaybePromise<LocalTaskResult>;
+}
+
+// ---------------------------------------------------------------------------
+// WorkHandoffAccess — PersonalWorkHandoffService port (src/work-handoffs.ts).
+// /personal/v1/work-handoffs family: durable phase machine coordinating a
+// sealed-source/materials/target-start/takeover-evidence handoff between
+// worker-local backends, ACS, and trusted peer hosts. Present only when both
+// the ACS upstream and local worker access are wired.
+// ---------------------------------------------------------------------------
+
+export interface GatewayWorkHandoffs {
+  /** Java remote() — the whole /personal/v1/work-handoffs dispatcher. */
+  remote(
+    token: string,
+    method: string,
+    tail: string[],
+    body: unknown,
+    key: string | null,
+    rawQuery: string | null,
+  ): MaybePromise<LocalTaskResult>;
+  /** Java publicSigningKey() — this host's RSA-SHA256 report-signing key. */
+  publicSigningKey(): MaybePromise<JsonObject>;
+  /** Java registerPeer() — owner-side trusted-peer-key row. */
+  registerPeer(body: unknown): MaybePromise<JsonObject>;
+  /** Java listPeers(). */
+  listPeers(): MaybePromise<JsonObject>;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +460,8 @@ export interface GatewayContext {
   agentSessions?: GatewayAgentSessions;
   /** Undefined when no ACS upstream is wired (Java childMessages==null). */
   childMessages?: GatewayChildMessages;
+  /** Undefined when the handoff coordinator is not wired (needs localTasks+acs). */
+  workHandoffs?: GatewayWorkHandoffs;
   /** Undefined → POST /personal/v1/transcriptions fails TRANSCRIPTION_NOT_CONFIGURED. */
   transcription?: GatewayTranscription;
   /** Undefined → /hooks/v1 fails APPROVALS_NOT_CONFIGURED; phone routes 404. */

@@ -598,6 +598,17 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     return { status: result.status, body: result.body };
   }
 
+  // Java: /personal/v1/work-handoffs/** → workHandoffs.remote — the durable
+  // handoff coordinator (M04). Absent coordinator → UPSTREAM_UNAVAILABLE.
+  if (path === '/personal/v1/work-handoffs' || path.startsWith('/personal/v1/work-handoffs/')) {
+    if (ctx.workHandoffs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+    const tail = path === '/personal/v1/work-handoffs' ? [] : javaSplit(path).slice(4);
+    const input = method === 'POST' ? jsonBody(req) : null;
+    const result = await ctx.workHandoffs.remote(
+      token, method, tail, input, idempotencyHeader(req), req.rawQuery);
+    return { status: result.status, body: result.body };
+  }
+
   // Java: GET /personal/v1/agent/authorized-scope → stored-grant picker.
   if (path === '/personal/v1/agent/authorized-scope' && method === 'GET') {
     const scope = await ctx.auth.authorizedScope(device);

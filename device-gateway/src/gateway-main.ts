@@ -69,6 +69,7 @@ import { createInboxSourceReader } from './inbox-source.js';
 import { bindingFor } from './bindings.js';
 import { AgentSessionAccess, type AgentUpstream } from './agent-sessions.js';
 import { ChildMessagesAccess } from './child-messages.js';
+import { WorkHandoffAccess } from './work-handoffs.js';
 import { CliSupervisor } from './cli-supervisor.js';
 import { CommercialAccess } from './commercial.js';
 import { ReaderAccess } from './xagt/reader-access.js';
@@ -711,6 +712,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   // PersonalAgentSessionAccess / PersonalChildMessagesAccess). Java wires
   // them only when the ACS upstream exists; undefined ctx seams are the
   // null-injection equivalent (503 UPSTREAM_UNAVAILABLE per route).
+  let agentUpstream: AgentUpstream | undefined;
   if (acs !== undefined) {
     const parseReply = (reply: { status: number; body: Uint8Array }) => {
       try {
@@ -723,7 +725,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         return fail('UPSTREAM_UNAVAILABLE', 503);
       }
     };
-    const agentUpstream: AgentUpstream = {
+    agentUpstream = {
       call: async (device, method, path, body, key) => parseReply(await acs.call(
         method, path,
         body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
@@ -734,6 +736,16 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     // Java namespace = ownerStatus().personalHostId → host.id.
     ctx.agentSessions = new AgentSessionAccess(store, devices, agentUpstream, host.id);
     ctx.childMessages = new ChildMessagesAccess(devices, agentUpstream);
+  }
+
+  // WorkHandoffAccess (Java PersonalWorkHandoffService, M04-Mac) — the
+  // durable handoff coordinator needs BOTH the ACS upstream (source/target
+  // ACS lanes + imports) and worker-local access; either missing → its
+  // routes 503 like Java's null-injection paths.
+  if (agentUpstream !== undefined && localTasks !== undefined) {
+    ctx.workHandoffs = new WorkHandoffAccess(
+      store, devices, agentUpstream, localTasks,
+      join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id);
   }
 
   // ClientAccessService is always constructible — its SourcePort fails

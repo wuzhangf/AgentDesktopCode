@@ -86,6 +86,11 @@ export interface LocalTransportLike {
     connectionId: string, method: 'GET' | 'POST', tail: string,
     body?: unknown, key?: string, storeId?: string, deadlineMillis?: number,
   ): Promise<RawResult>;
+  rawBytes(
+    connectionId: string, method: 'PUT' | 'POST', tail: string, body: Uint8Array,
+    extraHeaders: Record<string, string> | undefined, key?: string, storeId?: string,
+    deadlineMillis?: number,
+  ): Promise<RawResult>;
   identity(connectionId: string, deadlineMillis?: number): Promise<string>;
 }
 
@@ -334,6 +339,52 @@ export class LocalTaskAccess {
       fail(code, result.status);
     }
     return result.data as Json;
+  }
+
+  /**
+   * Java NativePort.call(): raw JSON call pinned to expectedStore both
+   * directions — the work-handoff coordinator's own worker seam.
+   */
+  async nativeCall(
+    backend: string,
+    method: 'GET' | 'POST',
+    tail: string,
+    body: unknown,
+    key?: string,
+    deadlineMillis?: number,
+  ): Promise<LocalResult> {
+    const result = await this.source(backend, method, tail, body, key, deadlineMillis);
+    return { status: result.status, body: result.data as Json | null };
+  }
+
+  /** Java NativePort.callBytes(): material-chunk PUT with caller headers. */
+  async nativeCallBytes(
+    backend: string,
+    method: 'PUT' | 'POST',
+    tail: string,
+    body: Uint8Array,
+    headers: Record<string, string> | undefined,
+    key?: string,
+    deadlineMillis?: number,
+  ): Promise<LocalResult> {
+    const conn: ConnectionRowLite = await this.connectionForStore(backend, deadlineMillis);
+    const result = await this.transport.rawBytes(conn.connectionId, method, tail, body, headers, key, backend, deadlineMillis);
+    if (await this.transport.identity(conn.connectionId, deadlineMillis) !== backend) {
+      fail('LOCAL_SOURCE_IDENTITY_CHANGED', 409);
+    }
+    return { status: result.status, body: result.data as Json | null };
+  }
+
+  /** Java okNative(): 2xx returns body, else throw the source's own code. */
+  okNative(result: LocalResult): Json {
+    if (result.status < 200 || result.status >= 300 || !isRecord(result.body)) {
+      const code = isRecord(result.body) && typeof result.body.code === 'string'
+          && /^[A-Z][A-Z0-9_]{0,100}$/.test(result.body.code)
+        ? result.body.code
+        : 'LOCAL_SOURCE_UNAVAILABLE';
+      fail(code, result.status >= 400 ? result.status : 503);
+    }
+    return result.body as Json;
   }
 
   // ---- public view whitelists -----------------------------------------------------

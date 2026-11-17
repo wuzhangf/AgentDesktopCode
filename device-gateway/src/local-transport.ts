@@ -198,6 +198,79 @@ export class LocalTransport {
   }
 
   /**
+   * Java nativeCallBytes(): octet-stream body + caller-chosen headers (the
+   * material-chunk PUTs carry x-chunk-sha256 or a ?digest= query). Same
+   * origin/deadline/bounded-read contract as raw().
+   */
+  async rawBytes(
+    connectionId: string,
+    method: 'PUT' | 'POST',
+    tail: string,
+    body: Uint8Array,
+    extraHeaders: Record<string, string> | undefined,
+    key?: string,
+    storeId?: string,
+    deadlineMillis?: number,
+  ): Promise<RawResult> {
+    const { origin, token } = this.origin(connectionId);
+    const remaining = LocalTransport.remaining(deadlineMillis);
+    const path = tail.startsWith('/worker-host/') ? tail : `/local/v1${tail}`;
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json',
+      'content-type': 'application/octet-stream',
+      ...(extraHeaders ?? {}),
+    };
+    if (storeId !== undefined) headers['x-worker-local-store'] = storeId;
+    if (key !== undefined) headers['idempotency-key'] = key;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${origin}${path}`, {
+        method,
+        headers,
+        body,
+        redirect: 'error',
+        signal: AbortSignal.timeout(Math.min(JAVA_READ_TIMEOUT_MS, remaining)),
+      });
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
+    }
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    const reader = response.body?.getReader();
+    if (reader) {
+      try {
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > MAX_RESPONSE_BYTES) {
+            try { await reader.cancel(); } catch { /* best effort */ }
+            fail('LOCAL_RESPONSE_TOO_LARGE', 502);
+          }
+          parts.push(part.value);
+        }
+      } catch (error) {
+        if (error instanceof GatewayError) throw error;
+        throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    const text = Buffer.concat(parts.map((p) => Buffer.from(p))).toString('utf8');
+    if (text.length === 0) return { status: response.status, data: { code: 'LOCAL_SOURCE_UNAVAILABLE' } };
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      fail('LOCAL_REPLY_INVALID', 502);
+    }
+    if (!isRecord(data)) fail('LOCAL_REPLY_INVALID', 502);
+    return { status: response.status, data };
+  }
+
+  /**
    * Store-guard handshake (Java identity()): 200 + storeGuard 'HEADER_V1' +
    * a well-formed storeId or the host is not usable.
    */

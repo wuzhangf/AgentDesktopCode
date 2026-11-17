@@ -245,6 +245,9 @@ const fakeCtx = (opts: {
       validateOwnerResources: (resources, launches) => { calls.validateOwner.push([resources, launches]); },
       verifyTaskEngine: () => {},
       recordedInput: () => false,
+      nativeCall: () => fail('NOT_FOUND', 404),
+      nativeCallBytes: () => fail('NOT_FOUND', 404),
+      okNative: (result) => (result.body ?? {}) as Record<string, unknown>,
     };
   }
   if (opts.withClient) {
