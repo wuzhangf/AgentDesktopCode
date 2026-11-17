@@ -52,6 +52,7 @@ import type {
   JsonObject,
 } from './context.js';
 import { bindingFor, releaseBinding } from './bindings.js';
+import { validateModelSettings } from './agent-sessions.js';
 import { requestMeta } from './request-meta.js';
 import {
   ACTION_SET,
@@ -222,7 +223,8 @@ const localCatalogScope = async (ctx: GatewayContext): Promise<ScopeRecord> => {
   }
   // An empty catalog still yields a connection-only grant: pairing must not
   // depend on a live agent source. LAUNCH joins when the scope widens later.
-  const actions = [...ACTION_SET].filter((a) => launches.length > 0 || a !== 'LAUNCH');
+  // Creating ACS sessions requires a separate, explicit owner invitation.
+  const actions = [...ACTION_SET].filter((a) => a !== 'CREATE' && (launches.length > 0 || a !== 'LAUNCH'));
   const scope = {
     resources: [],
     launchScopes: checkedLaunchScopes(launches),
@@ -278,6 +280,62 @@ const acsJson = (reply: AcsReply): unknown => {
 
 /** Java messageBudget(): min(16MB, InputLimits.CURRENT.maxRequestBodyBytes). */
 const messageBudget = (): number => 16 * 1024 * 1024;
+
+const handoffUpstream = '/api/v2/personal-access/gateway-work-handoffs';
+
+async function hasAcsHandoff(ctx: GatewayContext, device: Device, relay: boolean): Promise<boolean> {
+  // The shared Java relay manifest does not currently advertise this route.
+  if (relay || !ctx.acs || !ctx.auth.appendCreatedSession || !device.actions?.includes('HANDOFF')) return false;
+  try {
+    const reply = await acsCall(ctx, 'GET', handoffUpstream, undefined, undefined, await bindingFor(ctx, device));
+    return reply.status === 200 && asObj(acsJson(reply)).schemaVersion === 'gateway-work-handoffs/1';
+  } catch {
+    return false;
+  }
+}
+
+async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, device: Device): Promise<HttpResponse> {
+  if (req.relayIngress === true || !ctx.acs || !ctx.auth.appendCreatedSession || !device.actions?.includes('HANDOFF')) {
+    fail('WORK_HANDOFFS_NOT_CONFIGURED', 409);
+  }
+  const root = '/personal/v1/work-handoffs';
+  const path = req.path;
+  const method = req.method;
+  const tail = path.slice(root.length);
+  const ref = '/wh-[a-f0-9]{16,64}';
+  const read = method === 'GET' && (tail === '' || /^\/requests\/[A-Za-z0-9._-]{1,128}$/.test(tail)
+    || new RegExp('^' + ref + '(?:/materials(?:/[A-Za-z0-9._-]{1,128}/chunks)?|/target-retries/[A-Za-z0-9._-]{1,128})?$').test(tail));
+  const write = method === 'POST' && (tail === '' || new RegExp('^' + ref + '/(?:confirm|continue|retry-target|cancel)$').test(tail));
+  if (!read && !write) fail('OPERATION_NOT_ALLOWED', 403);
+  if (req.rawQuery !== null) {
+    if (!read || !tail.endsWith('/chunks') || req.rawQuery.length > 4096) fail('INVALID_REQUEST', 400);
+    boundedQuery(req, ['offset', 'limit', 'digest']);
+  }
+  const payload = write ? jsonBody(req) : {};
+  const key = write ? idempotencyHeader(req) : undefined;
+  const bound = await bindingFor(ctx, device);
+  const grant = await ctx.auth.authenticate(token);
+  if (grant.revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
+  const wire = {
+    gatewayHostId: ctx.config.personalHostId, grantRevision: grant.revision, sessions: grant.sessions ?? [],
+    mayCreate: grant.actions?.includes('CREATE') === true, method, path, payload,
+    ...(key === undefined ? {} : { key }),
+    ...(req.rawQuery === null ? {} : { query: req.rawQuery }),
+  };
+  const upstream = await acsCall(ctx, 'POST', handoffUpstream,
+    new TextEncoder().encode(JSON.stringify(wire)), undefined, bound);
+  const observed = await ctx.auth.authenticate(token);
+  if (observed.revision !== grant.revision) fail('GRANT_REVISION_CHANGED', 409);
+  const data = asObj(acsJson(upstream));
+  if (upstream.status < 200 || upstream.status >= 300) return { status: upstream.status, body: data };
+  if (!isRecord(data.result)) fail('UPSTREAM_UNAVAILABLE', 503);
+  if (data.createdSessionId !== undefined) {
+    const sid = asText(data.createdSessionId);
+    id(sid);
+    await ctx.auth.appendCreatedSession(grant.id, grant.revision, sid);
+  }
+  return { status: upstream.status, body: data.result };
+}
 
 // ---------------------------------------------------------------------------
 // Error mapping — Java problem(): {code, detail}; /client/ gets the envelope.
@@ -468,8 +526,15 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     capabilities.manageExecutionPolicy = actions.has('POLICY');
     capabilities.localTasks = ctx.localTasks !== undefined;
     capabilities.launch = ctx.localTasks !== undefined && actions.has('LAUNCH');
+    capabilities.create = ctx.agentSessions !== undefined && actions.has('CREATE');
+    capabilities.sessionModelSelection = ctx.agentSessions !== undefined
+      && (actions.has('CREATE') || (device.sessions ?? []).length > 0);
     capabilities.inbox = true;
     capabilities.notifications = false;
+    capabilities.handoff = ctx.acsHandoffBridge
+      ? await hasAcsHandoff(ctx, device, req.relayIngress === true)
+      : ctx.workHandoffs !== undefined && actions.has('HANDOFF');
+    if (capabilities.handoff && ctx.acsHandoffBridge) capabilities.handoffTargetKinds = ['ACS_LOCAL'];
     return { status: 200, body: view };
   }
 
@@ -601,6 +666,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   // Java: /personal/v1/work-handoffs/** → workHandoffs.remote — the durable
   // handoff coordinator (M04). Absent coordinator → UPSTREAM_UNAVAILABLE.
   if (path === '/personal/v1/work-handoffs' || path.startsWith('/personal/v1/work-handoffs/')) {
+    if (ctx.acsHandoffBridge) return acsHandoff(ctx, req, token, device);
     if (ctx.workHandoffs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
     const tail = path === '/personal/v1/work-handoffs' ? [] : javaSplit(path).slice(4);
     const input = method === 'POST' ? jsonBody(req) : null;
@@ -611,6 +677,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   // Java: GET /personal/v1/agent/authorized-scope → stored-grant picker.
   if (path === '/personal/v1/agent/authorized-scope' && method === 'GET') {
+    boundedQuery(req, []);
     const scope = await ctx.auth.authorizedScope(device);
     if ((await ctx.auth.authenticate(token)).revision !== device.revision) {
       fail('GRANT_REVISION_CHANGED', 409);
@@ -765,6 +832,17 @@ const readAudioMultipart = (req: HttpRequest): { metadata: JsonObject; audio: Ui
 // GET /personal/v1/sessions — foundation + summary + bounded activity merge.
 // ---------------------------------------------------------------------------
 
+const scopedFoundation = (ctx: GatewayContext, source: unknown, sid: string): JsonObject => {
+  const row = asObj(source);
+  if (row.sessionId !== sid) fail('DEVICE_SCOPE_DENIED', 403);
+  if (row.schemaVersion !== 'session-foundation/1') return row;
+  const sourceStoreId = asText(row.storeId);
+  if (!sourceStoreId) fail('UPSTREAM_UNAVAILABLE', 503);
+  // PAC clients bind this view to the paired gateway's persistent authority.
+  // Retain the ACS identity for source-specific workflows and signed evidence.
+  return { ...row, storeId: ctx.config.storeId, sourceStoreId };
+};
+
 const sessionList = async (ctx: GatewayContext, token: string, device: Device): Promise<HttpResponse> => {
   const rows: unknown[] = [];
   const sessions = device.sessions ?? [];
@@ -774,7 +852,7 @@ const sessionList = async (ctx: GatewayContext, token: string, device: Device): 
     const r = await acsCall(ctx, 'GET', `/api/v2/sessions/${sid}/foundation`, undefined, undefined, binding);
     if (r.status === 404) continue;
     if (r.status !== 200) fail('UPSTREAM_UNAVAILABLE', 503);
-    const row = asObj(acsJson(r));
+    const row = scopedFoundation(ctx, acsJson(r), sid);
     const summary = await acsCall(ctx, 'GET', `/api/v2/sessions/${sid}/summary`, undefined, undefined, binding);
     if (summary.status === 200) {
       const metadata = asObj(acsJson(summary));
@@ -891,6 +969,7 @@ const modelOptions = async (
       availability: model.availability,
     });
   }
+  if ((await ctx.auth.authenticate(token)).revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
   // defaultSelection resolves against projected rows only; an ambiguous
   // or missing default stays null rather than guessing.
   const defaultModel = typeof source.defaultModel === 'string' ? source.defaultModel : null;
@@ -984,6 +1063,7 @@ const agentProxy = async (
   let attachment = false;
   let approvalList = false;
   let assignmentRoute = false;
+  let foundationRoute = false;
   let collaborationRoute = false;
   let collaborationFiles = false;
   let action = 'OBSERVE';
@@ -1005,7 +1085,7 @@ const agentProxy = async (
     const modelSettings = p.length === 6 && p[5] === 'model-settings' && ['GET', 'PATCH'].includes(method);
     const automationControls = p.length === 6 && p[5] === 'automation-controls' && ['GET', 'POST'].includes(method);
     const archive = p.length === 6 && p[5] === 'archive' && method === 'POST';
-    const foundation = p.length === 6 && p[5] === 'foundation' && method === 'GET';
+    foundationRoute = p.length === 6 && p[5] === 'foundation' && method === 'GET';
     attachment = p.length === 10 && p[5] === 'messages' && p[7] === 'attachments'
       && ['bytes', 'content'].includes(p[9]) && method === 'GET';
     const message = p.length === 6 && p[5] === 'messages' && method === 'POST';
@@ -1024,15 +1104,15 @@ const agentProxy = async (
     const turns = p.length === 6 && p[5] === 'auxiliary-turns' && ((method === 'GET' && (p.length === 6 || p.length === 7))
       || (method === 'POST' && (p.length === 6 || (p.length === 8 && p[7] === 'cancel'))));
     if ((packages || auxiliaries || turns) && method === 'POST') { action = 'INTERACT'; }
-    if ((detail || foundation || history || turns) && !(device.sessions ?? []).includes(sid)) {
-      sid = await auxiliaryRoot(ctx, sid, device, method === 'GET' && (detail || foundation || history));
+    if ((detail || foundationRoute || history || turns) && !(device.sessions ?? []).includes(sid)) {
+      sid = await auxiliaryRoot(ctx, sid, device, method === 'GET' && (detail || foundationRoute || history));
     }
     const snapshots = p.length >= 6 && p[5] === 'observation-snapshots'
       && ((p.length === 6 && method === 'POST')
         || ((p.length === 7 || (p.length === 8 && p[7] === 'items')) && method === 'GET'));
     auxiliaryList = p.length === 6 && ['auxiliary-sessions', 'auxiliary-turns'].includes(p[5]) && method === 'GET';
     if (!detail && !sessionPatch && !modelSettings && !automationControls && !archive
-      && !foundation && !snapshots && !history && !message && !attachment && !approvalList
+      && !foundationRoute && !snapshots && !history && !message && !attachment && !approvalList
       && !packages && !auxiliaries && !turns) fail('OPERATION_NOT_ALLOWED', 403);
     for (let i = 6; i < p.length; i++) id(p[i]);
   } else if (p[3] === 'runs') {
@@ -1208,14 +1288,18 @@ const agentProxy = async (
     }
   }
   // Recheck after source resolution and immediately before dispatch. No retry of a write.
-  await ctx.auth.authorize(token, sid, action);
+  const binding = await bindingFor(ctx, device);
   // Admission is short: revoke does not wait on a slow source HTTP request.
   // An already admitted operation may execute; recheck below withholds its result.
   await ctx.auth.authorize(token, sid, action);
   const reply = await acsCall(ctx, method, upstreamRoute + (query === null ? '' : `?${query}`),
-    payload, key, await bindingFor(ctx, device), attachment ? messageBudget() : undefined);
+    payload, key, binding, attachment ? messageBudget() : undefined);
 
   let replyBody: Uint8Array = reply.body;
+  if (foundationRoute && reply.status === 200) {
+    const visible = scopedFoundation(ctx, acsJson(reply), p[4]);
+    replyBody = new TextEncoder().encode(JSON.stringify(visible));
+  }
   // Upstream aux lists have no cursor; a forwarded limit is honored by
   // honest truncation + marker, never a fabricated page token.
   if (auxiliaryList && query !== null && reply.status >= 200 && reply.status < 300) {
@@ -1368,7 +1452,8 @@ const validateCollaborationQuery = (query: string): void => {
   for (const item of query.split('&')) {
     const [name, raw] = firstPair(item);
     const value = decodeForm(raw ?? '');
-    if (!seen.add(name)) fail('INVALID_REQUEST', 400);
+    if (seen.has(name)) fail('INVALID_REQUEST', 400);
+    seen.add(name);
     if (name === 'path') {
       if (value.length > 1024 || /[\\:\x00-\x1f\x7f]/.test(value) || value === '') fail('INVALID_REQUEST', 400);
       for (const part of value.split('/')) {
@@ -1395,20 +1480,6 @@ const validateCollaborationQuery = (query: string): void => {
 const stringArray = (value: unknown): void => {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
     fail('INVALID_REQUEST', 400);
-  }
-};
-
-/** Java modelSettings() — strict model-settings object whitelist. */
-const modelSettingsSpec = (settings: unknown): void => {
-  const b = exact(settings, 'providerId', 'modelAlias', 'catalogRevision', 'reasoningMode',
-    'reasoningOptionId', 'reasoningBudgetTokens', 'contextMode', 'contextPresetId',
-    'contextMaxTokens', 'outputMode', 'outputMaxTokens');
-  for (const field of ['reasoningBudgetTokens', 'contextMaxTokens', 'outputMaxTokens']) {
-    if (b[field] != null && !Number.isInteger(b[field])) fail('INVALID_REQUEST', 400);
-  }
-  for (const field of ['providerId', 'modelAlias', 'catalogRevision', 'reasoningMode',
-    'reasoningOptionId', 'contextMode', 'contextPresetId', 'outputMode']) {
-    if (b[field] != null && typeof b[field] !== 'string') fail('INVALID_REQUEST', 400);
   }
 };
 
@@ -1464,14 +1535,14 @@ const validateMutationBody = (body: unknown, spec: string): void => {
     }
     if (b.directories != null && !Array.isArray(b.directories)) fail('INVALID_REQUEST', 400);
     if (b.extensions != null && !isRecord(b.extensions)) fail('INVALID_REQUEST', 400);
-    if (b.modelSettings != null) modelSettingsSpec(b.modelSettings);
+    if (b.modelSettings != null) validateModelSettings(b.modelSettings);
     return;
   }
   if (spec === 'model-settings') {
     const b = exact(body, 'expectedSettingsRevision', 'applyPolicy', 'settings');
     if (!Number.isInteger(b.expectedSettingsRevision)) fail('INVALID_REQUEST', 400);
     if (!isRecord(b.settings)) fail('INVALID_REQUEST', 400);
-    modelSettingsSpec(b.settings);
+    validateModelSettings(b.settings);
     if (b.applyPolicy != null && text(b, 'applyPolicy') !== 'NEXT_SAFE_REQUEST') {
       fail('INVALID_REQUEST', 400);
     }

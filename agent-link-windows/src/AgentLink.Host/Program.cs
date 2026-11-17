@@ -90,6 +90,7 @@ internal sealed class LinkHost : IDisposable
     {
         var local = ServeAsync(stop.Token);
         var relay = connector.RunAsync(stop.Token);
+        var files = new WindowsLinkFiles(InstallRoot, MemberOrigin).RunAsync(stop.Token);
         try
         {
             try
@@ -112,6 +113,7 @@ internal sealed class LinkHost : IDisposable
             stop.Cancel();
             await local;
             await relay;
+            await files;
             connector.Dispose();
         }
     }
@@ -171,7 +173,22 @@ internal sealed class LinkHost : IDisposable
         using var key = certificate.GetRSAPrivateKey() ?? throw new InvalidDataException("Missing TLS private key.");
         var origin = $"https://{computer}.local:{chosen.Phone}";
         var variables = launch.Environment;
-        variables["DEVICE_GATEWAY_PROFILE"] = "LOCAL_CLI";
+        var acsUrl = Environment.GetEnvironmentVariable("DEVICE_GATEWAY_ACS_URL");
+        if (string.IsNullOrWhiteSpace(acsUrl))
+        {
+            variables["DEVICE_GATEWAY_PROFILE"] = "LOCAL_CLI";
+        }
+        else
+        {
+            var acsToken = Environment.GetEnvironmentVariable("ACS_TOKEN");
+            if (string.IsNullOrWhiteSpace(acsToken))
+                throw new InvalidOperationException("Configured ACS requires ACS_TOKEN.");
+            variables["DEVICE_GATEWAY_ACS_URL"] = acsUrl;
+            variables["DEVICE_GATEWAY_ACS_HANDOFF_BRIDGE"] = "1";
+            variables["DEVICE_GATEWAY_ACS_OWNER_TOKEN"] = acsToken;
+            if (Environment.GetEnvironmentVariable("DEVICE_GATEWAY_DAILY_ORIGIN") is { } dailyOrigin)
+                variables["DEVICE_GATEWAY_DAILY_ORIGIN"] = dailyOrigin;
+        }
         variables["DEVICE_GATEWAY_DATA_DIR"] = data;
         variables["DEVICE_GATEWAY_BIND"] = "::";
         variables["DEVICE_GATEWAY_PORT"] = chosen.Phone.ToString();
@@ -435,7 +452,8 @@ internal sealed class LinkHost : IDisposable
             cap?["personalHostId"]?.GetValue<string>(), cap?["storeId"]?.GetValue<string>(), gatewayPid, enabled,
             MemberStateName(member.Phase), member.UserCode ?? member.Detail
                 ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null),
-            cap?["dailyOrigin"]?.GetValue<string>(), pairingApproval);
+            cap?["dailyOrigin"]?.GetValue<string>(), pairingApproval,
+            cap?["acsSessionCreate"]?.GetValue<bool>() == true);
     }
 
     private static string MemberStateName(ConnectorSupervisor.Phase phase) => phase switch
@@ -715,9 +733,16 @@ internal sealed class LinkHost : IDisposable
                     // filtered launch scopes, LAUNCH iff the set is non-empty.
                     var inviteCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
                     var scopes = LaunchScopes.FromCatalog(inviteCap?["localSource"]);
-                    var actions = scopes.Count == 0
-                        ? new[] { "OBSERVE", "CONTROL", "INTERACT", "APPROVE" }
-                        : new[] { "OBSERVE", "CONTROL", "INTERACT", "LAUNCH", "APPROVE" };
+                    var actions = new List<string> { "OBSERVE", "CONTROL", "INTERACT", "APPROVE" };
+                    if (scopes.Count > 0)
+                        actions.AddRange(["LAUNCH", "COLLABORATE", "ADOPT"]);
+                    if (request.Args?["createAcs"]?.GetValue<bool>() == true)
+                    {
+                        if (inviteCap?["acsSessionCreate"]?.GetValue<bool>() != true)
+                            return new(false, "当前网关未接入 ACS 会话创建");
+                        foreach (var action in new[] { "CREATE", "ASSIGN", "POLICY", "COLLABORATE", "ADOPT", "HANDOFF" })
+                            if (!actions.Contains(action)) actions.Add(action);
+                    }
                     var invitation = await OwnerAsync(HttpMethod.Post, "pairing-invitations",
                         new { requestId = "win-link-" + Guid.NewGuid().ToString("N"),
                             resources = Array.Empty<string>(), launchScopes = scopes, actions }, cancellation);

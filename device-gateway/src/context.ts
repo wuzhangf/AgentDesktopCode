@@ -454,6 +454,8 @@ export interface GatewayContext {
   inbox: GatewayInbox;
   /** Undefined when the ACS loopback upstream is not configured. */
   acs?: GatewayAcs;
+  /** Windows delegates LAN ACS handoffs to its configured Java ACS. */
+  acsHandoffBridge?: true;
   /** Undefined when the client-access adapter is not wired. */
   clientAccess?: GatewayClientAccess;
   /** Undefined when no ACS upstream is wired (Java agentSessions==null). */

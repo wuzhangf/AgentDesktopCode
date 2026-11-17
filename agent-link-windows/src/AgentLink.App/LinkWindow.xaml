@@ -180,6 +180,8 @@
                                 </DockPanel>
                             </Border>
                             <StackPanel x:Name="DeviceList"/>
+                            <CheckBox x:Name="InviteAcs" Content="允许这部手机新建、协作和交接 ACS 会话"
+                                      Visibility="Collapsed" Margin="0,10,0,0"/>
                             <Button x:Name="Invite" Content="连接手机" Style="{StaticResource PrimaryButton}"
                                     Click="Invite_Click" IsEnabled="False" Margin="0,10,0,0"/>
                             <TextBlock x:Name="InviteHelp" Style="{StaticResource SecondaryText}" Margin="0,5,0,0"/>
@@ -195,6 +197,8 @@
                                     </StackPanel>
                                 </DockPanel>
                             </Border>
+                            <Button x:Name="MemberFiles" Content="跨设备文件" Click="MemberFiles_Click"
+                                    IsEnabled="False" Margin="0,8,0,0"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

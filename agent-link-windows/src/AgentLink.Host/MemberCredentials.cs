@@ -90,4 +90,20 @@ internal static class MemberCredentials
         }
         return RequiredKeys.All(key => values.TryGetValue(key, out var value) && value.Length > 0);
     }
+
+    internal static (string Bearer, string Scope)? FileSession()
+    {
+        if (!File.Exists(EnvFilePath)) return null;
+        var names = new[] { "AGENT_ACCESS_TOKEN", "MEMBER_ID", "WORKSPACE_ID", "AGENT_INSTANCE_ID" };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in File.ReadLines(EnvFilePath, Encoding.UTF8))
+        {
+            var split = line.IndexOf('=');
+            if (split <= "PAC_RELAY_".Length || !line.StartsWith("PAC_RELAY_", StringComparison.Ordinal)) continue;
+            var name = line["PAC_RELAY_".Length..split];
+            if (names.Contains(name)) values[name] = line[(split + 1)..].Trim();
+        }
+        if (!names.All(name => values.TryGetValue(name, out var value) && value.Length > 0)) return null;
+        return (values[names[0]], string.Join('\n', names.Skip(1).Select(name => values[name])));
+    }
 }

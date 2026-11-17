@@ -103,7 +103,11 @@ public partial class LinkWindow : Window
             PairingApproval.IsEnabled = state.Ready;
             PairingApproval.IsChecked = state.PairingApprovalRequired;
             Invite.IsEnabled = state.Ready && state.Enabled;
+            InviteAcs.Visibility = state.AcsSessionCreate ? Visibility.Visible : Visibility.Collapsed;
+            InviteAcs.IsEnabled = state.Ready && state.Enabled;
+            if (!state.AcsSessionCreate) InviteAcs.IsChecked = false;
             memberPhase = state.MemberState ?? "NONE";
+            MemberFiles.IsEnabled = memberPhase == "LINKED";
             var memberDetail = state.MemberInfo;
             MemberInfo.Text = memberPhase switch
             {
@@ -1045,13 +1049,15 @@ public partial class LinkWindow : Window
         Invite.IsEnabled = false;
         try
         {
-            var reply = await LinkProtocol.CallAsync(new("invite"));
+            var reply = await LinkProtocol.CallAsync(new("invite",
+                Args: new JsonObject { ["createAcs"] = InviteAcs.IsChecked == true }));
             if (!reply.Ok || reply.Data is not JsonObject payload)
             {
                 InviteHelp.Text = reply.Error ?? "邀请创建失败";
                 return;
             }
             inviteExpires = payload["expiresAt"]?.GetValue<long>() ?? 0;
+            InviteAcs.IsChecked = false;
             using var generator = new QRCodeGenerator();
             using var data = generator.CreateQrCode(payload.ToJsonString(LinkProtocol.Json), QRCodeGenerator.ECCLevel.L);
             using var renderer = new PngByteQRCode(data);
@@ -1092,6 +1098,14 @@ public partial class LinkWindow : Window
         }
         catch (Exception error) when (IsUnavailable(error)) { MemberInfo.Text = "后台暂不可用。"; }
         await RefreshAsync();
+    }
+
+    private void MemberFiles_Click(object sender, RoutedEventArgs e)
+    {
+        choosingWorker = true;
+        CancelDismissal();
+        try { new LinkFilesWindow { Owner = this }.ShowDialog(); }
+        finally { choosingWorker = false; }
     }
 
     private async void ConnectionSwitch_Click(object sender, RoutedEventArgs e)

@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Wix,
     [Parameter(Mandatory = $true)][string]$Node,
     [string]$ConnectorPackage,
+    [string]$LinkFilesWorker,
     [string]$CliBridge,
     [string]$OutputRoot = '.local/agent-link-windows-release'
 )
@@ -87,6 +88,11 @@ if ($ConnectorPackage) {
 
 $gatewaySha = git -C $repo rev-parse HEAD
 if ($LASTEXITCODE) { throw 'Could not read gateway source revision.' }
+if ($LinkFilesWorker) {
+    if (!(Test-Path -LiteralPath $LinkFilesWorker -PathType Leaf)) { throw 'File transfer worker missing.' }
+    $filesOutput = (New-Item -ItemType Directory -Path (Join-Path $payload 'components/files')).FullName
+    Copy-Item -LiteralPath $LinkFilesWorker -Destination (Join-Path $filesOutput 'agent-link-files.exe')
+}
 $manifest = [ordered]@{
     schemaVersion = 1
     product = 'Agent Link'

@@ -31,13 +31,13 @@ import {
 // Action sets — Java validateScope / validateResourceActions allow-lists.
 // ---------------------------------------------------------------------------
 
-/** Legacy eight actions allowed by the sessions-form validateScope. */
+/** Actions allowed by the sessions-form validateScope. */
 export const LEGACY_ACTION_SET = new Set([
   'OBSERVE', 'CONTROL', 'INTERACT', 'APPROVE', 'POLICY', 'ASSIGN',
-  'COLLABORATE', 'ADOPT',
+  'COLLABORATE', 'ADOPT', 'HANDOFF', 'CREATE',
 ]);
 
-/** All twelve actions allowed on resource-form scopes. */
+/** Actions allowed on resource-form scopes. */
 export const ACTION_SET = new Set([
   ...LEGACY_ACTION_SET, 'LAUNCH',
   'GRAPHICS_OBSERVE', 'GRAPHICS_CAPTURE', 'GRAPHICS_ACT',
@@ -122,7 +122,7 @@ export function checkedLaunchScopes(input: LaunchScope[] | undefined): LaunchSco
 /**
  * Java PersonalAccessService.validateScope (legacy sessions form):
  * sessions non-empty, ≤100, no duplicates; actions non-null, must contain
- * OBSERVE, and must be a subset of the legacy eight-action set.
+ * OBSERVE, and must be a subset of the sessions-form action set.
  */
 export function validateScope(sessions: string[] | undefined, actions: string[] | undefined): void {
   if (sessions == null || sessions.length === 0 || sessions.length > SCOPE_RESOURCE_LIMIT
@@ -138,7 +138,7 @@ export function validateScope(sessions: string[] | undefined, actions: string[] 
  * Java PersonalAccessService.validateResourceActions, amended: an empty
  * resource+launch scope is a valid connection-only grant — pairing a phone
  * must not require a live agent source. Actions must contain OBSERVE and
- * stay inside the twelve-action set; GRAPHICS_ACT requires CONTROL; LAUNCH
+ * stay inside the resource-form action set; GRAPHICS_ACT requires CONTROL; LAUNCH
  * is present iff launch scopes are non-empty.
  */
 export function validateResourceActions(

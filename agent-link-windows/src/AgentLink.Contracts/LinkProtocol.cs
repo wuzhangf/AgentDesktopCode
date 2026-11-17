@@ -12,7 +12,7 @@ public sealed record LinkReply(bool Ok, string? Error = null, JsonNode? Data = n
 public sealed record LinkStatus(bool Ready, string Message, string Computer, string? Origin, int DeviceCount,
     int PendingCount, string? PersonalHostId, string? StoreId, int? GatewayPid, bool Enabled,
     string? MemberState = null, string? MemberInfo = null, string? DailyOrigin = null,
-    bool PairingApprovalRequired = false);
+    bool PairingApprovalRequired = false, bool AcsSessionCreate = false);
 
 public static class LinkProtocol
 {
@@ -21,6 +21,7 @@ public static class LinkProtocol
 
     public static string Instance { get; } = InstanceId();
     public static string Pipe => "Steercrew.AgentLink." + Instance;
+    public static string FilePipe => Pipe + ".files";
     public static string HostLock => @"Global\Steercrew.AgentLink.Host." + Instance;
     public static string UiLock => @"Local\Steercrew.AgentLink.Tray." + Instance;
     public static string UiPipe => Pipe + ".tray." + System.Diagnostics.Process.GetCurrentProcess().SessionId;
@@ -41,10 +42,17 @@ public static class LinkProtocol
     }
 
     public static async Task<LinkReply> CallAsync(LinkRequest request, CancellationToken cancellation = default)
+        => await CallPipeAsync(Pipe, request, TimeSpan.FromSeconds(10), cancellation);
+
+    public static async Task<LinkReply> CallFilesAsync(LinkRequest request, CancellationToken cancellation = default)
+        => await CallPipeAsync(FilePipe, request, TimeSpan.FromMinutes(30), cancellation);
+
+    private static async Task<LinkReply> CallPipeAsync(string name, LinkRequest request, TimeSpan timeout,
+        CancellationToken cancellation)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        await using var pipe = new NamedPipeClientStream(".", Pipe, PipeDirection.InOut,
+        deadline.CancelAfter(timeout);
+        await using var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await pipe.ConnectAsync(750, deadline.Token);
         await WriteAsync(pipe, request, deadline.Token);

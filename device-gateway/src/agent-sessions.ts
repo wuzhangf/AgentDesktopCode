@@ -40,7 +40,8 @@ export interface AgentUpstreamReply {
 }
 
 export interface AgentUpstream {
-  call(device: Device, method: string, path: string, body: unknown, key: string | undefined): MaybePromise<AgentUpstreamReply>;
+  call(device: Device, method: string, path: string, body: unknown, key: string | undefined,
+    beforeDispatch?: () => MaybePromise<void>): MaybePromise<AgentUpstreamReply>;
   /** Raw-byte channel for upstream routes whose contract is non-JSON —
    *  material chunk PUTs carry raw bytes plus a ?digest= query, never the
    *  JSON relay shape the device sends to PAC. */
@@ -79,7 +80,21 @@ interface AgentRequestRecord {
   result?: unknown;
 }
 
+type PreviewCreateRecord = {
+  clientKey: string;
+  sourceKey: string;
+  digest: string;
+  grantRevision: number;
+  wire: JsonObject;
+  dispatchedAt: number;
+  state: string;
+  sessionId?: string;
+  code?: string;
+  source?: JsonObject;
+};
+
 const CREATE_KIND = 'session-create';
+const PREVIEW_CREATE_KIND = 'acs-session-create';
 const DELIVER_KIND = 'acs-aux-deliver';
 const MATERIAL_KIND = 'acs-material';
 
@@ -92,6 +107,19 @@ const asBool = (v: unknown): boolean => v === true;
 
 /** Java digest(body) — sha256 of the JSON serialization. */
 const digest = (body: unknown): string => hash(JSON.stringify(body ?? null));
+
+export function validateModelSettings(value: unknown): void {
+  const tokenFields = ['reasoningBudgetTokens', 'contextMaxTokens', 'outputMaxTokens'];
+  const textFields = ['providerId', 'modelAlias', 'catalogRevision', 'reasoningMode',
+    'reasoningOptionId', 'contextMode', 'contextPresetId', 'outputMode'];
+  const settings = exact(value, ...tokenFields, ...textFields);
+  for (const field of tokenFields) {
+    if (settings[field] != null && !Number.isSafeInteger(settings[field])) fail('INVALID_REQUEST', 400);
+  }
+  for (const field of textFields) {
+    if (settings[field] != null && typeof settings[field] !== 'string') fail('INVALID_REQUEST', 400);
+  }
+}
 
 /**
  * Java PersonalAgentSessionAccess. Store-kind ledgers are device-namespaced;
@@ -123,8 +151,23 @@ export class AgentSessionAccess {
   }
 
   private find(kind: string, did: string, key: string): AgentRequestRecord | undefined {
-    return this.store.transaction(() =>
-      this.store.get<AgentRequestRecord>(kind, this.recordKey(did, key)));
+    const recordKey = this.recordKey(did, key);
+    return this.store.transaction(() => {
+      const current = this.store.get<AgentRequestRecord>(kind, recordKey);
+      if (current !== undefined || kind !== CREATE_KIND) return current;
+      const preview = this.store.get<PreviewCreateRecord>(PREVIEW_CREATE_KIND, recordKey);
+      if (preview === undefined) return undefined;
+      const migrated: AgentRequestRecord = {
+        deviceId: did, clientKey: preview.clientKey, sourceKey: preview.sourceKey,
+        operation: 'SESSION_CREATE', hash: `${preview.digest}:${key}`,
+        grantRevision: preview.grantRevision, dispatchedAt: preview.dispatchedAt,
+        state: preview.state, wire: preview.wire, sessionId: preview.sessionId,
+        code: preview.code, result: preview.source,
+      };
+      this.store.put(CREATE_KIND, recordKey, migrated);
+      this.store.delete(PREVIEW_CREATE_KIND, recordKey);
+      return migrated;
+    });
   }
 
   private historyLimit(kind: string, did: string): void {
@@ -151,7 +194,7 @@ export class AgentSessionAccess {
     for (const field of ['agentProfileId', 'intent', 'interactionMode', 'workspaceAlias']) {
       if (field in b && b[field] !== null) text(b, field);
     }
-    if ('modelSettings' in b && !isRecord(b.modelSettings)) fail('INVALID_REQUEST', 400);
+    if ('modelSettings' in b) validateModelSettings(b.modelSettings);
     if ('directories' in b && !Array.isArray(b.directories)) fail('INVALID_REQUEST', 400);
 
     let device = await this.auth.authenticate(token);
@@ -206,14 +249,14 @@ export class AgentSessionAccess {
     }
     if (recover) return this.sessionRequest(token, key);
     try {
-      const reply = await this.upstream.call(device, 'POST', '/api/v2/sessions', request!.wire, request!.sourceKey);
+      const reply = await this.dispatchCreate(token, device, request!);
       await this.acceptCreate(request!, reply);
     } catch (error) {
       if (error instanceof GatewayError && !isTransport(error)) {
         request!.code = error.code;
         request!.state = request!.sessionId !== undefined ? 'ACCEPTED_OWNER_ONLY' : 'UNKNOWN';
         this.save(CREATE_KIND, request!);
-        if (request!.sessionId !== undefined || error.httpStatus === 401) throw error;
+        if (request!.sessionId !== undefined || error.httpStatus === 401 || error.code === 'GRANT_REVISION_CONFLICT') throw error;
       } else {
         request!.state = 'UNKNOWN';
         request!.code = 'LOCAL_REPLY_UNCONFIRMED';
@@ -223,6 +266,15 @@ export class AgentSessionAccess {
       this.flights.delete(`create:${this.recordKey(request!.deviceId, request!.clientKey)}`);
     }
     return this.createView(token, request!);
+  }
+
+  private dispatchCreate(token: string, device: Device, record: AgentRequestRecord): MaybePromise<AgentUpstreamReply> {
+    return this.upstream.call(device, 'POST', '/api/v2/sessions', record.wire, record.sourceKey, async () => {
+      const current = await this.auth.authenticate(token);
+      if (current.revision !== record.grantRevision || !(current.actions ?? []).includes('CREATE')) {
+        fail('GRANT_REVISION_CONFLICT', 409);
+      }
+    });
   }
 
   /** Bind the returned session to the device resource scope; a reply that does
@@ -248,12 +300,13 @@ export class AgentSessionAccess {
   }
 
   private async createView(token: string, r: AgentRequestRecord): Promise<AgentResult> {
-    if (r.sessionId !== undefined) await this.auth.authorize(token, r.sessionId, 'OBSERVE');
-    else {
-      const d = await this.auth.authenticate(token);
-      if (!(d.actions ?? []).includes('CREATE')) fail('DEVICE_SCOPE_DENIED', 403);
+    if (r.sessionId !== undefined && r.state === 'OBSERVED') {
+      await this.auth.authorize(token, r.sessionId, 'OBSERVE');
+      return { status: 200, body: requestView(r) };
     }
-    return { status: 200, body: requestView(r) };
+    const d = await this.auth.authenticate(token);
+    if (!(d.actions ?? []).includes('CREATE')) fail('DEVICE_SCOPE_DENIED', 403);
+    return { status: 200, body: requestView({ ...r, sessionId: undefined, result: undefined }) };
   }
 
   // ---- GET /personal/v1/agent/session-requests/{key} ----
@@ -268,16 +321,21 @@ export class AgentSessionAccess {
     if (r === undefined) { kind = DELIVER_KIND; r = this.find(DELIVER_KIND, device.id, key); }
     if (r === undefined) { kind = MATERIAL_KIND; r = this.find(MATERIAL_KIND, device.id, key); }
     if (r === undefined) fail('NOT_FOUND', 404);
-    if (!this.flights.add(`request:${this.recordKey(device.id, key)}`)) {
-      return { status: 200, body: requestView(r) };
+    const flight = `${kind === CREATE_KIND ? 'create' : 'request'}:${this.recordKey(device.id, key)}`;
+    if (this.flights.has(flight)) {
+      return kind === CREATE_KIND ? this.createView(token, r) : { status: 200, body: requestView(r) };
     }
+    this.flights.add(flight);
     try {
-      if (kind === CREATE_KIND) await this.recoverCreate(token, r);
-      else if (kind === MATERIAL_KIND) await this.recoverMaterial(token, r);
+      if (kind === CREATE_KIND) {
+        await this.recoverCreate(token, r);
+        return this.createView(token, r);
+      }
+      if (kind === MATERIAL_KIND) await this.recoverMaterial(token, r);
       else await this.recoverDeliver(token, r);
       return { status: 200, body: requestView(r) };
     } finally {
-      this.flights.delete(`request:${this.recordKey(device.id, key)}`);
+      this.flights.delete(flight);
     }
   }
 
@@ -303,16 +361,22 @@ export class AgentSessionAccess {
       return;
     }
     if (r.state === 'REJECTED') return;
-    await this.auth.authenticate(token);
     const device = await this.auth.authenticate(token);
+    if (!(device.actions ?? []).includes('CREATE')) fail('DEVICE_SCOPE_DENIED', 403);
+    if (device.revision !== r.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
+    if (r.state === 'SAVED') {
+      r.state = 'DISPATCHED';
+      r.dispatchedAt = Date.now();
+      this.save(CREATE_KIND, r);
+    }
     try {
-      const reply = await this.upstream.call(device, 'POST', '/api/v2/sessions', r.wire, r.sourceKey);
+      const reply = await this.dispatchCreate(token, device, r);
       await this.acceptCreate(r, reply);
     } catch (error) {
       if (error instanceof GatewayError) {
         r.code = isTransport(error) ? 'LOCAL_REPLY_UNCONFIRMED' : error.code;
         this.save(CREATE_KIND, r);
-        if (!isTransport(error) && error.httpStatus === 401) throw error;
+        if (error.httpStatus === 401 || error.code === 'GRANT_REVISION_CONFLICT') throw error;
       } else {
         r.code = 'LOCAL_REPLY_UNCONFIRMED';
         this.save(CREATE_KIND, r);

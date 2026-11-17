@@ -17,7 +17,9 @@ import { taskFileBinding } from './sage-link-files.js';
  *   DEVICE_GATEWAY_DATA_DIR            data dir (default ./.device-gateway)
  *   DEVICE_GATEWAY_BIND                REQUIRED phone listener bind (no wildcard default)
  *   DEVICE_GATEWAY_PORT                REQUIRED phone port [1,65535]
- *   DEVICE_GATEWAY_OWNER_TOKEN         REQUIRED owner bearer (also the ACS upstream bearer)
+ *   DEVICE_GATEWAY_OWNER_TOKEN         REQUIRED gateway owner bearer
+ *   DEVICE_GATEWAY_ACS_OWNER_TOKEN     optional distinct ACS upstream bearer (defaults to owner bearer)
+ *   DEVICE_GATEWAY_ACS_HANDOFF_BRIDGE  use the Windows LAN Java handoff coordinator (set by Windows Host)
  *   DEVICE_GATEWAY_OWNER_CLIENT_TOKEN  REQUIRED owner X-Client-Session check
  *   DEVICE_GATEWAY_OWNER_BIND          owner listener bind (default 127.0.0.1, loopback only)
  *   DEVICE_GATEWAY_OWNER_PORT          REQUIRED owner listener port [1,65535]
@@ -230,6 +232,8 @@ export interface GatewayBootstrapOptions {
   acsStoreId?: string;
   /** Fixed loopback ACS origin; undefined → ctx.acs/clientAccess unwired. */
   acsUrl?: string;
+  acsOwnerToken?: string;
+  acsHandoffBridge?: boolean;
   origin?: string;
   workerLocal?: { url: string; token: string; connectionId: string };
   /** Additional loopback worker-local sources (e.g. per-engine companion hosts). */
@@ -443,6 +447,8 @@ export const readEnvConfig = (): GatewayBootstrapOptions => {
       : undefined,
     acsStoreId: env('DEVICE_GATEWAY_ACS_STORE_ID') ?? env('ACS_STORE_ID'),
     acsUrl,
+    acsOwnerToken: env('DEVICE_GATEWAY_ACS_OWNER_TOKEN'),
+    acsHandoffBridge: env('DEVICE_GATEWAY_ACS_HANDOFF_BRIDGE') === '1',
     origin: env('DEVICE_GATEWAY_ORIGIN'),
     alternateOrigins: alternateOriginList(port),
     workerLocal,
@@ -702,11 +708,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   const acs = opts.acsUrl !== undefined
     ? createAcsClient({
       origin: opts.acsUrl,
-      ownerToken: opts.ownerToken,
+      ownerToken: opts.acsOwnerToken ?? opts.ownerToken,
       binding: (device: Device) => bindingFor(ctx, device),
     })
     : undefined;
-  if (acs !== undefined) ctx.acs = acs;
+  if (acs !== undefined) {
+    ctx.acs = acs;
+    if (opts.acsHandoffBridge) ctx.acsHandoffBridge = true;
+  }
 
   // Agent-session ledger + child-messages projection (Java
   // PersonalAgentSessionAccess / PersonalChildMessagesAccess). Java wires
@@ -726,10 +735,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       }
     };
     agentUpstream = {
-      call: async (device, method, path, body, key) => parseReply(await acs.call(
-        method, path,
-        body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
-        key, await bindingFor(ctx, device))),
+      call: async (device, method, path, body, key, beforeDispatch) => {
+        const binding = await bindingFor(ctx, device);
+        if (beforeDispatch !== undefined) await beforeDispatch();
+        return parseReply(await acs.call(method, path,
+          body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
+          key, binding));
+      },
       callBytes: async (device, method, path, body, key) => parseReply(await acs.call(
         method, path, body, key, await bindingFor(ctx, device))),
     };
@@ -742,7 +754,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   // durable handoff coordinator needs BOTH the ACS upstream (source/target
   // ACS lanes + imports) and worker-local access; either missing → its
   // routes 503 like Java's null-injection paths.
-  if (agentUpstream !== undefined && localTasks !== undefined) {
+  if (!ctx.acsHandoffBridge && agentUpstream !== undefined && localTasks !== undefined) {
     ctx.workHandoffs = new WorkHandoffAccess(
       store, devices, agentUpstream, localTasks,
       join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id);
