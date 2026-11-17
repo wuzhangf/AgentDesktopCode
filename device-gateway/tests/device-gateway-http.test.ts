@@ -76,6 +76,8 @@ const ctx = (): GatewayContext => ({
     activeDevice: () => device,
     revoke: () => {},
     appendLaunchedTask: () => {},
+    appendCreatedSession: () => {},
+    authorizedScope: () => ({ schemaVersion: 'authorized-scope/1', sessions: [], actions: [] }),
     invitation: () => ({}),
     invitationResources: () => ({}),
     updateScope: () => ({}),

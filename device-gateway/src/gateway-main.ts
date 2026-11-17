@@ -67,6 +67,8 @@ import { createAcsClient } from './acs.js';
 import { createClientAccess } from './client-access.js';
 import { createInboxSourceReader } from './inbox-source.js';
 import { bindingFor } from './bindings.js';
+import { AgentSessionAccess, type AgentUpstream } from './agent-sessions.js';
+import { ChildMessagesAccess } from './child-messages.js';
 import { CliSupervisor } from './cli-supervisor.js';
 import { CommercialAccess } from './commercial.js';
 import { ReaderAccess } from './xagt/reader-access.js';
@@ -704,6 +706,35 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     })
     : undefined;
   if (acs !== undefined) ctx.acs = acs;
+
+  // Agent-session ledger + child-messages projection (Java
+  // PersonalAgentSessionAccess / PersonalChildMessagesAccess). Java wires
+  // them only when the ACS upstream exists; undefined ctx seams are the
+  // null-injection equivalent (503 UPSTREAM_UNAVAILABLE per route).
+  if (acs !== undefined) {
+    const parseReply = (reply: { status: number; body: Uint8Array }) => {
+      try {
+        return {
+          status: reply.status,
+          body: reply.body.length === 0 ? null
+            : JSON.parse(Buffer.from(reply.body).toString('utf8')) as unknown,
+        };
+      } catch {
+        return fail('UPSTREAM_UNAVAILABLE', 503);
+      }
+    };
+    const agentUpstream: AgentUpstream = {
+      call: async (device, method, path, body, key) => parseReply(await acs.call(
+        method, path,
+        body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
+        key, await bindingFor(ctx, device))),
+      callBytes: async (device, method, path, body, key) => parseReply(await acs.call(
+        method, path, body, key, await bindingFor(ctx, device))),
+    };
+    // Java namespace = ownerStatus().personalHostId → host.id.
+    ctx.agentSessions = new AgentSessionAccess(store, devices, agentUpstream, host.id);
+    ctx.childMessages = new ChildMessagesAccess(devices, agentUpstream);
+  }
 
   // ClientAccessService is always constructible — its SourcePort fails
   // UPSTREAM_UNAVAILABLE when the ACS upstream is not configured, matching

@@ -112,6 +112,11 @@ export interface GatewayAuth {
   revoke(deviceId: string): MaybePromise<void>;
   /** Grant extension after accepted launch (Java appendLaunchedTask). */
   appendLaunchedTask(deviceId: string, expectedRevision: number, backendStoreId: string, projectId: string, engineId: string, taskId: string): MaybePromise<void>;
+  /** Grant extension after accepted session create (Java appendCreatedSession). */
+  appendCreatedSession(deviceId: string, expectedRevision: number, sessionId: string): MaybePromise<void>;
+  /** Stored-grant picker surface (Java authorizedScope): sessions/actions/
+   *  resources/launchScopes exactly as granted — no upstream read. */
+  authorizedScope(device: Device): MaybePromise<JsonObject>;
   /** Owner invite: legacy sessions form → invitation object (+sealed envelope). */
   invitation(requestId: string, sessions: string[], actions: string[], fingerprint: string): MaybePromise<JsonObject>;
   /** Owner invite: resource/launch-scope form. */
@@ -255,6 +260,28 @@ export interface GatewayTranscription {
 }
 
 // ---------------------------------------------------------------------------
+// AgentSessionAccess / ChildMessagesAccess — Java PersonalAgentSessionAccess
+// and PersonalChildMessagesAccess ports (src/agent-sessions.ts,
+// src/child-messages.ts). Both are undefined when no ACS upstream is wired.
+// ---------------------------------------------------------------------------
+
+export interface GatewayAgentSessions {
+  /** POST /personal/v1/agent/sessions — create ledger + dispatch. */
+  createSession(token: string, body: unknown, key: string): MaybePromise<LocalTaskResult>;
+  /** GET /personal/v1/agent/session-requests/{key} — receipt + recovery. */
+  sessionRequest(token: string, key: string): MaybePromise<LocalTaskResult>;
+  /** POST .../sessions/{aux}/auxiliary-turns/{tid}/deliver — one-shot answer. */
+  deliver(token: string, auxSessionId: string, turnId: string, body: unknown, key: string): MaybePromise<LocalTaskResult>;
+  /** /personal/v1/agent/projects/{pid}/material-uploads family. */
+  materialUpload(token: string, project: string, tail: string[], method: string, body: unknown, key: string | null): MaybePromise<LocalTaskResult>;
+}
+
+export interface GatewayChildMessages {
+  /** GET .../runs/{rid}/collaboration-groups/{gid}/executions/{eid}/messages. */
+  messages(token: string, runId: string, groupId: string, childId: string, rawQuery: string | null): MaybePromise<LocalTaskResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Store — the generic kind→payload records surface that devices/local-tasks/
 // inbox consume (Java PersonalAccessStore: record + record_order +
 // record_sequence). Components construct it directly; the HTTP layer does not.
@@ -381,6 +408,10 @@ export interface GatewayContext {
   acs?: GatewayAcs;
   /** Undefined when the client-access adapter is not wired. */
   clientAccess?: GatewayClientAccess;
+  /** Undefined when no ACS upstream is wired (Java agentSessions==null). */
+  agentSessions?: GatewayAgentSessions;
+  /** Undefined when no ACS upstream is wired (Java childMessages==null). */
+  childMessages?: GatewayChildMessages;
   /** Undefined → POST /personal/v1/transcriptions fails TRANSCRIPTION_NOT_CONFIGURED. */
   transcription?: GatewayTranscription;
   /** Undefined → /hooks/v1 fails APPROVALS_NOT_CONFIGURED; phone routes 404. */

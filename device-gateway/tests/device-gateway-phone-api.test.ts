@@ -130,6 +130,17 @@ const fakeCtx = (opts: {
     activeDevice: () => device,
     revoke: (did) => { calls.auth.push(['revoke', did]); },
     appendLaunchedTask: () => {},
+    appendCreatedSession: (did, expectedRevision, sid) => {
+      calls.auth.push(['appendCreatedSession', did, expectedRevision, sid]);
+    },
+    authorizedScope: (d) => {
+      calls.auth.push(['authorizedScope', d.id]);
+      return {
+        schemaVersion: 'authorized-scope/1',
+        sessions: d.sessions ?? [],
+        actions: d.actions ?? [],
+      };
+    },
     invitation: (rid, sessions, actions, fp) => {
       calls.auth.push(['invitation', rid, sessions, actions, fp]);
       return { id: 'inv-1', requestId: rid, sessions, actions, fingerprint: fp, expiresAt: NOW + 600_000 };
@@ -849,7 +860,8 @@ describe('assignment-options + agent proxy', () => {
     ctx.acsReplies.set('GET /api/v2/approvals/a-1', jsonReply(200, { approvalId: 'a-1', sessionId: 's1' }));
     ctx.acsReplies.set('POST /api/v2/approvals/a-1/decisions', jsonReply(200, { decided: true }));
     const res = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/approvals/a-1/decisions',
-      { approve: true }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+      { expectedVersion: 1, fingerprint: 'fp-1', decision: 'APPROVE' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
     expect(res.status).toBe(200);
     expect(ctx.calls.acs.map((c) => `${c.method} ${c.path}`)).toEqual([
       'POST /api/v2/client-sessions',
@@ -941,8 +953,342 @@ describe('assignment-options + agent proxy', () => {
 });
 
 // ---------------------------------------------------------------------------
-// /personal/v1/client — delegation, statuses, error remap.
+// M03 ports — sessions detail/patch/settings/controls/archive, runs
+// continue + evidence reads, approval advance/controls, extended collab
+// routes, auxiliary-list truncation, agentSessions/childMessages seams.
 // ---------------------------------------------------------------------------
+
+describe('agent proxy — ported v2 routes', () => {
+  it('session detail GET forwards verbatim; unknown query fails', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/sessions/s1', jsonReply(200, { entityId: 's1' }));
+    const res = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1', authed()));
+    expect(res.status).toBe(200);
+    expect(ctx.calls.acs.map((c) => `${c.method} ${c.path}`)).toContain('GET /api/v2/sessions/s1');
+
+    const bad = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1',
+      authed({ rawQuery: 'limit=1' })));
+    expect(bad.status).toBe(400);
+  });
+
+  it('session PATCH enforces whitelist + expectedSessionVersion + Idempotency-Key', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('PATCH /api/v2/sessions/s1', jsonReply(200, { entityId: 's1' }));
+    const ok = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1',
+      { expectedSessionVersion: 3, title: 'renamed' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(ok.status).toBe(200);
+    const forwarded = ctx.calls.acs.find((c) => c.method === 'PATCH' && c.path === '/api/v2/sessions/s1')!;
+    expect(JSON.parse(Buffer.from(forwarded.body!).toString('utf8')))
+      .toEqual({ expectedSessionVersion: 3, title: 'renamed' });
+    expect(ctx.calls.auth).toContainEqual(['authorize', 'tok', 's1', 'INTERACT']);
+
+    const noKey = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1',
+      { expectedSessionVersion: 3 }, authed()));
+    expect(noKey.status).toBe(400);
+
+    const permissionMode = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1',
+      { expectedSessionVersion: 3, permissionMode: 'RELAXED' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(permissionMode.status).toBe(400);
+
+    const noVersion = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1',
+      { title: 'x' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(noVersion.status).toBe(400);
+  });
+
+  it('model-settings GET/PATCH forward; settings object + applyPolicy validated', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/sessions/s1/model-settings', jsonReply(200, { revision: 2 }));
+    ctx.acsReplies.set('PATCH /api/v2/sessions/s1/model-settings', jsonReply(200, { revision: 3 }));
+    const get = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1/model-settings', authed()));
+    expect(get.status).toBe(200);
+    const patch = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1/model-settings',
+      { expectedSettingsRevision: 2, settings: { modelAlias: 'm-1' } },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(patch.status).toBe(200);
+
+    const noSettings = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1/model-settings',
+      { expectedSettingsRevision: 2 }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(noSettings.status).toBe(400);
+    const badPolicy = await handlePhoneRoute(ctx, jsonReq('PATCH', '/personal/v1/agent/sessions/s1/model-settings',
+      { expectedSettingsRevision: 2, applyPolicy: 'NOW', settings: {} },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(badPolicy.status).toBe(400);
+  });
+
+  it('automation-controls GET/POST + archive POST validate control bodies', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/sessions/s1/automation-controls', jsonReply(200, { version: 1 }));
+    ctx.acsReplies.set('POST /api/v2/sessions/s1/automation-controls', jsonReply(200, { version: 2 }));
+    ctx.acsReplies.set('POST /api/v2/sessions/s1/archive', jsonReply(200, { archived: true }));
+    const get = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1/automation-controls', authed()));
+    expect(get.status).toBe(200);
+    const post = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions/s1/automation-controls',
+      { expectedVersion: 1, control: 'PAUSE_AUTOMATION' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(post.status).toBe(200);
+    expect(ctx.calls.auth).toContainEqual(['authorize', 'tok', 's1', 'CONTROL']);
+
+    const badControl = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions/s1/automation-controls',
+      { expectedVersion: 1, control: 'STOP' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(badControl.status).toBe(400);
+
+    const archive = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions/s1/archive',
+      { expectedSessionVersion: 2, reason: 'done' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(archive.status).toBe(200);
+    const archiveNoVersion = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions/s1/archive',
+      {}, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(archiveNoVersion.status).toBe(400);
+  });
+
+  it('run continue accepts empty or guarded body; unknown fields fail', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/runs/r-1', jsonReply(200, { sessionId: 's1' }));
+    ctx.acsReplies.set('POST /api/v2/runs/r-1/continue', jsonReply(200, { state: 'RUNNING' }));
+    const empty = await handlePhoneRoute(ctx, req('POST', '/personal/v1/agent/runs/r-1/continue',
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(empty.status).toBe(200);
+    const guarded = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/runs/r-1/continue',
+      { expectedStateVersion: 2, message: 'go' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(guarded.status).toBe(200);
+    const bogus = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/runs/r-1/continue',
+      { bogus: 1 }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(bogus.status).toBe(400);
+  });
+
+  it('run evidence GETs forward with per-surface query whitelists', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/runs/r-1', jsonReply(200, { sessionId: 's1' }));
+    for (const surface of ['activities', 'reasoning', 'output', 'diff', 'review', 'workspace-conflicts']) {
+      ctx.acsReplies.set(`GET /api/v2/runs/r-1/${surface}`, jsonReply(200, { surface }));
+    }
+    ctx.acsReplies.set('GET /api/v2/runs/r-1/activities?afterCursor=c9&limit=5', jsonReply(200, { surface: 'activities' }));
+    ctx.acsReplies.set('GET /api/v2/runs/r-1/diff?page=1&pageSize=20', jsonReply(200, { surface: 'diff' }));
+    const activities = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/runs/r-1/activities',
+      authed({ rawQuery: 'afterCursor=c9&limit=5' })));
+    expect(activities.status).toBe(200);
+    const diff = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/runs/r-1/diff',
+      authed({ rawQuery: 'page=1&pageSize=20' })));
+    expect(diff.status).toBe(200);
+    for (const surface of ['reasoning', 'output', 'review', 'workspace-conflicts']) {
+      const res = await handlePhoneRoute(ctx, req('GET', `/personal/v1/agent/runs/r-1/${surface}`, authed()));
+      expect(res.status).toBe(200);
+    }
+    const badDiff = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/runs/r-1/diff',
+      authed({ rawQuery: 'limit=1' })));
+    expect(badDiff.status).toBe(400);
+    const badSurface = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/runs/r-1/reasoning',
+      authed({ rawQuery: 'afterCursor=c' })));
+    expect(badSurface.status).toBe(400);
+  });
+
+  it('approval advance/controls share the advance guard; CANCEL omits fingerprint', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/approvals/a-1', jsonReply(200, { approvalId: 'a-1', sessionId: 's1' }));
+    ctx.acsReplies.set('POST /api/v2/approvals/a-1/advance', jsonReply(200, { advanced: true }));
+    ctx.acsReplies.set('POST /api/v2/approvals/a-1/controls', jsonReply(200, { controlled: true }));
+    const advance = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/approvals/a-1/advance',
+      { expectedVersion: 1, fingerprint: 'fp-1', control: 'PROCEED' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(advance.status).toBe(200);
+    const cancel = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/approvals/a-1/advance',
+      { expectedVersion: 1, control: 'CANCEL' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(cancel.status).toBe(200);
+    const noFp = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/approvals/a-1/advance',
+      { expectedVersion: 1, control: 'PROCEED' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(noFp.status).toBe(400);
+    const controls = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/approvals/a-1/controls',
+      { expectedVersion: 1, fingerprint: 'fp-1', control: 'RETRY' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(controls.status).toBe(200);
+  });
+
+  it('collab routes upstream-implemented: rework/revisions/reviews/repairs/recover forward', async () => {
+    const ctx = fakeCtx();
+    // COLLABORATE/ADOPT grants beyond the stock fixture set.
+    ctx.device.actions = [...ctx.device.actions!, 'COLLABORATE', 'ADOPT'];
+    ctx.acsReplies.set('GET /api/v2/runs/r-1', jsonReply(200, { sessionId: 's1' }));
+    ctx.acsReplies.set('GET /api/v2/runs/r-1/collaboration-groups/g-1', jsonReply(200, {
+      entityId: 'g-1',
+      children: [{ entityId: 'e-1', groupId: 'g-1' }],
+      previews: [{ entityId: 'pv-1', groupId: 'g-1' }],
+      reviews: [{ entityId: 'rv-1', groupId: 'g-1' }],
+      adoptions: [{ entityId: 'ad-1', groupId: 'g-1' }],
+      repairs: [{ entityId: 'rp-1', groupId: 'g-1' }],
+    }));
+    // Explicit per-path replies — a `POST *` wildcard would shadow the
+    // client-sessions binding registration and break bindingFor().
+    for (const tail of [
+      'executions/e-1/rework',
+      'previews/pv-1/revisions',
+      'previews/pv-1/reviews',
+      'adoptions/ad-1/repairs',
+      'repairs/rp-1/recover',
+    ]) {
+      ctx.acsReplies.set(`POST /api/v2/runs/r-1/collaboration-groups/g-1/${tail}`, jsonReply(200, { ok: true }));
+    }
+    ctx.acsReplies.set('GET /api/v2/runs/r-1/collaboration-groups/g-1/reviews/rv-1', jsonReply(200, { ok: true }));
+
+    const rework = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/executions/e-1/rework', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(rework.status).toBe(200);
+    const revision = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/previews/pv-1/revisions', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(revision.status).toBe(200);
+    const previewReview = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/previews/pv-1/reviews', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(previewReview.status).toBe(200);
+    const reviewRead = await handlePhoneRoute(ctx, req('GET',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/reviews/rv-1', authed()));
+    expect(reviewRead.status).toBe(200);
+    const repairs = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/adoptions/ad-1/repairs', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(repairs.status).toBe(200);
+    const recover = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/repairs/rp-1/recover', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(recover.status).toBe(200);
+
+    // Non-member entities stay bound to the group — DEVICE_SCOPE_DENIED.
+    ctx.acsReplies.set('GET /api/v2/runs/r-1/collaboration-groups/g-1', jsonReply(200, {
+      entityId: 'g-1', children: [], previews: [], reviews: [], adoptions: [], repairs: [],
+    }));
+    const stranger = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/executions/e-9/rework', {},
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(stranger.status).toBe(403);
+  });
+
+  it('collaboration-evidence family stays closed (Registered WORKER only)', async () => {
+    const ctx = fakeCtx();
+    for (const [method, tail] of [
+      ['POST', 'collaboration-evidence'],
+      ['GET', 'collaboration-evidence/ex-1'],
+      ['GET', 'collaboration-evidence/ex-1/bytes'],
+      ['POST', 'collaboration-evidence/ex-1/upload-ack'],
+    ] as const) {
+      const res = await handlePhoneRoute(ctx, method === 'GET'
+        ? req('GET', `/personal/v1/agent/runs/r-1/${tail}`, authed())
+        : jsonReq('POST', `/personal/v1/agent/runs/r-1/${tail}`, {},
+          authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('auxiliary list GET truncates honestly with marker; non-limit query fails', async () => {
+    const ctx = fakeCtx();
+    ctx.acsReplies.set('GET /api/v2/sessions/s1/auxiliary-sessions?limit=2', jsonReply(200, {
+      items: [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }],
+    }));
+    const res = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1/auxiliary-sessions',
+      authed({ rawQuery: 'limit=2' })));
+    expect(res.status).toBe(200);
+    const body = JSON.parse(Buffer.from(res.bodyBytes!).toString('utf8')) as JsonObject;
+    expect((body.items as unknown[]).length).toBe(2);
+    expect(body.truncated).toBe(true);
+
+    const bad = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/sessions/s1/auxiliary-sessions',
+      authed({ rawQuery: 'cursor=x' })));
+    expect(bad.status).toBe(400);
+  });
+
+  it('agentSessions seam: create/session-requests/deliver/material-uploads delegate', async () => {
+    const ctx = fakeCtx();
+    const seen: [string, ...unknown[]][] = [];
+    ctx.agentSessions = {
+      createSession: (token, body, key) => { seen.push(['create', token, body, key]); return { status: 202, body: { state: 'DISPATCHED' } }; },
+      sessionRequest: (token, key) => { seen.push(['request', token, key]); return { status: 200, body: { state: 'OBSERVED' } }; },
+      deliver: (token, sid, tid, body, key) => { seen.push(['deliver', token, sid, tid, body, key]); return { status: 200, body: { state: 'OBSERVED' } }; },
+      materialUpload: (token, project, tail, method, body, key) => {
+        seen.push(['material', token, project, tail, method, body, key]);
+        return { status: 200, body: { uploadKey: 'u-1' } };
+      },
+    };
+    const create = await handlePhoneRoute(ctx, jsonReq('POST', '/personal/v1/agent/sessions',
+      { requestKey: 'rk-1', title: 't' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(create.status).toBe(202);
+    const request = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/session-requests/rk-1', authed()));
+    expect(request.status).toBe(200);
+    const deliver = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/sessions/aux-1/auxiliary-turns/turn-1/deliver', { answer: 'yes' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(deliver.status).toBe(200);
+    const upload = await handlePhoneRoute(ctx, jsonReq('POST',
+      '/personal/v1/agent/projects/p1/material-uploads', { displayName: 'a.png' },
+      authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(upload.status).toBe(200);
+    expect(seen.map((s) => s[0])).toEqual(['create', 'request', 'deliver', 'material']);
+    expect(seen[3]![2]).toBe('p1');
+    expect(seen[3]![3]).toEqual([]);
+
+    const noSeam = fakeCtx();
+    const res = await handlePhoneRoute(noSeam, jsonReq('POST', '/personal/v1/agent/sessions',
+      { requestKey: 'rk-1' }, authed({ idempotencyKey: 'k', idempotencyKeyCount: 1 })));
+    expect(res.status).toBe(503);
+  });
+
+  it('childMessages seam: group execution messages delegate with raw query', async () => {
+    const ctx = fakeCtx();
+    const seen: [string, ...unknown[]][] = [];
+    ctx.childMessages = {
+      messages: (token, runId, groupId, childId, rawQuery) => {
+        seen.push(['messages', token, runId, groupId, childId, rawQuery]);
+        return { status: 200, body: { schemaVersion: 'child-messages/1' } };
+      },
+    };
+    const res = await handlePhoneRoute(ctx, req('GET',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/executions/e-1/messages',
+      authed({ rawQuery: 'limit=25' })));
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([['messages', 'tok', 'r-1', 'g-1', 'e-1', 'limit=25']]);
+
+    const noSeam = fakeCtx();
+    const missing = await handlePhoneRoute(noSeam, req('GET',
+      '/personal/v1/agent/runs/r-1/collaboration-groups/g-1/executions/e-1/messages', authed()));
+    expect(missing.status).toBe(503);
+  });
+
+  it('authorized-scope returns the picker with revision check; model-options projects catalog', async () => {
+    const ctx = fakeCtx();
+    const res = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/authorized-scope', authed()));
+    expect(res.status).toBe(200);
+    expect((res.body as JsonObject).schemaVersion).toBe('authorized-scope/1');
+
+    // No sessionId → CREATE grant required (device lacks it).
+    const denied = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/model-options', authed()));
+    expect(denied.status).toBe(403);
+
+    ctx.acsReplies.set('GET /api/v2/model-catalog', jsonReply(200, {
+      catalogRevision: 'r7',
+      defaultModel: 'm-1',
+      items: [
+        { providerId: 'p1', modelAlias: 'm-1', providerDisplayName: 'P One', configured: true, availability: 'AVAILABLE' },
+        { providerId: 'p2', modelAlias: 'm-2', configured: false, availability: 'AVAILABLE' },
+        { providerId: 'p3', modelAlias: 'm-3', configured: true, availability: 'DISABLED' },
+      ],
+    }));
+    const options = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/model-options',
+      authed({ rawQuery: 'sessionId=s1' })));
+    expect(options.status).toBe(200);
+    const body = options.body as JsonObject;
+    expect(body.schemaVersion).toBe('acs-model-options/1');
+    expect((body.items as JsonObject[]).map((m) => m.modelAlias)).toEqual(['m-1']);
+    expect(body.defaultSelection).toEqual({ providerId: 'p1', modelAlias: 'm-1' });
+
+    const badQuery = await handlePhoneRoute(ctx, req('GET', '/personal/v1/agent/model-options',
+      authed({ rawQuery: 'bogus=1' })));
+    expect(badQuery.status).toBe(400);
+  });
+});
 
 describe('client access', () => {
   it('production refuses relay-ingress mutations before forwarding when rights are unconfigured', async () => {

@@ -19,6 +19,11 @@
  *   DELETE /personal/v1/device                            revoke + release → 204
  *   GET  /personal/v1/sessions                            foundation+summary+messages merge
  *   GET  /personal/v1/agent/sessions/{sid}/assignment-options
+ *   POST /personal/v1/agent/sessions                      agentSessions.createSession
+ *   GET  /personal/v1/agent/session-requests/{key}        agentSessions.sessionRequest
+ *   POST /personal/v1/agent/sessions/{sid}/auxiliary-turns/{tid}/deliver
+ *   GET  /personal/v1/agent/authorized-scope              stored-grant picker
+ *   GET  /personal/v1/agent/model-options                 model-catalog projection
  *   /personal/v1/agent/**                                 whitelist proxy → acs.call
  *   anything else                                         OPERATION_NOT_ALLOWED 403
  *
@@ -56,6 +61,7 @@ import {
   validateResourceActions,
 } from './scope.js';
 import { launchScopeKey, type LaunchScope, type ScopeRecord } from './protocol.js';
+import { truncateItems } from './child-messages.js';
 
 // ---------------------------------------------------------------------------
 // Request helpers — Java bearer()/header()/body()/query() equivalents.
@@ -566,6 +572,46 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     return assignmentOptions(ctx, token, device, javaSplit(path)[5]);
   }
 
+  // Java: POST /personal/v1/agent/sessions → agentSessions.createSession.
+  if (path === '/personal/v1/agent/sessions' && method === 'POST') {
+    if (ctx.agentSessions === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+    const result = await ctx.agentSessions.createSession(token, jsonBody(req), idempotencyHeader(req));
+    return { status: result.status, body: result.body };
+  }
+
+  // Java: GET /personal/v1/agent/session-requests/{key} → sessionRequest.
+  if (method === 'GET'
+      && /^\/personal\/v1\/agent\/session-requests\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(path)) {
+    if (ctx.agentSessions === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+    const result = await ctx.agentSessions.sessionRequest(
+      token, path.substring('/personal/v1/agent/session-requests/'.length));
+    return { status: result.status, body: result.body };
+  }
+
+  // Java: POST .../sessions/{sid}/auxiliary-turns/{tid}/deliver → deliver.
+  if (method === 'POST'
+      && /^\/personal\/v1\/agent\/sessions\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/auxiliary-turns\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/deliver$/.test(path)) {
+    if (ctx.agentSessions === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+    const seg = javaSplit(path);
+    const result = await ctx.agentSessions.deliver(
+      token, seg[5]!, seg[7]!, jsonBody(req), idempotencyHeader(req));
+    return { status: result.status, body: result.body };
+  }
+
+  // Java: GET /personal/v1/agent/authorized-scope → stored-grant picker.
+  if (path === '/personal/v1/agent/authorized-scope' && method === 'GET') {
+    const scope = await ctx.auth.authorizedScope(device);
+    if ((await ctx.auth.authenticate(token)).revision !== device.revision) {
+      fail('GRANT_REVISION_CHANGED', 409);
+    }
+    return { status: 200, body: scope };
+  }
+
+  // Java: GET /personal/v1/agent/model-options → model-catalog projection.
+  if (path === '/personal/v1/agent/model-options' && method === 'GET') {
+    return modelOptions(ctx, req, token, device);
+  }
+
   if (!path.startsWith('/personal/v1/agent/')) fail('OPERATION_NOT_ALLOWED', 403);
   return agentProxy(ctx, req, token, device, path, method);
 };
@@ -796,6 +842,69 @@ const assignmentOptions = async (
 };
 
 // ---------------------------------------------------------------------------
+// GET /personal/v1/agent/model-options — Java model-catalog projection.
+// ---------------------------------------------------------------------------
+
+const modelOptions = async (
+  ctx: GatewayContext, req: HttpRequest, token: string, device: Device,
+): Promise<HttpResponse> => {
+  let scopeSession: string | undefined;
+  if (req.rawQuery !== null) {
+    if (req.rawQuery.length > 4096) fail('INVALID_REQUEST', 400);
+    for (const item of req.rawQuery.split('&')) {
+      const [name, raw] = firstPair(item);
+      if (name !== 'sessionId') fail('INVALID_REQUEST', 400);
+      scopeSession = decodeForm(raw ?? '');
+    }
+  }
+  if (scopeSession !== undefined) {
+    id(scopeSession);
+    await ctx.auth.authorize(token, scopeSession, 'OBSERVE');
+  } else if (!(device.actions ?? []).includes('CREATE')) {
+    fail('DEVICE_SCOPE_DENIED', 403);
+  }
+  const catalog = await acsCall(ctx, 'GET', '/api/v2/model-catalog', undefined, undefined,
+    await bindingFor(ctx, device));
+  if (catalog.status !== 200) fail('SOURCE_NOT_READY', 503);
+  const source = asObj(acsJson(catalog));
+  const items: JsonObject[] = [];
+  for (const model of asArr(source.items).map(asObj)) {
+    if (model.configured !== true || asText(model.availability) !== 'AVAILABLE') continue;
+    if (typeof model.providerId !== 'string' || typeof model.modelAlias !== 'string') continue;
+    items.push({
+      providerId: model.providerId,
+      modelAlias: model.modelAlias,
+      displayName: typeof model.providerDisplayName === 'string'
+        ? `${model.providerDisplayName}/${model.modelAlias}`
+        : model.modelAlias,
+      availability: model.availability,
+    });
+  }
+  // defaultSelection resolves against projected rows only; an ambiguous
+  // or missing default stays null rather than guessing.
+  const defaultModel = typeof source.defaultModel === 'string' ? source.defaultModel : null;
+  let defaultRow: JsonObject | null = null;
+  if (defaultModel !== null) {
+    for (const row of items) {
+      if (row.modelAlias === defaultModel) {
+        if (defaultRow !== null) { defaultRow = null; break; }
+        defaultRow = row;
+      }
+    }
+  }
+  return {
+    status: 200,
+    body: {
+      schemaVersion: 'acs-model-options/1',
+      catalogRevision: typeof source.catalogRevision === 'string' ? source.catalogRevision : null,
+      items,
+      defaultSelection: defaultRow === null ? null
+        : { providerId: defaultRow.providerId, modelAlias: defaultRow.modelAlias },
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
 // GET|PUT .../execution-policy(-defaults) — Java executionPolicy().
 // ---------------------------------------------------------------------------
 
@@ -868,51 +977,91 @@ const agentProxy = async (
   let collaborationFiles = false;
   let action = 'OBSERVE';
   let prepared: Uint8Array | undefined;
+  let bodySpec: string | undefined;
+  let queryFields: Set<string> | undefined;
+  let auxiliaryList = false;
 
   if (p[3] === 'sessions') {
-    if (p.length < 6) fail('OPERATION_NOT_ALLOWED', 403);
     sid = p[4];
     id(sid);
+    // Upstream-verified surfaces (V2ApiHandler + ExecutionPermissionApiHandler):
+    // detail GET/PATCH, archive POST, model-settings GET/PATCH,
+    // automation-controls GET/POST. Write bodies get a strict
+    // field whitelist below; permission/directory/model authority
+    // keeps its own routes and is not reachable through the patch.
+    const detail = p.length === 5 && method === 'GET';
+    const sessionPatch = p.length === 5 && method === 'PATCH';
+    const modelSettings = p.length === 6 && p[5] === 'model-settings' && ['GET', 'PATCH'].includes(method);
+    const automationControls = p.length === 6 && p[5] === 'automation-controls' && ['GET', 'POST'].includes(method);
+    const archive = p.length === 6 && p[5] === 'archive' && method === 'POST';
     const foundation = p.length === 6 && p[5] === 'foundation' && method === 'GET';
     attachment = p.length === 10 && p[5] === 'messages' && p[7] === 'attachments'
       && ['bytes', 'content'].includes(p[9]) && method === 'GET';
     const message = p.length === 6 && p[5] === 'messages' && method === 'POST';
     if (message) { action = 'INTERACT'; }
+    if (sessionPatch) { action = 'INTERACT'; bodySpec = 'session-patch'; }
+    if (modelSettings && method === 'PATCH') { action = 'INTERACT'; bodySpec = 'model-settings'; }
+    if (automationControls && method === 'POST') { action = 'CONTROL'; bodySpec = 'automation-controls'; }
+    if (archive) { action = 'CONTROL'; bodySpec = 'session-archive'; }
+    if (detail || modelSettings || automationControls) queryFields = new Set<string>();
     approvalList = p.length === 6 && p[5] === 'approvals' && method === 'GET';
     const history = method === 'GET' && ((p.length === 6 && ['messages', 'summary'].includes(p[5]))
       || (p.length === 8 && p[5] === 'messages' && p[7] === 'content'));
     const packages = p[5] === 'context-packages' && ((method === 'POST' && p.length === 6)
       || (method === 'GET' && (p.length === 7 || (p.length === 8 && p[7] === 'items'))));
     const auxiliaries = p.length === 6 && p[5] === 'auxiliary-sessions' && (method === 'GET' || method === 'POST');
-    const turns = p[5] === 'auxiliary-turns' && ((method === 'GET' && (p.length === 6 || p.length === 7))
+    const turns = p.length === 6 && p[5] === 'auxiliary-turns' && ((method === 'GET' && (p.length === 6 || p.length === 7))
       || (method === 'POST' && (p.length === 6 || (p.length === 8 && p[7] === 'cancel'))));
     if ((packages || auxiliaries || turns) && method === 'POST') { action = 'INTERACT'; }
-    if ((foundation || history || turns) && !(device.sessions ?? []).includes(sid)) {
-      sid = await auxiliaryRoot(ctx, sid, device, method === 'GET' && (foundation || history));
+    if ((detail || foundation || history || turns) && !(device.sessions ?? []).includes(sid)) {
+      sid = await auxiliaryRoot(ctx, sid, device, method === 'GET' && (detail || foundation || history));
     }
     const snapshots = p.length >= 6 && p[5] === 'observation-snapshots'
       && ((p.length === 6 && method === 'POST')
         || ((p.length === 7 || (p.length === 8 && p[7] === 'items')) && method === 'GET'));
-    if (!foundation && !snapshots && !history && !message && !attachment && !approvalList
+    auxiliaryList = p.length === 6 && ['auxiliary-sessions', 'auxiliary-turns'].includes(p[5]) && method === 'GET';
+    if (!detail && !sessionPatch && !modelSettings && !automationControls && !archive
+      && !foundation && !snapshots && !history && !message && !attachment && !approvalList
       && !packages && !auxiliaries && !turns) fail('OPERATION_NOT_ALLOWED', 403);
     for (let i = 6; i < p.length; i++) id(p[i]);
   } else if (p[3] === 'runs') {
     const rid = p[4];
     id(rid);
+    // Exact child-messages projection precedes the generic collaboration forward.
+    if (p.length === 10 && p[5] === 'collaboration-groups' && p[7] === 'executions'
+        && p[9] === 'messages' && method === 'GET') {
+      for (let i = 6; i < p.length; i++) id(p[i]);
+      if (ctx.childMessages === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+      const projected = await ctx.childMessages.messages(token, rid, p[6]!, p[8]!, req.rawQuery);
+      return { status: projected.status, body: projected.body };
+    }
     const command = p.length >= 6 && p.length <= 7 && p[5] === 'commands';
     const boundary = p.length >= 6 && p.length <= 8 && p[5] === 'boundary-requests';
     assignmentRoute = p.length >= 6 && p.length <= 8 && p[5] === 'assignment-transitions';
     const segments = p.length === 6 && p[5] === 'execution-segments';
+    // RunApiHandler: POST /runs/{rid}/continue resumes a waiting run;
+    // the six GET evidence surfaces each take only the query names
+    // upstream actually reads (activities:afterCursor/limit,
+    // diff:page/pageSize, the rest none).
+    const continueRun = p.length === 6 && p[5] === 'continue' && method === 'POST';
+    const evidenceRead = p.length === 6 && method === 'GET'
+      && ['activities', 'reasoning', 'output', 'diff', 'review', 'workspace-conflicts'].includes(p[5]!);
+    if (continueRun) bodySpec = 'run-continue';
+    if (evidenceRead) {
+      queryFields = p[5] === 'activities' ? new Set(['afterCursor', 'limit'])
+        : p[5] === 'diff' ? new Set(['page', 'pageSize']) : new Set<string>();
+    }
     collaborationRoute = p.length >= 6 && p.length <= 10
       && ['collaboration-groups', 'collaboration-activity'].includes(p[5]);
     const collaborationAction = collaborationRoute ? collabAction(method, p) : null;
     collaborationFiles = collaborationRoute && p.length === 10 && p[9] === 'files';
     let read = method === 'GET' && (p.length === 5 || command || segments
-      || ((boundary || assignmentRoute) && p.length <= 7));
+      || ((boundary || assignmentRoute) && p.length <= 7) || evidenceRead);
     let write = method === 'POST' && ((command && p.length === 6)
       || (boundary && (p.length === 6 || (p.length === 8 && p[7] === 'cancel')))
       || (assignmentRoute && (p.length === 6 || (p.length === 7 && p[6] === 'preflight')
-        || (p.length === 8 && p[7] === 'cancel'))));
+        || (p.length === 8 && p[7] === 'cancel')))
+      || continueRun);
     if (write) action = assignmentRoute ? 'ASSIGN' : boundary ? 'INTERACT' : 'CONTROL';
     if (collaborationRoute) {
       read = method === 'GET';
@@ -943,7 +1092,14 @@ const agentProxy = async (
   } else if (p[3] === 'approvals') {
     id(p[4]);
     const read = p.length === 5 && method === 'GET';
-    const write = p.length === 6 && p[5] === 'decisions' && method === 'POST';
+    let write = p.length === 6 && p[5] === 'decisions' && method === 'POST';
+    if (write) bodySpec = 'approval-decision';
+    // ExecutionPermissionApiHandler: advance/controls share the
+    // ApprovalAdvanceRequest guard body and the APPROVE grant.
+    if (p.length === 6 && ['advance', 'controls'].includes(p[5]!) && method === 'POST') {
+      write = true;
+      bodySpec = 'approval-advance';
+    }
     if (!read && !write) fail('OPERATION_NOT_ALLOWED', 403);
     if (write) {
       action = 'APPROVE';
@@ -952,6 +1108,21 @@ const agentProxy = async (
     const lookup = await acsCall(ctx, 'GET', `/api/v2/approvals/${p[4]}`, undefined, undefined, await bindingFor(ctx, device));
     if (lookup.status !== 200) fail('NOT_FOUND', 404);
     sid = await approvalSession(ctx, asObj(acsJson(lookup)), device);
+  } else if (p[3] === 'projects' && p.length >= 6 && p[5] === 'material-uploads') {
+    // ACS project material profile -> /api/v2/projects/{project}/material-uploads.
+    // Upstream absence is expected; the ledger still keeps route+auth+idempotency honest.
+    if (req.rawQuery !== null) fail('INVALID_REQUEST', 400);
+    id(p[4]);
+    for (let i = 6; i < p.length; i++) id(p[i]);
+    const tail = p.slice(6);
+    let materialBody: unknown = null;
+    if (method === 'POST' || method === 'PUT') {
+      materialBody = tail.length === 3 && tail[1] === 'chunks' ? jsonBody(req, 400_000) : jsonBody(req);
+    }
+    if (ctx.agentSessions === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
+    const result = await ctx.agentSessions.materialUpload(
+      token, p[4]!, tail, method, materialBody, method === 'GET' ? null : idempotencyHeader(req));
+    return { status: result.status, body: result.body };
   } else if (p[3] === 'operations' && p.length === 5) {
     if (method === 'POST' && p[4] === 'lookup') {
       if (req.bodyError === 'BODY_TOO_LARGE') fail('BODY_TOO_LARGE', 413);
@@ -988,7 +1159,7 @@ const agentProxy = async (
   await ctx.auth.authorize(token, sid, action);
   let payload: Uint8Array | undefined;
   let key: string | undefined;
-  if (method === 'POST') {
+  if (method === 'POST' || method === 'PATCH') {
     if (req.bodyError === 'BODY_TOO_LARGE') fail('BODY_TOO_LARGE', 413);
     const budget = messageBudgetRoute(p, action) ? messageBudget() : 65_536;
     const bytes = req.rawBody ?? new Uint8Array();
@@ -996,6 +1167,19 @@ const agentProxy = async (
     payload = prepared ?? bytes;
     key = idempotencyHeader(req);
     id(key);
+  }
+  // Strict per-route whitelist: only fields the real upstream request DTO
+  // declares are forwarded; unknown fields fail before any upstream call.
+  if (bodySpec !== undefined) {
+    let mutationBody: unknown = null;
+    if (payload !== undefined && payload.length > 0) {
+      try {
+        mutationBody = JSON.parse(Buffer.from(payload).toString('utf8'));
+      } catch {
+        fail('INVALID_REQUEST', 400);
+      }
+    }
+    validateMutationBody(mutationBody, bodySpec);
   }
   const query = req.rawQuery;
   if (query !== null) {
@@ -1005,7 +1189,10 @@ const agentProxy = async (
     } else {
       for (const item of query.split('&')) {
         const [name] = firstPair(item);
-        if (!['limit', 'cursor', 'before'].includes(name)) fail('INVALID_REQUEST', 400);
+        if (queryFields !== undefined ? !queryFields.has(name) : !['limit', 'cursor', 'before'].includes(name)) {
+          fail('INVALID_REQUEST', 400);
+        }
+        if (auxiliaryList && name !== 'limit') fail('INVALID_REQUEST', 400);
       }
     }
   }
@@ -1018,6 +1205,22 @@ const agentProxy = async (
     payload, key, await bindingFor(ctx, device), attachment ? messageBudget() : undefined);
 
   let replyBody: Uint8Array = reply.body;
+  // Upstream aux lists have no cursor; a forwarded limit is honored by
+  // honest truncation + marker, never a fabricated page token.
+  if (auxiliaryList && query !== null && reply.status >= 200 && reply.status < 300) {
+    // Java query(): repeated names collapse to the last value.
+    let limitParam: string | undefined;
+    for (const item of query.split('&')) {
+      const [name, raw] = firstPair(item);
+      if (name === 'limit') limitParam = decodeForm(raw ?? '');
+    }
+    if (limitParam !== undefined) {
+      const visible = acsJson({ ...reply, body: replyBody });
+      if (isRecord(visible) && truncateItems(visible, 'items', parseLimit(limitParam))) {
+        replyBody = new Uint8Array(Buffer.from(JSON.stringify(visible), 'utf8'));
+      }
+    }
+  }
   if (collaborationRoute && reply.status >= 200 && reply.status < 300) {
     const visible = acsJson({ ...reply, body: replyBody });
     bindCollaborationRun(visible, p[4]);
@@ -1098,7 +1301,12 @@ const approvalSession = async (
 const messageBudgetRoute = (p: string[], action: string): boolean =>
   action === 'INTERACT' && p.length === 6 && p[3] === 'sessions' && p[5] === 'messages';
 
-/** Java collaborationAction() — pure route-shape validator. */
+/** Java collaborationAction() — pure route-shape validator.
+ *  Extended past the Java PAC whitelist for routes the ACS source
+ *  actually implements (business-codeagent-v2.yaml): execution rework,
+ *  preview revisions/reviews, review reads, adoption repairs, repair
+ *  recovery. The collaboration-evidence family stays closed — upstream
+ *  marks it Registered-WORKER-only for the evidence upload pipeline. */
 const collabAction = (method: string, p: string[]): string => {
   if (p[5] === 'collaboration-activity') {
     if (method === 'GET' && p.length === 6) return 'OBSERVE';
@@ -1106,17 +1314,21 @@ const collabAction = (method: string, p: string[]): string => {
   }
   if (method === 'GET' && (p.length === 6 || p.length === 7
     || (p.length === 8 && ['executions', 'adoptions'].includes(p[7]))
-    || (p.length === 9 && ['executions', 'candidates', 'adoptions'].includes(p[7]))
+    || (p.length === 9 && ['executions', 'candidates', 'adoptions', 'reviews'].includes(p[7]))
     || (p.length === 10 && ['candidates', 'previews'].includes(p[7]) && p[9] === 'files'))) {
     return 'OBSERVE';
   }
   if (method === 'POST') {
     if (p.length === 6
       || (p.length === 8 && ['authorizations', 'start', 'cancel'].includes(p[7]))
-      || (p.length === 10 && p[7] === 'executions' && p[9] === 'cancel')) return 'COLLABORATE';
+      || (p.length === 10 && p[7] === 'executions' && ['cancel', 'rework'].includes(p[9]))) {
+      return 'COLLABORATE';
+    }
     if ((p.length === 8 && ['selections', 'adoptions'].includes(p[7]))
       || (p.length === 10 && p[7] === 'selections' && p[9] === 'previews')
-      || (p.length === 10 && p[7] === 'adoptions' && ['cancel', 'recover'].includes(p[9]))) return 'ADOPT';
+      || (p.length === 10 && p[7] === 'previews' && ['revisions', 'reviews'].includes(p[9]))
+      || (p.length === 10 && p[7] === 'adoptions' && ['cancel', 'recover', 'repairs'].includes(p[9]))
+      || (p.length === 10 && p[7] === 'repairs' && p[9] === 'recover')) return 'ADOPT';
   }
   fail('OPERATION_NOT_ALLOWED', 403);
 };
@@ -1166,4 +1378,124 @@ const validateCollaborationQuery = (query: string): void => {
       fail('INVALID_REQUEST', 400);
     }
   }
+};
+
+/** Java strings() — require an array of strings. */
+const stringArray = (value: unknown): void => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    fail('INVALID_REQUEST', 400);
+  }
+};
+
+/** Java modelSettings() — strict model-settings object whitelist. */
+const modelSettingsSpec = (settings: unknown): void => {
+  const b = exact(settings, 'providerId', 'modelAlias', 'catalogRevision', 'reasoningMode',
+    'reasoningOptionId', 'reasoningBudgetTokens', 'contextMode', 'contextPresetId',
+    'contextMaxTokens', 'outputMode', 'outputMaxTokens');
+  for (const field of ['reasoningBudgetTokens', 'contextMaxTokens', 'outputMaxTokens']) {
+    if (b[field] != null && !Number.isInteger(b[field])) fail('INVALID_REQUEST', 400);
+  }
+  for (const field of ['providerId', 'modelAlias', 'catalogRevision', 'reasoningMode',
+    'reasoningOptionId', 'contextMode', 'contextPresetId', 'outputMode']) {
+    if (b[field] != null && typeof b[field] !== 'string') fail('INVALID_REQUEST', 400);
+  }
+};
+
+/** Java approvalGuard() — shared expectedVersion + fingerprint rule. */
+const approvalGuard = (b: JsonObject, fingerprintRequired: boolean): void => {
+  if (!Number.isInteger(b.expectedVersion) || (b.expectedVersion as number) < 1) {
+    fail('INVALID_REQUEST', 400);
+  }
+  const fingerprint = b.fingerprint != null ? text(b, 'fingerprint')
+    : b.requestFingerprint != null ? text(b, 'requestFingerprint') : '';
+  if (fingerprintRequired && fingerprint === '') fail('INVALID_REQUEST', 400);
+  if (fingerprint.length > 256) fail('INVALID_REQUEST', 400);
+};
+
+/** Java validateMutationBody() — per-route write DTO whitelists.
+ *  Unknown fields fail before any upstream call; a null body is only
+ *  legal for run-continue (the request is body-optional upstream). */
+const validateMutationBody = (body: unknown, spec: string): void => {
+  if (spec === 'run-continue') {
+    if (body == null) return;
+    const b = exact(body, 'expectedStateVersion', 'message');
+    if (b.expectedStateVersion != null && !Number.isInteger(b.expectedStateVersion)) {
+      fail('INVALID_REQUEST', 400);
+    }
+    if (b.message != null
+        && (typeof b.message !== 'string' || Buffer.from(b.message, 'utf8').length > 16_384)) {
+      fail('INVALID_REQUEST', 400);
+    }
+    return;
+  }
+  if (body == null) fail('INVALID_REQUEST', 400);
+  if (spec === 'session-patch') {
+    // permissionMode is deliberately excluded: authority changes keep
+    // their own routes and are never reachable through the patch.
+    const b = exact(body, 'expectedSessionVersion', 'title', 'workspaceAlias',
+      'interactionMode', 'intent', 'executionMode', 'autonomyLevel', 'policyFingerprint',
+      'writeAllow', 'writeForbid', 'contextDirectories', 'directories',
+      'directoryPolicyVersion', 'replaceLegacyDirectoryPolicy', 'verificationLevel',
+      'extensions', 'maxModelTurns', 'maxEditAttempts', 'modelAlias', 'modelSettings');
+    if (!Number.isInteger(b.expectedSessionVersion)) fail('INVALID_REQUEST', 400);
+    for (const field of ['title', 'workspaceAlias', 'interactionMode', 'intent',
+      'executionMode', 'autonomyLevel', 'policyFingerprint', 'verificationLevel', 'modelAlias']) {
+      if (b[field] != null) text(b, field);
+    }
+    for (const field of ['directoryPolicyVersion', 'maxModelTurns', 'maxEditAttempts']) {
+      if (b[field] != null && !Number.isInteger(b[field])) fail('INVALID_REQUEST', 400);
+    }
+    if (b.replaceLegacyDirectoryPolicy != null && typeof b.replaceLegacyDirectoryPolicy !== 'boolean') {
+      fail('INVALID_REQUEST', 400);
+    }
+    for (const field of ['writeAllow', 'writeForbid', 'contextDirectories']) {
+      if (b[field] != null) stringArray(b[field]);
+    }
+    if (b.directories != null && !Array.isArray(b.directories)) fail('INVALID_REQUEST', 400);
+    if (b.extensions != null && !isRecord(b.extensions)) fail('INVALID_REQUEST', 400);
+    if (b.modelSettings != null) modelSettingsSpec(b.modelSettings);
+    return;
+  }
+  if (spec === 'model-settings') {
+    const b = exact(body, 'expectedSettingsRevision', 'applyPolicy', 'settings');
+    if (!Number.isInteger(b.expectedSettingsRevision)) fail('INVALID_REQUEST', 400);
+    if (!isRecord(b.settings)) fail('INVALID_REQUEST', 400);
+    modelSettingsSpec(b.settings);
+    if (b.applyPolicy != null && text(b, 'applyPolicy') !== 'NEXT_SAFE_REQUEST') {
+      fail('INVALID_REQUEST', 400);
+    }
+    return;
+  }
+  if (spec === 'automation-controls') {
+    const b = exact(body, 'expectedVersion', 'control');
+    if (!Number.isInteger(b.expectedVersion) || (b.expectedVersion as number) < 1) {
+      fail('INVALID_REQUEST', 400);
+    }
+    if (!['PAUSE_AUTOMATION', 'RESUME_AUTOMATION'].includes(asText(b.control))) {
+      fail('INVALID_REQUEST', 400);
+    }
+    return;
+  }
+  if (spec === 'session-archive') {
+    const b = exact(body, 'expectedSessionVersion', 'reason');
+    if (!Number.isInteger(b.expectedSessionVersion)) fail('INVALID_REQUEST', 400);
+    if (b.reason != null) text(b, 'reason');
+    return;
+  }
+  if (spec === 'approval-decision') {
+    const b = exact(body, 'expectedVersion', 'fingerprint', 'requestFingerprint', 'decision');
+    approvalGuard(b, true);
+    text(b, 'decision');
+    return;
+  }
+  if (spec === 'approval-advance') {
+    // CANCEL is the one control that may omit a fingerprint; every other
+    // transition must pin the observed request revision.
+    const b = exact(body, 'expectedVersion', 'fingerprint', 'requestFingerprint', 'control');
+    const cancel = asText(b.control).trim().toUpperCase() === 'CANCEL';
+    approvalGuard(b, !cancel);
+    if (b.control != null && typeof b.control !== 'string') fail('INVALID_REQUEST', 400);
+    return;
+  }
+  fail('INVALID_REQUEST', 400);
 };

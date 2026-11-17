@@ -801,6 +801,40 @@ export class Devices {
     });
   }
 
+  /** Java appendCreatedSession(): only a proven create reply may append its
+   *  exact ACS session; unrelated sessions remain denied. Idempotent — a
+   *  replayed create view for an already-bound session is a no-op. */
+  appendCreatedSession(deviceId: string, expectedRevision: number, sessionId: string): void {
+    id(sessionId);
+    this.store.transaction(() => {
+      const d = this.store.get<Device>('device', deviceId);
+      this.active(d);
+      if (scopeContains(d, 'ACS_SESSION', this.storeId, sessionId)) return;
+      if (d.revision !== expectedRevision || !(d.actions ?? []).includes('CREATE')) {
+        fail('GRANT_REVISION_CONFLICT', 409);
+      }
+      if ((d.resources ?? []).length >= SCOPE_RESOURCE_LIMIT) fail('SCOPE_RESOURCE_LIMIT', 429);
+      d.resources = [...(d.resources ?? []), { kind: 'ACS_SESSION', backendStoreId: this.storeId, sessionId }];
+      d.revision++;
+      this.putScope('device', deviceId, d);
+    });
+  }
+
+  /** Java authorizedScope(): the durable grant record projected verbatim —
+   *  sessions, actions, resources and launch scopes as stored. */
+  authorizedScope(d: Device): Json {
+    normalizeScope(d, this.storeId);
+    return {
+      schemaVersion: 'personal-authorized-scope/1',
+      grantRevision: String(d.revision),
+      scopeVersion: d.scopeVersion,
+      sessions: d.sessions,
+      actions: d.actions,
+      resources: d.resources,
+      launchScopes: d.launchScopes,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Owner CAS scope updates — durable exact replay.
   // -------------------------------------------------------------------------
