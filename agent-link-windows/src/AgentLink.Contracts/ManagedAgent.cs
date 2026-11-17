@@ -24,4 +24,5 @@ public sealed record ManagedAgent(
     List<string>? Models,
     /// <summary>"cc" forces the cc-switch route, "official" forces the engine's
     /// own login/config; null = auto (cc when attached).</summary>
-    string? Provider);
+    string? Provider,
+    bool CcAvailable = false);

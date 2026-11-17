@@ -21,6 +21,41 @@ internal static class CcSwitch
     private static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cc-switch");
 
+    internal static bool SupportsRouting(string engine) => engine is "claude" or "codex";
+
+    internal static UsageSnapshot ReadUsage(DateTimeOffset now, int days, string? database = null)
+    {
+        var path = database ?? Path.Combine(Dir, "cc-switch.db");
+        if (!File.Exists(path)) return new("missing", []);
+        try
+        {
+            using var con = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 1,
+            }.ToString());
+            con.Open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = """
+                SELECT app_type, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+                FROM proxy_request_logs
+                WHERE created_at >= $since AND created_at <= $until
+                GROUP BY app_type
+                ORDER BY COUNT(*) DESC, app_type
+                """;
+            cmd.Parameters.AddWithValue("$since", now.AddDays(days == 7 ? -7 : -1).ToUnixTimeSeconds());
+            cmd.Parameters.AddWithValue("$until", now.ToUnixTimeSeconds());
+            using var reader = cmd.ExecuteReader();
+            var engines = new List<EngineUsage>();
+            while (reader.Read())
+                engines.Add(new(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
+            return new("ready", engines);
+        }
+        catch (Exception error) when (error is SqliteException or InvalidCastException or IOException or UnauthorizedAccessException)
+        {
+            return new("unavailable", []);
+        }
+    }
+
     /// <summary>Returns the proxy env for an app that is attached in
     /// live-state, or null when the app is unmanaged/direct (or cc-switch is
     /// absent). Never throws — a broken cc install must not break spawning.</summary>

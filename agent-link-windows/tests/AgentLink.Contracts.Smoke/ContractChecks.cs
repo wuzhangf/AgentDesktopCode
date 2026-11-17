@@ -11,9 +11,32 @@ internal static class ContractChecks
             case "contract-relay-invite": RelayInvite(); break;
             case "contract-launch-scopes": LaunchScopesCheck(); break;
             case "contract-menu-model": MenuModel(); break;
+            case "contract-quick-configuration": QuickConfiguration(); break;
             default: throw new ArgumentException("Unknown contract case.");
         }
         Console.WriteLine($"PASS: {mode}.");
+    }
+
+    private static void QuickConfiguration()
+    {
+        var current = new ManagedAgent("a", "codex", @"C:\work\alpha", @"C:\bin\codex.exe", "model-a",
+            false, true, true, null, null, "route-a", ["model-a", "model-b"], "cc", CcAvailable: true);
+        var standby = current with { Key = "b", Project = @"C:\work\beta", Enabled = false, Running = false };
+        var status = new LinkStatus(true, "ready", "PC", null, 0, 0, null, null, null, true);
+        var snapshot = new TraySnapshot(true, status, null, null, [], [], [current, standby]);
+        var engine = TrayMenuModel.BuildConfiguration(snapshot).Single();
+        if (engine.Text != "Codex" || engine.Children?.Count != 2 || engine.Detail?.Contains("model-a") != true)
+            throw new InvalidOperationException("Expected grouped workspaces and current model");
+        var actions = engine.Children[0].Children!;
+        var defaultModel = actions.Single(e => e.Text == "模型").Children!.First();
+        if (defaultModel.Action != "agentModel" || defaultModel.Value is not null)
+            throw new InvalidOperationException("Default model must clear the override");
+        var offline = TrayMenuModel.BuildConfiguration(snapshot with { Reachable = false }).Single();
+        if (offline.Children![0].Children!.First().Enabled)
+            throw new InvalidOperationException("Cached rows must not enable offline mutations");
+        var usage = TrayMenuModel.BuildUsage(new("ready", [new("codex", 12, 300, 20)])).Single();
+        if (usage.Badge != "codex" || usage.Detail?.Contains("300") != true || usage.Action is not null)
+            throw new InvalidOperationException("Expected read-only usage");
     }
 
     private static void RelayLines()

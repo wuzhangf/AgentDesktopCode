@@ -45,6 +45,7 @@ internal static class Program
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(app.Dispatcher));
         using var stopping = new CancellationTokenSource();
         var panel = new LinkWindow();
+        ConfigurationWindow? configuration = null;
         TrayMenuWindow? menu = null;
         using var icon = new TrayIcon();
         panel.SizeChanged += (_, _) => icon.PositionPanel(panel);
@@ -56,42 +57,73 @@ internal static class Program
             else icon.ShowPanel(panel);
             _ = panel.RefreshAsync();
         }
+        void ShowPhone()
+        {
+            panel.OpenConnectionTab();
+            ShowPanel();
+        }
+        async Task ShowMainAsync(string? key = null, bool register = false)
+        {
+            menu?.Hide();
+            panel.Hide();
+            configuration ??= new ConfigurationWindow(request => LinkProtocol.CallAsync(request), ShowPhone);
+            await configuration.OpenAsync(key, register);
+        }
         icon.ToggleRequested += () =>
         {
             menu?.Hide();
             if (panel.IsVisible) panel.Hide();
-            else if (!panel.JustDismissed) ShowPanel();
+            else if (!panel.JustDismissed) ShowPhone();
         };
-        var menuBuilding = false;
+        var menuSnapshot = new TraySnapshot(false, null, null, null, [], []);
+        var menuLoading = false;
         icon.MenuRequested += async _ =>
         {
             panel.Hide();
-            if (menuBuilding) return;
-            menuBuilding = true;
-            try
+            if (menu?.IsVisible == true) { menu.Hide(); return; }
+            if (menu is null)
             {
-                var snapshot = await FetchSnapshotAsync();
-                if (menu is null)
-                    menu = new TrayMenuWindow(TrayMenuModel.Build(snapshot), DispatchAsync);
-                else
-                    menu.Show(TrayMenuModel.Build(snapshot));
-                icon.ShowPanel(menu);
+                menu = new TrayMenuWindow(BuildQuickEntries(), DispatchAsync);
+                menu.SizeChanged += (_, _) => icon.PositionPanel(menu);
             }
-            finally { menuBuilding = false; }
+            menu.OpenRoot();
+            icon.ShowPanel(menu);
+            await RefreshMenuAsync();
         };
 
-        async Task RefreshMenuAsync()
+        IReadOnlyList<TrayMenuEntry> BuildQuickEntries() =>
+        [
+            .. TrayMenuModel.BuildConfiguration(menuSnapshot),
+            new(TrayMenuEntryKind.Separator, ""),
+            new(TrayMenuEntryKind.Submenu, "连接选项", Icon: "phone",
+                Children:
+                [
+                    new(TrayMenuEntryKind.Item, "打开手机连接面板", Action: "open", Icon: "open"),
+                    .. TrayMenuModel.Build(menuSnapshot).Where(entry => entry.Icon is "phone" or "member" or "pair"),
+                    new(TrayMenuEntryKind.Item, "登录自启设置", Action: "openSettings", Icon: "settings"),
+                ]),
+        ];
+
+        async Task RefreshMenuAsync(bool resetNavigation = false)
         {
-            if (menu is { IsVisible: true })
-                menu.Show(TrayMenuModel.Build(await FetchSnapshotAsync()));
+            if (menu is not { IsVisible: true } || menuLoading) return;
+            menuLoading = true;
+            try
+            {
+                var latest = await FetchSnapshotAsync();
+                menuSnapshot = latest with { Managed = latest.Managed ?? menuSnapshot.Managed };
+                if (menu.IsVisible) menu.ShowConfiguration(BuildQuickEntries(), resetNavigation);
+            }
+            finally { menuLoading = false; }
         }
 
         async Task DispatchAsync(TrayMenuEntry entry)
         {
             switch (entry.Action)
             {
-                case "open": ShowPanel(); break;
-                case "openAgents": ShowPanel(); panel.OpenAgentTab(); break;
+                case "open": ShowPhone(); break;
+                case "openMain": await ShowMainAsync(entry.Id); break;
+                case "openAgents": await ShowMainAsync(); break;
                 case "openSettings": ShowPanel(); panel.OpenSettings(); break;
                 case "inviteQr": ShowPanel(); panel.BeginInvite(); break;
                 case "inviteCopy": await CopyInviteAsync(); break;
@@ -140,12 +172,13 @@ internal static class Program
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
                     break;
                 case "workerPick": ShowPanel(); panel.BeginWorkerPick(); break;
-                case "agentAdd": ShowPanel(); panel.BeginAgentRegister(); break;
+                case "agentAdd": await ShowMainAsync(register: true); break;
                 case "agentEnable" or "agentDisable" when entry.Id is { } key:
-                    await CallQuietAsync(new("agentSet", key,
-                        new JsonObject { ["enabled"] = entry.Action == "agentEnable" }),
-                        showPanelOnError: true);
-                    await RefreshMenuAsync();
+                    await ApplyQuickAsync(key, new JsonObject { ["enabled"] = entry.Action == "agentEnable" });
+                    break;
+                case "agentProvider" or "agentModel" when entry.Id is { } key && !entry.Checked:
+                    var field = entry.Action == "agentProvider" ? "provider" : "model";
+                    await ApplyQuickAsync(key, new JsonObject { [field] = entry.Value });
                     break;
                 case "agentSkip" when entry.Id is { } skipKey:
                     await CallQuietAsync(new("agentSet", skipKey,
@@ -176,7 +209,19 @@ internal static class Program
                     await CallQuietAsync(new(op));
                     await RefreshMenuAsync();
                     break;
-                case "refresh": await RefreshMenuAsync(); break;
+                case "refresh": await RefreshMenuAsync(resetNavigation: true); break;
+                case "usage":
+                    try
+                    {
+                        var reply = await LinkProtocol.CallAsync(new("localUsage", entry.Id));
+                        var usage = reply.Ok ? reply.Data?.Deserialize<UsageSnapshot>(LinkProtocol.Json) : null;
+                        menu?.ShowUsage(usage ?? new("unavailable", []), entry.Id);
+                    }
+                    catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException or JsonException)
+                    {
+                        menu?.ShowUsage(new("unavailable", []), entry.Id);
+                    }
+                    break;
                 case "exit":
                     if (MessageBox.Show("退出后，手机将暂时无法连接这台电脑。", "Agent Link",
                         MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
@@ -185,6 +230,19 @@ internal static class Program
                     app.Shutdown();
                     break;
             }
+        }
+
+        async Task ApplyQuickAsync(string key, JsonObject changes)
+        {
+            try
+            {
+                var reply = await LinkProtocol.CallAsync(new("agentSet", key, changes));
+                if (!reply.Ok) { menu?.SetFeedback(reply.Error ?? "配置未应用。"); return; }
+                await RefreshMenuAsync(resetNavigation: true);
+                menu?.SetFeedback("配置已保存");
+            }
+            catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException or JsonException)
+            { menu?.SetFeedback("暂时无法确认保存结果，请刷新后核对。"); }
         }
 
         async Task CallQuietAsync(LinkRequest request, bool showPanelOnError = false)
@@ -231,7 +289,7 @@ internal static class Program
                 }
                 return new(true, status, devices, requests, workers, current, managed);
             }
-            catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException)
+            catch (Exception error) when (error is TimeoutException or IOException or OperationCanceledException or JsonException)
             {
                 return new(false, null, null, null, workers, current);
             }
@@ -304,8 +362,8 @@ internal static class Program
             finally { checking = false; }
         };
         StartHost();
-        _ = ListenForActivationAsync(app.Dispatcher, ShowPanel, stopping.Token);
-        if (!background) ShowPanel();
+        _ = ListenForActivationAsync(app.Dispatcher, () => _ = ShowMainAsync(), stopping.Token);
+        if (!background) _ = ShowMainAsync();
         health.Start();
         app.Run();
         health.Stop();

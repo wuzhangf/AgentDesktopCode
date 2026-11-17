@@ -1,0 +1,148 @@
+<Window x:Class="AgentLink.ConfigurationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Agent Link · 配置管理" Width="940" Height="710" MinWidth="740" MinHeight="540"
+        WindowStartupLocation="CenterScreen" Icon="Assets/AgentLink.ico" Background="{DynamicResource LinkSurface}"
+        Foreground="{DynamicResource LinkText}" FontFamily="Segoe UI Variable, Segoe UI, Microsoft YaHei UI" FontSize="13">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Assets/Brand.xaml"/></ResourceDictionary.MergedDictionaries>
+            <Style TargetType="Button">
+                <Setter Property="Padding" Value="12,6"/>
+                <Setter Property="MinHeight" Value="32"/>
+                <Setter Property="Foreground" Value="{DynamicResource LinkText}"/>
+                <Setter Property="Background" Value="{DynamicResource LinkSubtle}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Face" Background="{TemplateBinding Background}" CornerRadius="7"
+                                    BorderBrush="{DynamicResource LinkLine}" BorderThickness="1" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource LinkAccent}"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="Face" Property="Opacity" Value=".45"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+            <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="{DynamicResource LinkAccent}"/>
+                <Setter Property="Foreground" Value="{DynamicResource LinkOnAccent}"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+            </Style>
+            <Style TargetType="TextBox">
+                <Setter Property="MinHeight" Value="32"/>
+                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="VerticalContentAlignment" Value="Center"/>
+                <Setter Property="Background" Value="{DynamicResource LinkSurface}"/>
+                <Setter Property="Foreground" Value="{DynamicResource LinkText}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource LinkLine}"/>
+            </Style>
+            <Style TargetType="ComboBox">
+                <Setter Property="MinHeight" Value="32"/>
+                <Setter Property="Padding" Value="8,4"/>
+            </Style>
+            <Style x:Key="Label" TargetType="TextBlock">
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Margin" Value="0,12,0,5"/>
+            </Style>
+            <Style x:Key="Secondary" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource LinkSecondary}"/>
+                <Setter Property="TextWrapping" Value="Wrap"/>
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Padding="20,14" BorderBrush="{DynamicResource LinkLine}" BorderThickness="0,0,0,1">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="手机连接" Click="Phone_Click"/>
+                <Image DockPanel.Dock="Left" Source="{StaticResource BrandMark}" Width="30" Height="30" Margin="0,0,12,0"/>
+                <TextBlock Text="配置管理" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </DockPanel>
+        </Border>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="230"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border Background="{DynamicResource LinkSubtle}" BorderBrush="{DynamicResource LinkLine}" BorderThickness="0,0,1,0">
+                <DockPanel Margin="14">
+                    <StackPanel DockPanel.Dock="Top">
+                        <DockPanel Margin="3,0,0,10">
+                            <Button DockPanel.Dock="Right" Content="刷新" Click="Refresh_Click"/>
+                            <TextBlock Text="工作区" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <Button Content="＋ 注册工作区" Style="{StaticResource Primary}" Click="Add_Click"/>
+                    </StackPanel>
+                    <Button DockPanel.Dock="Bottom" Content="接入 Worker 注册卡…" Margin="0,8,0,0" Click="Attach_Click"/>
+                    <ListBox x:Name="Workspaces" Margin="0,10,0,0" BorderThickness="0" Background="Transparent"
+                             Foreground="{DynamicResource LinkText}" SelectionChanged="Selection_Changed"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="已注册的工作区">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="6,6">
+                                    <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{DynamicResource LinkSecondary}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+            <DockPanel Grid.Column="1" Margin="24,18">
+                <TextBlock x:Name="Notice" DockPanel.Dock="Bottom" MinHeight="24" Margin="0,8,0,0"
+                           Style="{StaticResource Secondary}" AutomationProperties.LiveSetting="Polite"/>
+                <StackPanel x:Name="Actions" DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button x:Name="Apply" Content="应用配置" Style="{StaticResource Primary}" Click="Apply_Click"/>
+                    <Button Content="还原表单" Margin="8,0,0,0" Click="Reset_Click"/>
+                    <Button x:Name="Test" Content="测试引擎" Margin="8,0,0,0" Click="Test_Click"/>
+                    <Button x:Name="Remove" Content="移除注册…" Margin="8,0,0,0" Click="Remove_Click"/>
+                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,0,12,0">
+                        <TextBlock x:Name="Heading" Text="选择工作区" FontSize="23" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="Status" Margin="0,4,0,0" Style="{StaticResource Secondary}"/>
+                        <StackPanel x:Name="Editor" Margin="0,7,0,0">
+                            <StackPanel x:Name="EngineFields">
+                                <TextBlock Text="引擎" Style="{StaticResource Label}"/>
+                                <ComboBox x:Name="Engine" IsEditable="True" AutomationProperties.Name="引擎"/>
+                            </StackPanel>
+                            <TextBlock Text="工作区目录" Style="{StaticResource Label}"/>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="选择…" Margin="8,0,0,0"
+                                        AutomationProperties.Name="选择工作区目录" Click="Project_Click"/>
+                                <TextBox x:Name="Project" AutomationProperties.Name="工作区目录"/>
+                            </DockPanel>
+                            <StackPanel x:Name="RuntimeFields">
+                                <TextBlock Text="引擎可执行文件" Style="{StaticResource Label}"/>
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Content="选择…" Margin="8,0,0,0"
+                                            AutomationProperties.Name="选择可执行文件" Click="Executable_Click"/>
+                                    <TextBox x:Name="Executable" AutomationProperties.Name="引擎可执行文件"/>
+                                </DockPanel>
+                                <StackPanel x:Name="ProviderFields">
+                                    <TextBlock Text="提供商" Style="{StaticResource Label}"/>
+                                    <ComboBox x:Name="Provider" DisplayMemberPath="Label" AutomationProperties.Name="提供商"
+                                              SelectionChanged="Provider_Changed"/>
+                                </StackPanel>
+                                <TextBlock Text="模型" Style="{StaticResource Label}"/>
+                                <ComboBox x:Name="Model" IsEditable="True" AutomationProperties.Name="模型"/>
+                                <TextBlock Text="留空使用引擎默认模型" Style="{StaticResource Secondary}" Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <CheckBox x:Name="EnabledWorkspace" Content="设为此引擎的当前工作区" Margin="0,16,0,0"/>
+                            <TextBlock Text="应用时，受影响的 Agent Link 引擎会重新加载。当前工作区有运行中的任务时，请等任务结束后再应用。"
+                                       Style="{StaticResource Secondary}" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
+        </Grid>
+    </DockPanel>
+</Window>

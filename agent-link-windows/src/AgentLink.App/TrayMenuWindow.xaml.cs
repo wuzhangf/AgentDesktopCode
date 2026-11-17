@@ -38,18 +38,30 @@ public partial class TrayMenuWindow : Window
     };
 
     private static readonly HashSet<string?> ClosesBefore =
-        ["open", "openAgents", "openSettings", "inviteQr", "inviteCopy", "workerPick", "exit"];
+        ["open", "openMain", "openAgents", "openSettings", "inviteQr", "inviteCopy", "workerPick", "exit"];
 
     private readonly Func<TrayMenuEntry, Task> dispatch;
     private readonly DispatcherTimer dismiss = new() { Interval = TimeSpan.FromMilliseconds(160) };
     private readonly List<(string Title, IReadOnlyList<TrayMenuEntry> Items)> navigation = [];
-    private IReadOnlyList<TrayMenuEntry> root = [];
+    private IReadOnlyList<TrayMenuEntry> configuration = [];
+    private IReadOnlyList<TrayMenuEntry> usage = TrayMenuModel.BuildUsage(null);
+    private bool dispatching;
 
     internal TrayMenuWindow(IReadOnlyList<TrayMenuEntry> entries, Func<TrayMenuEntry, Task> dispatch)
     {
         InitializeComponent();
         this.dispatch = dispatch;
         LinkTheme.Apply(Resources);
+        ConfigTab.Checked += (_, _) => SelectPage();
+        UsageTab.Checked += async (_, _) =>
+        {
+            SelectPage();
+            await ReadUsageAsync();
+        };
+        UsageRange.SelectionChanged += async (_, _) =>
+        {
+            if (UsageTab.IsChecked == true) await ReadUsageAsync();
+        };
         Closing += (_, e) => { e.Cancel = true; Hide(); };
         Deactivated += (_, _) => dismiss.Start();
         Activated += (_, _) => { dismiss.Stop(); LinkTheme.Apply(Resources); };
@@ -62,23 +74,75 @@ public partial class TrayMenuWindow : Window
         {
             if (e.Key == Key.Escape) { e.Handled = true; GoBack(); }
         };
-        Show(entries);
+        configuration = entries;
+        ConfigTab.IsChecked = true;
     }
 
-    /// <summary>Re-renders the root view from a fresh snapshot (menu stays open).</summary>
-    internal void Show(IReadOnlyList<TrayMenuEntry> entries)
+    internal void OpenRoot()
     {
-        root = entries;
-        navigation.Clear();
-        Render(entries, null);
+        ConfigTab.IsChecked = true;
+        SelectPage();
     }
+
+    internal void ShowConfiguration(IReadOnlyList<TrayMenuEntry> entries, bool resetNavigation = false)
+    {
+        configuration = entries;
+        if (resetNavigation) navigation.Clear();
+        if (ConfigTab.IsChecked == true && navigation.Count == 0) RenderActive();
+    }
+
+    internal void ShowUsage(UsageSnapshot? snapshot, string? range)
+    {
+        if (range != SelectedUsageRange) return;
+        usage = TrayMenuModel.BuildUsage(snapshot);
+        if (UsageTab.IsChecked == true) RenderActive();
+    }
+
+    private string SelectedUsageRange => UsageRange.SelectedIndex == 1 ? "7" : "1";
+
+    private async Task ReadUsageAsync()
+    {
+        ShowUsage(null, SelectedUsageRange);
+        await dispatch(new(TrayMenuEntryKind.Item, "", Action: "usage", Id: SelectedUsageRange));
+    }
+
+    internal void SetFeedback(string? message)
+    {
+        Feedback.Text = message;
+        Feedback.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void SelectPage()
+    {
+        navigation.Clear();
+        SetFeedback(null);
+        UsageCaption.Visibility = UsageTab.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        RenderActive();
+    }
+
+    private void RenderActive()
+    {
+        if (navigation.Count > 0) Render(navigation[^1].Items, navigation[^1].Title);
+        else Render(UsageTab.IsChecked == true ? usage : configuration, null);
+    }
+
+    private async void Main_Click(object sender, RoutedEventArgs e) =>
+        await DispatchAsync(new(TrayMenuEntryKind.Item, "", Action: "openMain"));
+
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        if (UsageTab.IsChecked == true) await ReadUsageAsync();
+        else await DispatchAsync(new(TrayMenuEntryKind.Item, "", Action: "refresh"));
+    }
+
+    private async void Exit_Click(object sender, RoutedEventArgs e) =>
+        await DispatchAsync(new(TrayMenuEntryKind.Item, "", Action: "exit"));
 
     private void GoBack()
     {
         if (navigation.Count == 0) { Hide(); return; }
-        var (title, items) = navigation[^1];
         navigation.RemoveAt(navigation.Count - 1);
-        Render(items, navigation.Count == 0 ? null : title);
+        RenderActive();
     }
 
     private void Render(IReadOnlyList<TrayMenuEntry> entries, string? title)
@@ -133,12 +197,20 @@ public partial class TrayMenuWindow : Window
         AddIcon(grid, entry, warning: false);
         var text = new TextBlock
         {
-            Text = entry.Text, VerticalAlignment = VerticalAlignment.Center,
+            Text = entry.Text, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold,
             Foreground = (Brush)Resources["LinkSecondary"],
             TextWrapping = TextWrapping.Wrap,
         };
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
+        var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        content.Children.Add(text);
+        if (entry.Detail is { Length: > 0 } detail)
+            content.Children.Add(new TextBlock
+            {
+                Text = detail, FontSize = 11, TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)Resources["LinkSecondary"],
+            });
+        Grid.SetColumn(content, 1);
+        grid.Children.Add(content);
         return new Border { Padding = new Thickness(9, 7, 9, 7), Child = grid };
     }
 
@@ -185,24 +257,30 @@ public partial class TrayMenuWindow : Window
             IsEnabled = entry.Enabled,
         };
         AutomationProperties.SetName(button, entry.Text);
-        button.Click += (_, _) => Activate(entry);
+        button.Click += async (_, _) => await ActivateAsync(entry);
         return button;
     }
 
-    private void Activate(TrayMenuEntry entry)
+    private async Task ActivateAsync(TrayMenuEntry entry)
     {
         if (entry.Kind == TrayMenuEntryKind.Submenu && entry.Children is { } children)
         {
-            navigation.Add((entry.Text, CurrentItems()));
-            Render(children, entry.Text);
+            navigation.Add((entry.Text, children));
+            RenderActive();
             return;
         }
-        if (ClosesBefore.Contains(entry.Action)) Hide();
-        _ = dispatch(entry);
+        await DispatchAsync(entry);
     }
 
-    private IReadOnlyList<TrayMenuEntry> CurrentItems() =>
-        navigation.Count == 0 ? root : navigation[^1].Items;
+    private async Task DispatchAsync(TrayMenuEntry entry)
+    {
+        if (dispatching && entry.Action != "openMain") return;
+        if (ClosesBefore.Contains(entry.Action)) Hide();
+        dispatching = true;
+        SetFeedback(null);
+        try { await dispatch(entry); }
+        finally { dispatching = false; }
+    }
 
     private FrameworkElement BackBar(string title)
     {

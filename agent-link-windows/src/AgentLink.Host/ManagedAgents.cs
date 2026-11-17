@@ -50,6 +50,7 @@ internal sealed class ManagedAgents : IDisposable
     private readonly HttpClient probe = new(new SocketsHttpHandler { UseProxy = false })
         { Timeout = TimeSpan.FromSeconds(2) };
     private readonly Dictionary<string, Child> children = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (CcSwitch.Route? Route, DateTimeOffset Expires)> routeViews = new();
     private List<Entry> entries = [];
     private bool gatewayUp;
     private bool detectRan;
@@ -88,17 +89,31 @@ internal sealed class ManagedAgents : IDisposable
 
     private ManagedAgent ToView(Entry e, Child? c)
     {
+        var available = e.Executable is not null ? RouteView(e.Engine) : null;
         var running = c?.Process is { Process.HasExited: false };
         var detail = e.Enabled ? c?.Detail : "已停用";
         if (c?.CcRoute is { Proxied: true, RouteName: { } routeName })
             detail = (detail ?? "就绪") + " · cc:" + routeName;
         return new(e.Key, e.Engine, e.Project, e.Executable, e.Model, e.SkipPermissions, e.Enabled,
             running, running ? "managed-" + e.Key : null, detail,
-            c?.CcRoute?.RouteName, c?.CcRoute?.Models, e.Provider);
+            c?.CcRoute?.RouteName,
+            available?.Models ?? c?.CcRoute?.Models, e.Provider, RouteAvailable(available));
     }
 
+    private CcSwitch.Route? RouteView(string engine)
+    {
+        if (!CcSwitch.SupportsRouting(engine)) return null;
+        var now = DateTimeOffset.UtcNow;
+        if (routeViews.TryGetValue(engine, out var cached) && cached.Expires > now) return cached.Route;
+        var route = CcSwitch.Resolve(engine);
+        routeViews[engine] = (route, now.AddSeconds(10));
+        return route;
+    }
+
+    private static bool RouteAvailable(CcSwitch.Route? route) => route is { BaseUrl: not null, Token: not null };
+
     internal Entry Add(string engine, string? executable, string project,
-        string? model, bool skipPermissions)
+        string? model, bool skipPermissions, bool enabled = true)
     {
         if (!EngineShape.IsMatch(engine)) throw new IOException("引擎名无效：" + engine);
         project = Path.GetFullPath(project);
@@ -118,77 +133,88 @@ internal sealed class ManagedAgents : IDisposable
         var entry = new Entry(engine + "-" + Convert.ToHexStringLower(
             System.Security.Cryptography.RandomNumberGenerator.GetBytes(4)),
             engine, project, executable, string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
-            skipPermissions, Enabled: true);
-        for (var i = 0; i < entries.Count; i++)
-            if (entries[i].Engine == engine) entries[i] = entries[i] with { Enabled = false };
-        entries.Add(entry);
-        // An explicit add rescinds a prior remove's "don't seed" tombstone.
+            skipPermissions, enabled);
+        var next = entries.Select(e => enabled && e.Enabled && SameEngine(e, entry)
+            ? e with { Enabled = false } : e).Append(entry).ToList();
+        foreach (var displaced in entries.Where(e => enabled && e.Enabled && SameEngine(e, entry)))
+            EnsureIdle(displaced);
+        var tombstones = disabledStores.Where(e => !string.Equals(e, engine, StringComparison.OrdinalIgnoreCase)).ToList();
+        Persist(next, tombstones);
+        entries = next;
         disabledStores.Remove(engine);
-        Save();
         return entry;
-    }
-
-    internal void SetEnabled(string key, bool enabled)
-    {
-        var index = IndexOf(key);
-        for (var i = 0; i < entries.Count; i++)
-            if (entries[i].Engine == entries[index].Engine)
-                entries[i] = entries[i] with { Enabled = i == index && enabled };
-        Save();
     }
 
     internal async Task UpdateAsync(string key, JsonNode args, CancellationToken cancellation)
     {
         var index = IndexOf(key);
-        if (args["enabled"] is { } enabled) SetEnabled(key, enabled.GetValue<bool>());
-        var entry = entries[index];
-        var restart = false;
+        var previous = entries[index];
+        var entry = previous;
         if (args["skipPermissions"] is { } skip)
         {
             var on = skip.GetValue<bool>();
-            if (on != entry.SkipPermissions) { entry = entry with { SkipPermissions = on }; restart = true; }
+            entry = entry with { SkipPermissions = on };
         }
         if (args["project"]?.GetValue<string>() is { Length: > 0 } project)
         {
             var full = Path.GetFullPath(project);
-            if (!Directory.Exists(full)) throw new IOException("工作区目录不存在：" + project);
-            if (full != entry.Project) { entry = entry with { Project = full }; restart = true; }
+            if (full.StartsWith(@"\\") || full.Length > 1024 || !Directory.Exists(full))
+                throw new IOException("工作区目录不存在或不可用：" + project);
+            entry = entry with { Project = full };
         }
         if (args["executable"]?.GetValue<string>() is { Length: > 0 } executable)
         {
             var full = Path.GetFullPath(executable);
-            if (!File.Exists(full)) throw new IOException("可执行文件不存在：" + executable);
-            if (full != entry.Executable) { entry = entry with { Executable = full }; restart = true; }
+            if (previous.Executable is null || !File.Exists(full)) throw new IOException("可执行文件不可用：" + executable);
+            entry = entry with { Executable = full };
         }
-        if (args["model"] is { } model)
+        if (args.AsObject().ContainsKey("model"))
         {
-            var value = model.GetValue<string?>();
+            var value = args["model"]?.GetValue<string>();
             if (value is { Length: > 128 } || value?.Any(c => c is '\r' or '\n') == true)
                 throw new IOException("模型名无效");
             var trimmed = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-            if (trimmed != entry.Model) { entry = entry with { Model = trimmed }; restart = true; }
+            entry = entry with { Model = trimmed };
         }
-        if (args["provider"] is { } provider)
+        if (args.AsObject().ContainsKey("provider"))
         {
-            var value = provider.GetValue<string?>();
+            var value = args["provider"]?.GetValue<string>();
             if (value is not (null or "cc" or "official")) throw new IOException("provider 只能是 cc/official");
-            if (value != entry.Provider) { entry = entry with { Provider = value }; restart = true; }
+            if (value == "cc" && value != previous.Provider
+                && (!CcSwitch.SupportsRouting(entry.Engine) || !RouteAvailable(CcSwitch.Resolve(entry.Engine))))
+                throw new IOException("请先在 CC Switch 启用此引擎的本机路由。");
+            entry = entry with { Provider = value };
         }
-        entries[index] = entry;
-        Save();
-        if (restart && children.TryGetValue(key, out var child))
-            await StopChildAsync(key, child, unregister: true);
+        var restart = entry != previous;
+        var enableRequested = args["enabled"]?.GetValue<bool>();
+        if (enableRequested is { } enabled) entry = entry with { Enabled = enabled };
+        var next = entries.Select(e => e.Key == key ? entry
+            : enableRequested == true && e.Enabled && SameEngine(e, entry) ? e with { Enabled = false } : e).ToList();
+        var stopping = entries.Where(e => e.Enabled && (e.Key == key
+            ? restart || !entry.Enabled : enableRequested == true && SameEngine(e, entry))).ToArray();
+        if (entries.SequenceEqual(next)) return;
+        foreach (var affected in stopping) EnsureIdle(affected);
+        cancellation.ThrowIfCancellationRequested();
+        Persist(next, [.. disabledStores]);
+        entries = next;
+        foreach (var affected in stopping)
+            if (children.TryGetValue(affected.Key, out var child))
+                await StopChildAsync(affected.Key, child, unregister: true);
     }
 
     internal async Task RemoveAsync(string key, CancellationToken cancellation)
     {
         var removed = entries[IndexOf(key)];
-        entries.RemoveAll(e => e.Key == key);
+        EnsureIdle(removed);
+        var next = entries.Where(e => e.Key != key).ToList();
         // Removing a store row means "don't auto-seed it again" — tombstone the
         // engine so DetectOnceAsync stays honest across restarts.
-        if (removed.Executable is null)
-            disabledStores.Add(removed.Engine);
-        Save();
+        var excluded = disabledStores.ToList();
+        if (removed.Executable is null && !disabledStores.Contains(removed.Engine)) excluded.Add(removed.Engine);
+        cancellation.ThrowIfCancellationRequested();
+        Persist(next, excluded);
+        entries = next;
+        disabledStores.UnionWith(excluded);
         if (children.TryGetValue(key, out var child))
             await StopChildAsync(key, child, unregister: true);
     }
@@ -200,11 +226,31 @@ internal sealed class ManagedAgents : IDisposable
         return index;
     }
 
-    private void Save()
+    private static bool SameEngine(Entry one, Entry other) =>
+        string.Equals(one.Engine, other.Engine, StringComparison.OrdinalIgnoreCase);
+
+    private void EnsureIdle(Entry entry)
+    {
+        if (!children.TryGetValue(entry.Key, out var child) || child.Process is not { Process.HasExited: false }) return;
+        var ledger = Path.Combine(stateRoot, entry.Key, "ledger.json");
+        using var stream = File.OpenRead(ledger);
+        using var data = JsonDocument.Parse(stream);
+        var tasks = data.RootElement.GetProperty("tasks");
+        var activeTask = tasks.EnumerateObject().Any(task =>
+            task.Value.TryGetProperty("quiescent", out var idle) && idle.ValueKind == JsonValueKind.False
+            || task.Value.GetProperty("state").GetString() is not ("SUCCEEDED" or "FAILED" or "CANCELLED" or "PAUSED"));
+        var activeQuestion = data.RootElement.TryGetProperty("sessionQuestions", out var questions)
+            && questions.EnumerateObject().Any(q => q.Value.GetProperty("state").GetString() == "RUNNING");
+        if (activeTask || activeQuestion) throw new IOException("此工作区有任务正在执行，完成后再应用配置。");
+    }
+
+    private void Save() => Persist(entries, [.. disabledStores]);
+
+    private void Persist(List<Entry> next, List<string> excluded)
     {
         Directory.CreateDirectory(LinkProtocol.Root);
         LinkIdentity.SaveAtomic(file, JsonSerializer.SerializeToUtf8Bytes(
-            new Registry(entries, [.. disabledStores]), LinkProtocol.Json));
+            new Registry(next, excluded), LinkProtocol.Json));
     }
 
     /// <summary>Gateway (re)started: all owner-side registrations are gone —

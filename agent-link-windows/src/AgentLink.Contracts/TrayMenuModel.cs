@@ -16,7 +16,8 @@ public sealed record TrayMenuEntry(
     bool DetailAccent = false,
     string? Tint = null,
     string? Badge = null,
-    IReadOnlyList<TrayMenuEntry>? Children = null);
+    IReadOnlyList<TrayMenuEntry>? Children = null,
+    string? Value = null);
 
 public sealed record TrayWorkerCard(
     string Path, string Name, string? Engine = null, string? ProjectId = null,
@@ -41,6 +42,99 @@ public sealed record TraySnapshot(
 /// </summary>
 public static class TrayMenuModel
 {
+    public static IReadOnlyList<TrayMenuEntry> BuildConfiguration(TraySnapshot snapshot)
+    {
+        var items = new List<TrayMenuEntry>();
+        foreach (var group in (snapshot.Managed ?? []).GroupBy(a => a.Engine, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(g => ManagedEngineName(g.Key), StringComparer.CurrentCultureIgnoreCase))
+        {
+            var current = group.FirstOrDefault(a => a.Enabled);
+            var choices = new List<TrayMenuEntry>();
+            foreach (var agent in group.OrderByDescending(a => a.Enabled))
+                choices.Add(new(TrayMenuEntryKind.Submenu, WorkspaceName(agent), Id: agent.Key,
+                    Detail: agent.Enabled ? "当前工作区" : "已停用", DetailAccent: agent.Enabled,
+                    Children: ConfigurationActions(agent, snapshot.Reachable && snapshot.Status?.Ready == true)));
+            items.Add(new(TrayMenuEntryKind.Submenu, ManagedEngineName(group.Key), Id: group.Key,
+                Detail: current is null ? "未启用工作区" : ConfigurationDetail(current),
+                DetailAccent: current?.Running == true, Tint: EngineTint(group.Key), Badge: group.Key, Children: choices));
+        }
+        var registered = new HashSet<string>(snapshot.CurrentWorkerPaths, StringComparer.OrdinalIgnoreCase);
+        foreach (var worker in snapshot.Workers)
+        {
+            var attached = registered.Contains(worker.Path);
+            items.Add(new(TrayMenuEntryKind.Submenu, worker.Name, Id: worker.Path,
+                Detail: attached ? "外部 Worker · 已接入" : "外部 Worker · 待接入",
+                DetailAccent: attached, Badge: worker.Engine ?? "agent", Tint: EngineTint(worker.Engine),
+                Children: AgentCardChildren(worker, attached, snapshot.Status?.Ready == true && snapshot.Reachable)));
+        }
+        if (items.Count == 0)
+            items.Add(new(TrayMenuEntryKind.Item, snapshot.Managed is null ? "正在读取配置…" : "尚未注册工作区", Enabled: false));
+        return items;
+    }
+
+    public static IReadOnlyList<TrayMenuEntry> BuildUsage(UsageSnapshot? snapshot)
+    {
+        if (snapshot is null)
+            return [new(TrayMenuEntryKind.Item, "正在读取用量…", Enabled: false)];
+        if (snapshot.State != "ready")
+            return [new(TrayMenuEntryKind.Item, snapshot.State == "missing" ? "本机没有 CC Switch 用量库" : "暂时读不到 CC Switch 用量", Enabled: false)];
+        if (snapshot.Engines.Count == 0)
+            return [new(TrayMenuEntryKind.Item, "所选时段没有记录", Enabled: false)];
+        return snapshot.Engines.Select(e => new TrayMenuEntry(TrayMenuEntryKind.Item,
+            $"{ManagedEngineName(e.Engine)}   {e.Requests:N0} 次",
+            Enabled: false, Badge: e.Engine, Tint: EngineTint(e.Engine),
+            Detail: $"输入 {e.InputTokens:N0} · 输出 {e.OutputTokens:N0} Token")).ToArray();
+    }
+
+    private static IReadOnlyList<TrayMenuEntry> ConfigurationActions(ManagedAgent agent, bool ready)
+    {
+        var choices = new List<TrayMenuEntry>
+        {
+            new(TrayMenuEntryKind.CheckItem, "设为当前工作区", Action: agent.Enabled ? "agentDisable" : "agentEnable",
+                Id: agent.Key, Checked: agent.Enabled, Enabled: ready, Icon: "agent"),
+        };
+        if (agent.Executable is not null)
+        {
+            IReadOnlyList<TrayMenuEntry> routes =
+            [
+                ProviderChoice(agent, "自动", null, ready),
+                ProviderChoice(agent, "CLI 当前配置", "official", ready),
+                ProviderChoice(agent, "CC Switch 本机路由", "cc", ready && agent.CcAvailable),
+            ];
+            choices.Add(new(TrayMenuEntryKind.Submenu, "提供商", Detail: ProviderLabel(agent), Icon: "settings", Children: routes));
+            if (agent.Provider != "official" && agent.Models is { Count: > 0 } models)
+            {
+                var modelChoices = models.Select(model => new TrayMenuEntry(TrayMenuEntryKind.CheckItem,
+                    model, Action: "agentModel", Id: agent.Key, Checked: model == agent.Model,
+                    Enabled: ready, Value: model)).Prepend(new(TrayMenuEntryKind.CheckItem,
+                        "随引擎默认", Action: "agentModel", Id: agent.Key, Checked: agent.Model is null,
+                        Enabled: ready)).ToArray();
+                choices.Add(new(TrayMenuEntryKind.Submenu, "模型", Detail: agent.Model ?? "随引擎默认", Children: modelChoices));
+            }
+        }
+        choices.Add(new(TrayMenuEntryKind.Item, "打开工作区配置", Action: "openMain", Id: agent.Key, Icon: "open"));
+        return choices;
+    }
+
+    private static TrayMenuEntry ProviderChoice(ManagedAgent agent, string title, string? value, bool ready) =>
+        new(TrayMenuEntryKind.CheckItem, title, Action: "agentProvider", Id: agent.Key,
+            Checked: agent.Provider == value, Enabled: ready && agent.Provider != value, Value: value);
+
+    public static string ProviderLabel(ManagedAgent agent) => agent.Executable is null ? "会话来源"
+        : agent.Provider == "official" ? "CLI 当前配置"
+        : agent.CcRoute is { Length: > 0 } route ? "CC Switch · " + route
+        : agent.Provider == "cc" ? "CC Switch 路由"
+        : "CLI 当前配置";
+
+    public static string WorkspaceName(ManagedAgent agent) =>
+        Path.GetFileName(Path.TrimEndingDirectorySeparator(agent.Project)) is { Length: > 0 } name ? name : agent.Project;
+
+    private static string ConfigurationDetail(ManagedAgent agent)
+    {
+        if (!agent.Running) return WorkspaceName(agent) + (agent.Detail is { Length: > 0 } ? " · 需要处理" : " · 启动中");
+        return ProviderLabel(agent) + (agent.Model is { Length: > 0 } model ? " · " + model : "");
+    }
+
     public static IReadOnlyList<TrayMenuEntry> Build(TraySnapshot snapshot)
     {
         if (!snapshot.Reachable || snapshot.Status is null)
@@ -121,11 +215,15 @@ public static class TrayMenuModel
         return ManagedEngineName(agent.Engine) + " · " + (name is { Length: > 0 } ? name : "workspace");
     }
 
-    private static string ManagedEngineName(string engine) => engine switch
+    public static string ManagedEngineName(string engine) => engine switch
     {
         "claude" => "Claude",
         "codex" => "Codex",
         "pi" => "Sage Pi",
+        "opencode" => "OpenCode",
+        "devin" => "Devin",
+        "gemini" => "Gemini CLI",
+        "grok" => "Grok Build",
         _ => engine,
     };
 
@@ -275,7 +373,7 @@ public static class TrayMenuModel
         return items;
     }
 
-    private static IReadOnlyList<TrayMenuEntry> AgentCardChildren(TrayWorkerCard card, bool attached)
+    private static IReadOnlyList<TrayMenuEntry> AgentCardChildren(TrayWorkerCard card, bool attached, bool ready = true)
     {
         var items = new List<TrayMenuEntry>
         {
@@ -283,10 +381,10 @@ public static class TrayMenuModel
                 Enabled: false, Icon: "agent", Tint: EngineTint(card.Engine), Badge: card.Engine),
         };
         if (attached)
-            items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Id: card.Path, Icon: "reject"));
+            items.Add(new(TrayMenuEntryKind.Item, "断开接入", Action: "detachWorker", Id: card.Path, Enabled: ready, Icon: "reject"));
         else
-            items.Add(new(TrayMenuEntryKind.Item, "接入此 Agent", Action: "attachWorker", Id: card.Path, Icon: "check"));
-        items.Add(new(TrayMenuEntryKind.Item, "测试引擎", Action: "testWorker", Id: card.Path, Icon: "refresh"));
+            items.Add(new(TrayMenuEntryKind.Item, "接入此 Agent", Action: "attachWorker", Id: card.Path, Enabled: ready, Icon: "check"));
+        items.Add(new(TrayMenuEntryKind.Item, "测试引擎", Action: "testWorker", Id: card.Path, Enabled: ready, Icon: "refresh"));
         items.Add(new(TrayMenuEntryKind.Item, "浏览工作区", Action: "browseWorker", Id: card.ProjectDir,
             Enabled: card.ProjectDir is { Length: > 0 }, Icon: "open"));
         items.Add(new(TrayMenuEntryKind.Separator, ""));

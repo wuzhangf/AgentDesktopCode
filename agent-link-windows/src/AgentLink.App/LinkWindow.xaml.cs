@@ -60,6 +60,7 @@ public partial class LinkWindow : Window
     }
 
     internal void OpenAgentTab() => Tabs.SelectedIndex = 1;
+    internal void OpenConnectionTab() => Tabs.SelectedIndex = 0;
 
     internal void BeginInvite()
     {

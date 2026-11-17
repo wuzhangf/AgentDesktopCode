@@ -624,10 +624,17 @@ internal sealed class LinkHost : IDisposable
     private async Task<LinkReply> HandleAsync(LinkRequest request, CancellationToken cancellation)
     {
         if (request.Operation == "status") return new(true, Data: JsonSerializer.SerializeToNode(status, LinkProtocol.Json));
+        if (request.Operation == "localUsage")
+        {
+            var days = request.Id == "7" ? 7 : 1;
+            return new(true, Data: JsonSerializer.SerializeToNode(CcSwitch.ReadUsage(DateTimeOffset.UtcNow, days), LinkProtocol.Json));
+        }
         if (request.Operation == "exit") return new(true);
         await mutations.WaitAsync(cancellation);
         try
         {
+            if (request.Operation == "managedAgents")
+                return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
             if (!status.Ready || ports is null) return new(false, "后台网关暂未就绪");
             switch (request.Operation)
             {
@@ -658,8 +665,6 @@ internal sealed class LinkHost : IDisposable
                     var tested = await LoadWorkerAsync(testPath, cancellation);
                     var (ok, detail) = await ProbeWorkerAsync(tested, cancellation);
                     return ok ? new(true, Data: JsonValue.Create(detail)) : new(false, detail);
-                case "managedAgents":
-                    return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
                 case "agentAdd" when request.Args is { } addArgs:
                     managed.Add(
                         addArgs["engine"]?.GetValue<string>() is { Length: > 0 } engine ? engine
@@ -668,7 +673,8 @@ internal sealed class LinkHost : IDisposable
                         addArgs["project"]?.GetValue<string>() is { Length: > 0 } project ? project
                             : throw new IOException("缺少工作区目录"),
                         addArgs["model"]?.GetValue<string>(),
-                        addArgs["skipPermissions"]?.GetValue<bool>() ?? true);
+                        addArgs["skipPermissions"]?.GetValue<bool>() ?? true,
+                        addArgs["enabled"]?.GetValue<bool>() ?? true);
                     // Spawn happens on the next refresh tick — a 12s startup probe
                     // would outlast this pipe's 8s deadline; the entry shows 启动中.
                     return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
