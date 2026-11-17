@@ -10,6 +10,16 @@
  *   POST /api/v2/personal-access/pairing-requests/{id}/decisions  exact{approve}
  *   PUT  /api/v2/personal-access/devices/{id}/scope           sessions|resources form
  *   DELETE /api/v2/personal-access/devices/{id}               revoke + release → 204
+ *   POST /api/v2/personal-access/mcp-readers                  → mint xagt reader grant (+token once)
+ *   GET  /api/v2/personal-access/mcp-readers                  → list grants (no tokens)
+ *   DELETE /api/v2/personal-access/mcp-readers/{id}           → revoke grant → 204
+ *   POST /api/v2/personal-access/xagt-peers                   → register/update peer Link
+ *   GET  /api/v2/personal-access/xagt-peers                   → list peers (no tokens)
+ *   DELETE /api/v2/personal-access/xagt-peers/{id}            → remove peer → 204
+ *   POST /api/v2/personal-access/xagt-materials               → explicit material entry
+ *   GET  /api/v2/personal-access/xagt-materials               → list entries
+ *   DELETE /api/v2/personal-access/xagt-materials/{id}        → remove entry → 204
+ *   POST /api/xagt/v1/read                                    → fixed read RPC (reader cred)
  *   else → NOT_FOUND 404
  *
  * Gate (Java order): loopback peer → Authorization == 'Bearer '+ownerToken
@@ -196,6 +206,13 @@ export async function handleOwnerRoute(
 ): Promise<HttpResponse> {
   try {
     if (!isLoopback(req.clientIp)) fail('LOCAL_OWNER_REQUIRED', 403);
+    // xagt read RPC — its own reader credential domain, reached by the local
+    // MCP stdio adapter without owner auth. Loopback-only by position in the
+    // gate (the same route on the phone listener serves peer Links).
+    if (req.path === '/api/xagt/v1/read' && req.method === 'POST') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return await ctx.xagt.read(req);
+    }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
     if (!secureEquals(creds.ownerClientToken, req.clientSessionHeader)) fail('UNAUTHORIZED', 401);
@@ -379,10 +396,70 @@ export async function handleOwnerRoute(
       return { status: 204, body: null };
     }
 
+    // xagt reader grants — the MCP read credential domain (design §5.1).
+    if (method === 'POST' && path === `${ROOT}/mcp-readers`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      const b = exact(jsonBody(req), 'requestId', 'name', 'expiresInDays',
+        'backends', 'projects', 'tasks', 'vendorSessions', 'allVendorSessions',
+        'peers', 'materials');
+      text(b, 'requestId');
+      return { status: 201, body: await ctx.xagt.createReader(b) };
+    }
+    if (method === 'GET' && path === `${ROOT}/mcp-readers`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: await ctx.xagt.listReaders() };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-readers') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      await ctx.xagt.revokeReader(parts[5]);
+      return { status: 204, body: null };
+    }
+
+    // Peer Link records — explicit origin + pinned leaf fingerprint + the
+    // reader credential the SOURCE Link minted (design §5.2).
+    if (method === 'POST' && path === `${ROOT}/xagt-peers`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      const b = exact(jsonBody(req), 'requestId', 'peerId', 'name', 'origin', 'certSha256', 'token');
+      text(b, 'requestId');
+      return { status: 201, body: await ctx.xagt.upsertPeer(b) };
+    }
+    if (method === 'GET' && path === `${ROOT}/xagt-peers`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: await ctx.xagt.listPeers() };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'xagt-peers') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      await ctx.xagt.removePeer(parts[5]);
+      return { status: 204, body: null };
+    }
+
+    // Explicit material entries — owner-confirmed {root,files} lists bound to
+    // a session for provenance (design §11.1).
+    if (method === 'POST' && path === `${ROOT}/xagt-materials`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      const b = exact(jsonBody(req), 'requestId', 'name', 'root', 'files', 'session');
+      text(b, 'requestId');
+      return { status: 201, body: await ctx.xagt.createMaterial(b) };
+    }
+    if (method === 'GET' && path === `${ROOT}/xagt-materials`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: await ctx.xagt.listMaterials() };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'xagt-materials') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      await ctx.xagt.removeMaterial(parts[5]);
+      return { status: 204, body: null };
+    }
+
     fail('NOT_FOUND', 404);
   } catch (error) {
     if (error instanceof GatewayError) {
-      return { status: error.httpStatus, body: { code: error.code, detail: error.code } };
+      const detail = 'detail' in error && typeof (error as { detail?: unknown }).detail === 'string'
+        ? (error as { detail: string }).detail : error.code;
+      return { status: error.httpStatus, body: { code: error.code, detail } };
     }
     // Java ownerHandler: unexpected Exception → PERSONAL_ACCESS_FAILURE 503.
     console.error('device-gateway: unexpected owner-api error:', error);

@@ -45,7 +45,7 @@ import { taskFileBinding } from './sage-link-files.js';
  *   DEVICE_GATEWAY_HOOKS_TOKEN       local hook bearer (else generated
  *                                  {dataDir}/hooks.token, mode 0600)
  */
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, createHmac } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { isIP, type Socket } from 'node:net';
@@ -69,6 +69,12 @@ import { createInboxSourceReader } from './inbox-source.js';
 import { bindingFor } from './bindings.js';
 import { CliSupervisor } from './cli-supervisor.js';
 import { CommercialAccess } from './commercial.js';
+import { ReaderAccess } from './xagt/reader-access.js';
+import { PeerStore } from './xagt/peer-reader.js';
+import { MaterialStore } from './xagt/materials.js';
+import { SourceReader } from './xagt/source-reader.js';
+import { XagtReadService } from './xagt/read-service.js';
+import { createXagtHandlers } from './xagt/rpc.js';
 
 // ---------------------------------------------------------------------------
 // Env parsing helpers — fail fast with CONFIG_* codes.
@@ -612,10 +618,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       extraTokens.delete(`worker:${connectionId}`);
     },
   };
+  // One shared LocalTransport — LocalTaskAccess routes and the xagt read
+  // service use the same loopback-pinned, bearer-resolved channel.
+  const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
   let localTasks: LocalTaskAccess | undefined;
   if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
       || opts.cliBridge !== undefined || workers !== undefined) {
-    const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
     const socket = env('SAGE_LINK_FILE_SOCKET');
     const key = env('SAGE_LINK_FILE_GATEWAY_KEY');
     const mcp = env('SAGE_LINK_FILE_MCP');
@@ -732,6 +740,31 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   ctx.approvals = new GatewayApprovals(store, opts.localCliOnly ? {
     activeDevices: () => devices.activeDevices().filter((device) => device.actions?.includes('APPROVE')),
   } : devices);
+
+  // xagt read-only surface — reader grants + peer records + explicit material
+  // entries live in the same store; the cursor key is derived from the store
+  // key (a distinct HMAC domain) so cursors can't be minted off-box.
+  // DEVICE_GATEWAY_XAGT_READ=off disables ONLY this surface — Agents, local
+  // tasks and the old file MCP keep running (design §16).
+  const xagtCursorSecret = createHmac('sha256', opts.storeKey)
+    .update('xagt-cursor-v1').digest();
+  const xagtPeers = new PeerStore(store, () => opts.storeKey);
+  const xagtMaterials = new MaterialStore(store);
+  if (env('DEVICE_GATEWAY_XAGT_READ') !== 'off' && env('DEVICE_GATEWAY_XAGT_READ') !== '0') {
+    ctx.xagt = createXagtHandlers({
+      readers: new ReaderAccess(store),
+      peers: xagtPeers,
+      materials: xagtMaterials,
+      service: new XagtReadService({
+        store,
+        transport,
+        source: new SourceReader(transport),
+        peers: xagtPeers,
+        materials: xagtMaterials,
+        cursorSecret: new Uint8Array(xagtCursorSecret),
+      }),
+    });
+  }
 
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor };
 }

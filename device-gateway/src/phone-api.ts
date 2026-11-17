@@ -398,6 +398,14 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     return { status: 202, body: await ctx.workers.register(b) };
   }
 
+  // Fixed xagt read RPC — peer Links reach it here with a reader credential
+  // (its own grant domain; a device token never matches). The same path on
+  // the loopback owner listener serves the local MCP stdio adapter.
+  if (path === '/api/xagt/v1/read' && method === 'POST') {
+    if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+    return ctx.xagt.read(req);
+  }
+
   const token = bearer(req);
   const device = await ctx.auth.authenticate(token);
   const actions = new Set(device.actions ?? []);

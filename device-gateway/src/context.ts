@@ -342,6 +342,31 @@ export interface GatewayLink {
   phoneEnabled(): boolean;
 }
 
+// ---------------------------------------------------------------------------
+// xagt read-only MCP surface — reader-grant credential domain, completely
+// separate from device tokens. `read` is the fixed POST /api/xagt/v1/read
+// entry shared by the loopback owner listener (local MCP stdio) and the
+// phone HTTPS listener (peer Link ingress). The management surface is
+// owner-only. Undefined → the routes fail OPERATION_NOT_ALLOWED.
+// ---------------------------------------------------------------------------
+
+export interface GatewayXagt {
+  /** POST /api/xagt/v1/read — {version:1,tool,arguments} → envelope/errors. */
+  read(request: HttpRequest): MaybePromise<HttpResponse>;
+  /** Owner: mint a reader grant — returns the grant + the one-time token. */
+  createReader(body: JsonObject): MaybePromise<JsonObject>;
+  listReaders(): MaybePromise<JsonObject>;
+  revokeReader(readerId: string): MaybePromise<void>;
+  /** Owner: register/update a peer Link {origin,certSha256,token}. */
+  upsertPeer(body: JsonObject): MaybePromise<JsonObject>;
+  listPeers(): MaybePromise<JsonObject>;
+  removePeer(peerId: string): MaybePromise<void>;
+  /** Owner: create an explicit material entry {root,files,session?}. */
+  createMaterial(body: JsonObject): MaybePromise<JsonObject>;
+  listMaterials(): MaybePromise<JsonObject>;
+  removeMaterial(matId: string): MaybePromise<void>;
+}
+
 export interface GatewayContext {
   commercial?: import('./commercial.js').CommercialAccess;
   auth: GatewayAuth;
@@ -360,5 +385,7 @@ export interface GatewayContext {
   transcription?: GatewayTranscription;
   /** Undefined → /hooks/v1 fails APPROVALS_NOT_CONFIGURED; phone routes 404. */
   approvals?: GatewayApprovals;
+  /** Undefined → POST /api/xagt/v1/read and xagt owner routes fail. */
+  xagt?: GatewayXagt;
   config: GatewayConfig;
 }
