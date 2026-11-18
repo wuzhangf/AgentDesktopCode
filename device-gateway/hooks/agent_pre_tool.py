@@ -346,9 +346,7 @@ def main() -> int:
     tool_use_id = (payload.get("tool_use_id") or payload.get("toolUseId")
                    or payload.get("tool_call_id") or "")
 
-    if event == "PermissionRequest":
-        keys = sorted(tool_input.keys()) if isinstance(tool_input, dict) else type(tool_input).__name__
-        log(f"DEBUG permission-request keys={sorted(payload.keys())} tool={tool!r} input_keys={keys}")
+    log(f"DEBUG event={event!r} tool={tool!r} session={session_id[:12]!r} keys={sorted(payload.keys())}")
 
     # Master switch: Agent Link's "手机协同" toggle writes link.state; off
     # means every tool call passes silently to the desktop dialog.
