@@ -298,32 +298,54 @@ def workspace_ok(tool_input: dict, cwd: str) -> bool:
     return True
 
 
+_SHELL_NAMES = {"sh", "bash", "zsh", "env", "dash", "python", "python3"}
+
+
 def desktop_host() -> bool:
     """True when the codex that spawned us lives inside a .app bundle
-    (ChatGPT desktop, Codex.app) rather than a bare CLI/bridge binary —
-    those sessions re-prompt in-app per ask, so a phone approval is meant
-    to cover the whole session, not one turn."""
+    (ChatGPT desktop, Codex.app) rather than a bare CLI/bridge binary.
+    Walks past generic shell wrappers to the nearest real ancestor —
+    stopping there, NOT continuing to the terminal, is what keeps a CLI
+    codex launched from Terminal.app from misreading as desktop."""
+    pid = os.getppid()
     try:
-        out = subprocess.check_output(
-            ["ps", "-p", str(os.getppid()), "-o", "command="],
-            text=True, timeout=2).strip()
-        return ".app/" in out
+        for _ in range(8):
+            if pid <= 1:
+                return False
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "command=", "-o", "ppid="],
+                text=True, timeout=2).strip()
+            if not out:
+                return False
+            cmd, _, ppid = out.rpartition(" ")
+            exe = cmd.split(None, 1)[0].rsplit("/", 1)[-1] if cmd.split() else ""
+            if exe in _SHELL_NAMES:
+                pid = int(ppid)
+                continue
+            return ".app/" in cmd
     except Exception:
         return False
+    return False
 
 
 def session_auto(agent: str, session_id: str) -> bool:
-    if not session_id:
-        return False
-    flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{session_id}"
-    return flag.exists()
+    base = Path.home() / ".agent-gateway"
+    if session_id and (base / f"auto-{agent}-{session_id}").exists():
+        return True
+    # ChatGPT.app fragments one conversation across several codex session ids
+    # (chat turn UUID + codenamed exec sessions), so a desktop approval is
+    # scoped to the app host itself rather than any single session id.
+    if (base / f"auto-{agent}-desktop").exists() and desktop_host():
+        return True
+    return False
 
 
-def mark_session_auto(agent: str, session_id: str) -> None:
-    if not session_id:
+def mark_session_auto(agent: str, session_id: str, desktop: bool = False) -> None:
+    suffix = "desktop" if desktop else session_id
+    if not suffix:
         return
     try:
-        flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{session_id}"
+        flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{suffix}"
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(str(time.time()))
     except OSError:
@@ -436,7 +458,7 @@ def main() -> int:
             # owner's choice is "one tap covers the session": any approval
             # there implies 本会话允许, no separate option needed.
             if row.get("decision") == "APPROVED_SESSION" or desktop:
-                mark_session_auto(agent, session_id)
+                mark_session_auto(agent, session_id, desktop)
             print(approve_out(agent, event))
             return 0
         if state == "DENIED":
