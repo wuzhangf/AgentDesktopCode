@@ -2070,7 +2070,8 @@ export class LocalTaskAccess {
     const r = this.store.transaction((): DeviceRequest | undefined => {
       const record = this.find(INPUT, device.id, key);
       if (record === undefined || record.taskId !== task || record.backendStoreId !== backend) fail('NOT_FOUND', 404);
-      if (!this.flights.add(flight)) return undefined;
+      if (this.flights.has(flight)) return undefined;
+      this.flights.add(flight);
       return record;
     });
     if (r === undefined) {
@@ -2086,7 +2087,16 @@ export class LocalTaskAccess {
         try {
           const result = await this.source(backend, 'GET', `/tasks/${task}/interaction-requests/${r.sourceKey}`);
           if (result.status === 200) {
-            r.result = result.data;
+            if (action) {
+              const kind = r.operation === 'ADOPT_APPLY'
+                ? 'COLLABORATION_ADOPT' : r.operation!.replace(/^COLLAB_/, 'COLLABORATION_');
+              if (!isRecord(result.data) || result.data.requestKey !== r.sourceKey
+                  || result.data.taskId !== task || result.data.kind !== kind) fail('LOCAL_BINDING_MISMATCH', 409);
+              const { request: _request, bodyDigest: _bodyDigest, ...receipt } = result.data;
+              r.result = receipt;
+            } else {
+              r.result = result.data;
+            }
             r.state = 'OBSERVED';
             r.code = undefined;
           } else if (result.status !== 404) {
