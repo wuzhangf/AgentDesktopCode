@@ -518,6 +518,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
 
   if (path === '/personal/v1/host' && method === 'GET') {
     const view = await ctx.auth.host(device, ctx.config.bootId);
+    view.platform = process.platform;
     view.commercial = {required:ctx.config.allowUnlicensedDevelopment !== true && ctx.config.localCliOnly !== true,
       lanes:{lan:'free',relay:'member',voice:'member'},
       dailyOrigin:ctx.commercial?.dailyOrigin ?? null};
