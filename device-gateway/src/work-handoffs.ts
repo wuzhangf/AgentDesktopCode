@@ -153,6 +153,9 @@ interface Handoff {
   targetProjectRef?: string;
   targetWorkspaceAlias?: string;
   policyPresetId?: string;
+  targetPreflight?: JsonObject;
+  targetOptionsRevision?: string;
+  materialContinuations?: MaterialContinuation[];
   // Phase machine.
   phase: string;
   pendingStep?: string;
@@ -199,6 +202,16 @@ interface Handoff {
   reauthorizations?: Reauthorization[];
 }
 
+interface MaterialContinuation {
+  requestKey: string;
+  fingerprint: string;
+  previousTarget: string;
+  target: string;
+  materialDigest: string;
+  materialRevision: number;
+  acceptedAt: number;
+}
+
 interface HandoffImport {
   importId: string;
   deviceId: string;
@@ -225,6 +238,10 @@ interface HandoffImport {
   chunks: string[];
   stagedRefs: Record<string, string>;
   targetTaskRef?: string;
+  targetLaunchWire?: JsonObject;
+  targetLaunchTaskRef?: string;
+  targetOptionsRevision?: string;
+  targetPolicyPresetId?: string;
   stopProofJson?: string;
   evidenceJson?: string;
   evidenceAt: number;
@@ -272,6 +289,7 @@ const DOC_SECTIONS = ['目的', '背景', '计划', '当前进展', '问题与�
 const MATERIAL_PRIORITY = ['DOC', 'TRANSCRIPT', 'MANIFEST', 'PROOF', 'BUNDLE'];
 const STOP_PROOF_METHODS = ['WINDOWS_JOB_ACTIVE_ZERO', 'DARWIN_KQUEUE_NO_FORK_GROUP_ZERO',
   'OWNED_PROCESS_GROUP', 'MODEL_NO_FORK_AND_REGISTERED_PROCESS_GROUP_ZERO'];
+const PEER_PREFLIGHT_TTL = 2 * 60_000;
 
 // ---------------------------------------------------------------------------
 // ACS upstream seam (Java AcsUpstream.call / callBytes).
@@ -387,7 +405,13 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   }
 
   private launchKey(h: Handoff): string {
-    return this.sourceKey(h.deviceId, `launch:${h.handoffId}`);
+    const continuation = h.materialContinuations?.at(-1);
+    return this.sourceKey(h.deviceId, `launch:${h.handoffId}${continuation ? ':' + continuation.requestKey : ''}`);
+  }
+
+  private phaseKey(h: Handoff): string {
+    const continuation = h.materialContinuations?.at(-1);
+    return `handoff:${h.requestKey}:${h.phase}${continuation ? ':' + continuation.requestKey : ''}`;
   }
 
   private recordId(did: string, idv: string): string {
@@ -478,7 +502,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
           try {
             const actor = await this.auth.activeDevice(h.deviceId);
             this.checkBackgroundDevice(actor, h);
-            await this.advanceHandoff(h, actor, `handoff:${h.requestKey}:${h.phase}`, {});
+            await this.advanceHandoff(h, actor, this.phaseKey(h), {});
           } catch (error) {
             if (!(error instanceof GatewayError)) throw error;
             if (h.failureCode == null) {
@@ -604,6 +628,90 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     return { schemaVersion: 'trusted-peer-keys/1', items };
   }
 
+  private async nativeTargetOptions(token: string, target: JsonObject): Promise<string> {
+    const store = text(target, 'storeId'), engine = text(target, 'engineId'), project = text(target, 'projectRef');
+    id(store); id(engine); id(project);
+    if (!isPiEngine(engine)) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+    const policy = target.policyPresetId;
+    if (policy != null) id(policy);
+    await this.auth.authorizeLaunch(token, store, project, engine);
+    const options = this.local.okNative(await this.local.nativeCall(store, 'POST', '/task-preflights',
+      { projectId: project, engineId: engine, ...(policy == null ? {} : { policyPresetId: policy }) }, undefined));
+    const revision = asText(at(options, 'optionsRevision'));
+    if (options.projectId !== project || options.engineId !== engine || !revision) fail('PREFLIGHT_CHANGED', 409);
+    if (options.hasUncommittedChanges === true) fail('HANDOFF_TARGET_WORKTREE_DIRTY', 409);
+    return revision;
+  }
+
+  private peerPreflightBinding(proof: JsonObject): JsonObject {
+    return {
+      schemaVersion: proof.schemaVersion, sourceHostRef: proof.sourceHostRef, sourceRef: proof.sourceRef,
+      requestKey: proof.requestKey, target: proof.target, targetDeviceId: proof.targetDeviceId,
+      grantRevision: proof.grantRevision, optionsRevision: proof.optionsRevision,
+      issuedAt: proof.issuedAt, expiresAt: proof.expiresAt, kid: proof.kid,
+    };
+  }
+
+  private async issuePeerPreflight(token: string, device: Device, body: unknown, key: string | null): Promise<JsonObject> {
+    exact(body, ['requestKey', 'sourceHostRef', 'sourceRef', 'targetAgentRef']);
+    const requestKey = text(body, 'requestKey'), sourceHostRef = text(body, 'sourceHostRef');
+    id(requestKey); id(sourceHostRef);
+    if (key !== requestKey) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+    if (!(device.actions ?? []).includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
+    if (!this.peer(sourceHostRef, null)) fail('PEER_NOT_TRUSTED', 403);
+    const source = at(body, 'sourceRef');
+    exact(source, ['kind', 'storeId', 'taskId', 'engineId']);
+    if (at(source, 'kind') !== 'WORKER_LOCAL') fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+    id(text(source, 'storeId')); id(text(source, 'taskId')); id(text(source, 'engineId'));
+    const target = at(body, 'targetAgentRef');
+    exact(target, ['hostKey', 'kind', 'storeId', 'engineId', 'projectRef', 'policyPresetId']);
+    if (at(target, 'kind') !== 'WORKER_LOCAL' || at(target, 'hostKey') !== this.namespace) {
+      fail('HANDOFF_TARGET_MISMATCH', 409);
+    }
+    const optionsRevision = await this.nativeTargetOptions(token, target as JsonObject);
+    const current = await this.auth.authenticate(token);
+    if (current.revision !== device.revision || current.id !== device.id) fail('GRANT_REVISION_CONFLICT', 409);
+    this.ensureSigningKey();
+    const issuedAt = Date.now();
+    const proof = this.peerPreflightBinding({
+      schemaVersion: 'work-handoff-target-preflight/1', sourceHostRef, sourceRef: source,
+      requestKey, target, optionsRevision, grantRevision: device.revision, targetDeviceId: device.id,
+      issuedAt, expiresAt: issuedAt + PEER_PREFLIGHT_TTL, kid: this.signingKeyPair!.kid,
+    });
+    return { ...proof, signature: this.sign(canonical(proof)) };
+  }
+
+  private verifyPeerPreflight(value: unknown, h: Handoff, fresh = true): JsonObject {
+    if (!isRecord(value) || value.schemaVersion !== 'work-handoff-target-preflight/1') {
+      fail('HANDOFF_TARGET_PREFLIGHT_REQUIRED', 409);
+    }
+    const kid = text(value, 'kid');
+    const peer = this.peer(h.targetHostKey, kid);
+    if (!peer) fail('PEER_NOT_TRUSTED', 403);
+    const target = at(value, 'target');
+    const source = at(value, 'sourceRef');
+    if (value.sourceHostRef !== this.namespace || value.requestKey !== h.requestKey ||
+        at(source, 'kind') !== h.sourceKind || at(source, 'storeId') !== h.sourceStoreId ||
+        at(source, 'taskId') !== h.sourceTaskId || at(source, 'engineId') !== h.sourceEngineId ||
+        this.targetRefOfManifest(target) !== this.canonicalTarget(h) ||
+        (at(target, 'policyPresetId') ?? undefined) !== h.policyPresetId ||
+        typeof value.targetDeviceId !== 'string' || typeof value.optionsRevision !== 'string' ||
+        !Number.isSafeInteger(value.grantRevision) ||
+        !this.verify(peer.publicKey, canonical(this.peerPreflightBinding(value)), text(value, 'signature'))) {
+      fail('HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+    }
+    const issued = asLong(value.issuedAt), expiry = asLong(value.expiresAt);
+    if (expiry !== issued + PEER_PREFLIGHT_TTL ||
+        (fresh && (expiry <= Date.now() || issued > Date.now() + 10_000))) {
+      fail('HANDOFF_TARGET_PREFLIGHT_EXPIRED', 409);
+    }
+    const old = h.targetPreflight;
+    if (old && ['targetDeviceId', 'grantRevision', 'optionsRevision', 'kid'].some(field => value[field] !== old[field])) {
+      fail('HANDOFF_TARGET_PREFLIGHT_CHANGED', 409);
+    }
+    return value;
+  }
+
   // ---- route dispatch (Java remote()) ---------------------------------------
 
   async remote(
@@ -628,8 +736,10 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       fail('OPERATION_NOT_ALLOWED', 403);
     }
     for (const segment of tail) id(segment);
+    if (!this.acsUpstream && tail.length === 1 && tail[0] === 'target-preflights' && method === 'POST' && rawQuery == null) {
+      return { status: 200, body: await this.issuePeerPreflight(token, device, body, key) };
+    }
     if (tail[0] === 'imports') {
-      if (!this.acsUpstream) fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
       return this.imports(token, device, method, tail, body, key, rawQuery);
     }
     if (tail[0] === 'requests' && tail.length === 2 && method === 'GET') {
@@ -733,6 +843,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (p[1] === 'confirm') return this.confirm(token, device, h!, body, key);
     if (p[1] === 'continue') return this.continueHandoff(token, device, h!, body, key);
     if (p[1] === 'retry-target') return this.retryTarget(token, h!, body, key);
+    if (p[1] === 'material-continuations') return this.continueMaterials(token, h!, body, key);
     if (p[1] === 'cancel') return this.cancel(token, device, h!, body, key);
     fail('OPERATION_NOT_ALLOWED', 403);
   }
@@ -743,10 +854,80 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     else await this.auth.authorizeLocal(token, h.sourceStoreId, h.sourceTaskId!, 'OBSERVE');
   }
 
+  /** Until the original durable launch wire exists, the same Windows
+   * coordinator can prove that it has never submitted a target write. */
+  private canContinueMaterials(h: Handoff): boolean {
+    return !this.acsUpstream && h.targetHostKey === 'local' && h.targetKind === 'WORKER_LOCAL'
+      && h.sourceKind === 'WORKER_LOCAL' && isPiEngine(h.sourceEngineId)
+      && h.sourceSealed && h.sealState === 'SEALED' && !!h.materialDigest && !!h.manifestJson
+      && ['TARGET_STAGING', 'TARGET_STARTING'].includes(h.phase)
+      && h.targetTaskRef == null && h.targetLaunchWire == null;
+  }
+
+  private async continueMaterials(token: string, h: Handoff, body: unknown, key: string | null): Promise<LocalTaskResult> {
+    exact(body, ['requestKey', 'expectedMaterialRevision', 'expectedMaterialDigest', 'targetAgentRef']);
+    const requestKey = text(body, 'requestKey');
+    id(requestKey);
+    if (requestKey !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+    await this.authForHandoff(token, h);
+    const actor = await this.auth.authenticate(token);
+    if (!actor.actions?.includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
+    const fingerprint = this.digest(body);
+    const history = h.materialContinuations ?? [];
+    const prior = history.find(row => row.requestKey === requestKey);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      return { status: 200, body: await this.authorizedView(token, h) };
+    }
+    if (!this.canContinueMaterials(h)) fail('HANDOFF_MATERIAL_CONTINUATION_UNAVAILABLE', 409);
+    if (history.length >= 8) fail('HANDOFF_MATERIAL_CONTINUATION_LIMIT', 429);
+    if (at(body, 'expectedMaterialRevision') !== h.materialRevision ||
+        at(body, 'expectedMaterialDigest') !== h.materialDigest) fail('MATERIAL_REVISION_CONFLICT', 409);
+    const target = at(body, 'targetAgentRef');
+    exact(target, ['hostKey', 'kind', 'storeId', 'engineId', 'projectRef', 'policyPresetId']);
+    if (at(target, 'hostKey') !== 'local' || at(target, 'kind') !== 'WORKER_LOCAL') {
+      fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+    }
+    const previousTarget = this.canonicalTarget(h);
+    const nextTarget = this.targetRefOfManifest(target);
+    if (nextTarget === previousTarget && (at(target, 'policyPresetId') ?? undefined) === h.policyPresetId) {
+      fail('HANDOFF_TARGET_UNCHANGED', 409);
+    }
+    const revision = await this.nativeTargetOptions(token, target as JsonObject);
+    if ((await this.auth.authenticate(token)).revision !== actor.revision) fail('GRANT_REVISION_CONFLICT', 409);
+    if (this.itemsDigest(h.items) !== h.materialDigest) fail('MATERIAL_DIGEST_MISMATCH', 409);
+    for (const item of h.items) {
+      const data = this.readItem(h.handoffId, item.relName);
+      if (data.length !== item.sizeBytes || sha256hex(data) !== item.sha256) fail('MATERIAL_DIGEST_MISMATCH', 409);
+    }
+    h.materialContinuations = [...history, { requestKey, fingerprint, previousTarget, target: nextTarget,
+      materialDigest: h.materialDigest!, materialRevision: h.materialRevision, acceptedAt: Date.now() }];
+    h.targetStoreId = text(target, 'storeId');
+    h.targetProjectRef = text(target, 'projectRef');
+    h.targetEngineId = text(target, 'engineId');
+    h.policyPresetId = asText(at(target, 'policyPresetId'));
+    h.targetOptionsRevision = revision;
+    h.grantRevision = actor.revision;
+    h.stagedRefs = {};
+    h.materialBinding = undefined;
+    h.backgroundUntil = undefined;
+    h.backgroundGrantRevision = undefined;
+    h.failureCode = undefined;
+    h.failurePhase = undefined;
+    h.pendingReason = undefined;
+    h.phase = 'TARGET_STAGING';
+    h.manifestJson = this.buildManifest(h, true);
+    h.sealProofSig = this.sign(`${h.handoffId}|${this.canonicalTarget(h)}|${h.materialDigest}|${h.sealId ?? '-'}`);
+    this.appendReceipts(h.receipts, this.receipt(nextTarget, h.phase, 'SEALED', 'REBOUND', 'FROZEN_MATERIAL_CONTINUATION'));
+    this.saveHandoff(h);
+    this.audit(actor, 'HANDOFF_MATERIAL_CONTINUATION', h.handoffId, h.phase);
+    return { status: 200, body: await this.authorizedView(token, h) };
+  }
+
   // ---------- create ----------
 
   private async create(token: string, device: Device, body: unknown, key: string | null): Promise<LocalTaskResult> {
-    exact(body, ['requestKey', 'sourceRef', 'targetAgentRef', 'options']);
+    exact(body, ['requestKey', 'sourceRef', 'targetAgentRef', 'targetPreflight', 'options']);
     const rk = text(body, 'requestKey');
     id(rk);
     if (rk !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
@@ -760,12 +941,19 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (!['ACS', 'WORKER_LOCAL'].includes(targetKind)) fail('INVALID_REQUEST', 400);
     if (!(device.actions ?? []).includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
     const hostKey = text(tgt, 'hostKey'); id(hostKey);
-    if (!this.acsUpstream && (sourceKind !== 'WORKER_LOCAL' || targetKind !== 'WORKER_LOCAL' || hostKey !== 'local')) {
+    if (!this.acsUpstream && (sourceKind !== 'WORKER_LOCAL' || targetKind !== 'WORKER_LOCAL')) {
       fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+    }
+    const handoffId = `wh-${hash(`${device.id}:${rk}`).slice(0, 32)}`;
+    const fingerprint = this.digest(body);
+    const known = this.loadHandoff(device.id, handoffId);
+    if (known != null) {
+      if (known.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      return { status: 200, body: await this.authorizedView(token, known) };
     }
 
     const h = {} as Handoff;
-    h.sourceKind = sourceKind; h.targetKind = targetKind;
+    h.sourceKind = sourceKind; h.targetKind = targetKind; h.requestKey = rk;
     const acsStore = asText(at(await this.ownerStatus(), 'storeId')) ?? '';
     if (sourceKind === 'ACS') {
       if (src == null || (src as JsonObject).sessionId == null || (src as JsonObject).taskId != null) fail('INVALID_REQUEST', 400);
@@ -851,9 +1039,10 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       }
     }
     if ((tgt as JsonObject).policyPresetId != null) h.policyPresetId = text(tgt, 'policyPresetId');
+    if (!this.acsUpstream && hostKey !== 'local') {
+      h.targetPreflight = this.verifyPeerPreflight(at(body, 'targetPreflight'), h);
+    } else if (at(body, 'targetPreflight') != null) fail('INVALID_REQUEST', 400);
 
-    const handoffId = `wh-${hash(`${device.id}:${rk}`).slice(0, 32)}`;
-    const fingerprint = this.digest(body);
     const existing = this.loadHandoff(device.id, handoffId);
     if (existing != null) {
       if (existing.fingerprint !== fingerprint || existing.deviceId !== device.id) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
@@ -898,7 +1087,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   // ---------- confirm ----------
 
   private async confirm(token: string, device: Device, h: Handoff, body: unknown, key: string | null): Promise<LocalTaskResult> {
-    exact(body, ['requestKey', 'expectedMaterialRevision', 'expectedMaterialDigest', 'allowBackgroundProgress']);
+    exact(body, ['requestKey', 'expectedMaterialRevision', 'expectedMaterialDigest', 'allowBackgroundProgress', 'targetPreflight']);
     const background = at(body, 'allowBackgroundProgress');
     if (background !== undefined && typeof background !== 'boolean') fail('INVALID_REQUEST', 400);
     if (background && (this.acsUpstream || h.sourceKind !== 'WORKER_LOCAL'
@@ -917,6 +1106,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       fail('MATERIAL_REVISION_CONFLICT', 409);
     }
     if (background && at(body, 'expectedMaterialDigest') == null) fail('MATERIAL_REVISION_CONFLICT', 409);
+    if (h.targetPreflight) h.targetPreflight = this.verifyPeerPreflight(at(body, 'targetPreflight'), h);
     if ((await this.auth.authenticate(token)).revision !== h.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
     await this.authForHandoff(token, h);
     if (!(device.actions ?? []).includes('HANDOFF') || !((await this.auth.authenticate(token)).actions ?? []).includes('HANDOFF')) {
@@ -1111,17 +1301,20 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   }
 
   private async continueHandoff(token: string, device: Device, h: Handoff, body: unknown, key: string | null): Promise<LocalTaskResult> {
-    exact(body, ['requestKey', 'importBinding']);
+    exact(body, ['requestKey', 'importBinding', 'targetPreflight']);
     const ck = text(body, 'requestKey');
     if (ck !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
     if (!ck.startsWith(`handoff:${h.requestKey}:`)) fail('HANDOFF_KEY_PHASE_MISMATCH', 409);
     if (h.spentKeys.includes(ck)) return { status: 200, body: await this.authorizedView(token, h) };
-    const expected = `handoff:${h.requestKey}:${h.phase}`;
+    const expected = this.phaseKey(h);
     if (TERMINAL.includes(h.phase)) fail('HANDOFF_ALREADY_TERMINAL', 409);
     if (ck !== expected) fail('HANDOFF_KEY_PHASE_MISMATCH', 409);
     // Admission is linearized with owner scope changes: re-read ACTIVE actor
     // and every required scope; a GET hint is never authority.
     const device2 = await this.phaseDevice(token, h);
+    if (h.targetPreflight && h.phase === 'SOURCE_SEALING') {
+      h.targetPreflight = this.verifyPeerPreflight(at(body, 'targetPreflight'), h);
+    }
     if (device2.revision !== h.grantRevision) this.reauthorize(h, device2, ck);
     await this.advanceHandoff(h, device2, ck, body);
     return { status: 200, body: await this.authorizedView(token, h) };
@@ -1511,6 +1704,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (h.targetProjectRef != null) tgt.projectRef = h.targetProjectRef; else tgt.projectRef = null;
     if (h.policyPresetId != null) tgt.policyPresetId = h.policyPresetId;
     m.targetAgentRef = tgt;
+    if (frozen && h.targetPreflight) m.targetPreflight = h.targetPreflight;
     if (h.targetProjectRef != null) m.targetProjectRef = h.targetProjectRef;
     m.materialRevision = frozen ? h.materialRevision : h.candidateRevision;
     m.materialDigest = frozen ? this.itemsDigest(h.items) : null;
@@ -1585,11 +1779,13 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (h.targetHostKey == null || h.targetHostKey.trim() === '') fail('HANDOFF_TARGET_NO_EXECUTION_LANE', 409);
     if (h.targetHostKey !== 'local') {
       if (this.peer(h.targetHostKey, null) == null) fail('PEER_NOT_TRUSTED', 403);
+      if (h.targetPreflight) this.verifyPeerPreflight(h.targetPreflight, h);
       return;
     }
     if (h.targetKind === 'WORKER_LOCAL') {
       const preflight = this.local.okNative(await this.local.nativeCall(h.targetStoreId!, 'POST', '/task-preflights',
-        { projectId: h.targetProjectRef, engineId: h.targetEngineId }, undefined));
+        { projectId: h.targetProjectRef, engineId: h.targetEngineId,
+          ...(h.policyPresetId ? { policyPresetId: h.policyPresetId } : {}) }, undefined));
       if (asText(at(preflight, 'projectId')) !== h.targetProjectRef
           || asText(at(preflight, 'engineId')) !== h.targetEngineId) {
         fail('LOCAL_BINDING_MISMATCH', 409);
@@ -1717,7 +1913,9 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     h.materialDigest = now;
     this.ensureSigningKey();
     h.sealProofKid = this.signingKeyPair!.kid;
-    h.sealProofSig = this.sign(`${h.handoffId}|${this.canonicalTarget(h)}|${h.materialDigest}|${h.sealId ?? '-'}`);
+    h.sealProofSig = this.sign(h.targetPreflight
+      ? `work-handoff-frozen/1|${this.digest(JSON.parse(h.manifestJson))}`
+      : `${h.handoffId}|${this.canonicalTarget(h)}|${h.materialDigest}|${h.sealId ?? '-'}`);
     this.appendReceipts(h.receipts, this.receipt(this.canonicalTarget(h), 'TARGET_STAGING', 'FROZEN', 'REVISION_FROZEN', 'MATERIAL_DIGEST_FROZEN'));
     h.phase = 'TARGET_STAGING'; h.pendingReason = undefined;
   }
@@ -2096,6 +2294,19 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   // ---------- TARGET_STARTING ----------
 
   private async stepStart(device: Device, h: Handoff, body: unknown): Promise<void> {
+    if (h.targetPreflight) {
+      const binding = at(body, 'importBinding');
+      const report = at(binding, 'consumptionReport');
+      if (report == null) { h.pendingReason = 'REMOTE_CONSUMPTION_UNVERIFIABLE'; return; }
+      exact(binding, ['importId', 'targetTaskRef', 'consumptionReport']);
+      const importId = text(binding, 'importId'), task = text(binding, 'targetTaskRef');
+      id(importId); id(task);
+      if (!this.verifyConsumptionReport(h, report, importId, task)) fail('CONSUMPTION_PROOF_INVALID', 403);
+      h.importBinding = importId; h.targetTaskRef = task;
+      h.evidenceJson = asText(at(report, 'evidenceDigest'));
+      this.advance(h, 'TAKEN_OVER', 'CONSUMED', 'HANDED_OVER', 'TARGET_CONTINUED');
+      return;
+    }
     const existingTarget = h.targetTaskRef != null;
     if (h.targetTaskRef == null) {
       if (h.targetHostKey === 'local' && h.targetKind === 'WORKER_LOCAL') await this.launchNative(device, h);
@@ -2148,7 +2359,8 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   /** The peer-signed consumption report binds importId, this handoff id, the
    *  bound target task and the evidence digest under the target host's
    *  registered signing key. Anything else is rejected, never trusted. */
-  private verifyConsumptionReport(h: Handoff, report: unknown): boolean {
+  private verifyConsumptionReport(h: Handoff, report: unknown, expectedImport = h.importBinding,
+    expectedTask = h.targetTaskRef): boolean {
     if (asText(at(report, 'scheme')) !== 'RSA-SHA256') return false;
     // The key id is part of the binding — an omitted kid never falls back to
     // "any registered key" for this peer (R25).
@@ -2162,9 +2374,14 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     const digest = asText(at(report, 'evidenceDigest')) ?? '';
     const sig = asText(at(report, 'signature')) ?? '';
     const verifiedAt = asLong(at(report, 'verifiedAt'));
-    if (importId !== h.importBinding || taskRef !== h.targetTaskRef || handoffId !== h.handoffId
+    if (importId !== expectedImport || taskRef !== expectedTask || handoffId !== h.handoffId
         || !/^[a-f0-9]{64}$/.test(digest) || verifiedAt <= 0) return false;
-    const payload = `${importId}|${handoffId}|${taskRef}|${digest}|${verifiedAt}`;
+    let payload = `${importId}|${handoffId}|${taskRef}|${digest}|${verifiedAt}`;
+    if (h.targetPreflight) {
+      const frozenDigest = this.digest(JSON.parse(h.manifestJson!));
+      if (at(report, 'frozenManifestDigest') !== frozenDigest) return false;
+      payload += `|${frozenDigest}`;
+    }
     return this.verify(trusted.publicKey, payload, sig);
   }
 
@@ -2184,10 +2401,12 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         fail('LOCAL_BINDING_MISMATCH', 409);
       }
       const optionsRevision = asText(at(preflight, 'optionsRevision'));
-      if (optionsRevision == null) fail('PREFLIGHT_CHANGED', 409);
+      if (optionsRevision == null || (h.targetOptionsRevision && h.targetOptionsRevision !== optionsRevision)) fail('PREFLIGHT_CHANGED', 409);
       h.targetLaunchWire = {
         requestKey: launchKey, projectId: h.targetProjectRef, engineId: h.targetEngineId,
-        optionsRevision, instruction: this.takeoverPrompt(h),
+        optionsRevision, instruction: h.materialContinuations?.length
+          ? `本次已确认的续作目标为 ${this.canonicalTarget(h)}。材料中记录的原目标仅供追溯。\n${this.takeoverPrompt(h)}`
+          : this.takeoverPrompt(h),
         ...(h.policyPresetId == null ? {} : { policyPresetId: h.policyPresetId }),
       };
       this.saveHandoff(h);
@@ -2664,6 +2883,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       return { status: 200, body: await this.authorizedView(token, h) };
     }
     if (h.phase === 'FAILED' || h.phase === 'CANCELLED') fail('HANDOFF_ALREADY_TERMINAL', 409);
+    if (h.targetPreflight && h.phase === 'TARGET_STARTING') fail('HANDOFF_REMOTE_TARGET_RECONCILE_REQUIRED', 409);
     if ((await this.auth.authenticate(token)).revision !== h.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
     if (!(device.actions ?? []).includes('HANDOFF') || !((await this.auth.authenticate(token)).actions ?? []).includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
     const sealed = h.sourceSealed || (h.sealId != null && h.sealState === 'SEALED');
@@ -2743,7 +2963,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       expectedGrantRevision: String(h.grantRevision),
       currentGrantRevision: String(d.revision),
       phase: h.phase,
-      phaseKey: `handoff:${h.requestKey}:${h.phase}`,
+      phaseKey: this.phaseKey(h),
       reauthorizationRequired: d.revision !== h.grantRevision,
     };
     let reason: string | null = null;
@@ -2755,6 +2975,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     }
     a.canResume = reason == null;
     a.reasonCode = reason;
+    out.authorization = a;
     // Upstream reads must not hold the shared authorization lock.
     try {
       if (reason == null) out.targetExecution = await this.targetExecution(d, h);
@@ -2790,11 +3011,14 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (h.targetStoreId != null) tgt.storeId = h.targetStoreId;
     if (h.targetEngineId != null) tgt.engineId = h.targetEngineId;
     if (h.targetProjectRef != null) tgt.projectRef = h.targetProjectRef;
+    if (h.policyPresetId != null) tgt.policyPresetId = h.policyPresetId;
     // The executable workspace lane an ACS target binds (GAP-02/D05).
     if (h.targetWorkspaceAlias != null) tgt.workspaceAlias = h.targetWorkspaceAlias;
     out.targetAgentRef = tgt;
     out.candidateRevision = h.candidateRevision;
     if (h.materialRevision > 0) out.materialRevision = h.materialRevision;
+    if (this.canContinueMaterials(h)) out.materialContinuationAvailable = true;
+    if (h.materialContinuations?.length) out.materialContinuations = h.materialContinuations.map(({ fingerprint: _digest, ...receipt }) => receipt);
     if (h.backgroundUntil != null) out.backgroundUntil = h.backgroundUntil;
     if (h.materialDigest != null) out.materialDigest = h.materialDigest;
     else if (h.candidateItemsDigest != null) out.candidateMaterialDigest = h.candidateItemsDigest;
@@ -2803,7 +3027,11 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     out.sourceSealed = h.sourceSealed;
     if (h.sealId != null) { out.sealId = h.sealId; out.sealState = h.sealState; }
     if (h.sourceSealRef != null) out.sourceSealRef = h.sourceSealRef;
-    if (h.sealProofSig != null) { out.sealProofScheme = 'RSA-SHA256'; out.sealKid = h.sealProofKid; out.sealProof = h.sealProofSig; }
+    if (h.sealProofSig != null && (!h.targetPreflight || ['TARGET_STARTING', 'TAKEN_OVER'].includes(h.phase))) {
+      out.sealProofScheme = h.targetPreflight ? 'RSA-SHA256-FROZEN-1' : 'RSA-SHA256';
+      out.sealKid = h.sealProofKid;
+      out.sealProof = h.sealProofSig;
+    }
     if (h.targetTaskRef != null) out.targetTaskRef = h.targetTaskRef;
     if (h.importBinding != null) out.importBinding = h.importBinding;
     if (h.materialBinding != null) out.materialBinding = h.materialBinding;
@@ -2886,8 +3114,9 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       items.push(row);
     }
     out.items = items;
-    if (h.sealProofSig != null) {
-      out.sealProof = { scheme: 'RSA-SHA256', signature: h.sealProofSig, sourceKeyId: h.sealProofKid };
+    if (h.sealProofSig != null && (!h.targetPreflight || ['TARGET_STARTING', 'TAKEN_OVER'].includes(h.phase))) {
+      out.sealProof = { scheme: h.targetPreflight ? 'RSA-SHA256-FROZEN-1' : 'RSA-SHA256',
+        signature: h.sealProofSig, sourceKeyId: h.sealProofKid };
     }
     return out;
   }
@@ -2954,18 +3183,19 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       if (method === 'POST') { if (query != null) fail('INVALID_REQUEST', 400); return this.createImport(token, device, body, key); }
       fail('OPERATION_NOT_ALLOWED', 403);
     }
-    const imp = this.loadImport(device.id, p[1]);
-    if (imp == null) fail('NOT_FOUND', 404);
-    if (method === 'GET' && p.length === 2) {
-      if (query != null) fail('INVALID_REQUEST', 400);
-      await this.refreshImportEvidence(token, device, imp!.importId);
-      return { status: 200, body: this.importView(this.loadImport(device.id, imp!.importId)!) };
-    }
     if (query != null) fail('INVALID_REQUEST', 400);
-    if (method === 'POST' && p.length === 3 && p[2] === 'materials') return this.importChunk(device, imp!, body);
-    if (method === 'POST' && p.length === 3 && p[2] === 'start') return this.startImport(token, device, imp!, body, key);
-    if (method === 'POST' && p.length === 3 && p[2] === 'cancel') return this.cancelImport(token, device, imp!, body, key);
-    fail('OPERATION_NOT_ALLOWED', 403);
+    return this.withLock(`import:${device.id}:${p[1]}`, async () => {
+      const imp = this.loadImport(device.id, p[1]);
+      if (imp == null) fail('NOT_FOUND', 404);
+      if (method === 'GET' && p.length === 2) {
+        await this.refreshImportEvidence(token, device, imp.importId);
+        return { status: 200, body: this.importView(this.loadImport(device.id, imp.importId)!) };
+      }
+      if (method === 'POST' && p.length === 3 && p[2] === 'materials') return this.importChunk(device, imp, body);
+      if (method === 'POST' && p.length === 3 && p[2] === 'start') return this.startImport(token, device, imp, body, key);
+      if (method === 'POST' && p.length === 3 && p[2] === 'cancel') return this.cancelImport(token, device, imp, body, key);
+      fail('OPERATION_NOT_ALLOWED', 403);
+    });
   }
 
   private listImports(device: Device): LocalTaskResult {
@@ -3014,14 +3244,27 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     const sourceHostRef = text(body, 'sourceHostRef'); id(sourceHostRef);
     const proof = at(body, 'sealProof');
     exact(proof, ['scheme', 'signature', 'sourceKeyId']);
-    if (text(proof, 'scheme') !== 'RSA-SHA256') fail('SEAL_PROOF_SCHEME_UNSUPPORTED', 422);
+    const scheme = text(proof, 'scheme');
+    const frozen = scheme === 'RSA-SHA256-FROZEN-1';
+    if ((!frozen && (scheme !== 'RSA-SHA256' || !this.acsUpstream)) || (frozen && this.acsUpstream)) {
+      fail('SEAL_PROOF_SCHEME_UNSUPPORTED', 422);
+    }
     const trusted = this.peer(sourceHostRef, text(proof, 'sourceKeyId'));
     if (trusted == null) fail('PEER_NOT_TRUSTED', 403);
     // Verify the seal proof now — forged/wrong-target/wrong-digest proofs
     // never stage.
     const sealId = asText(at(manifest, 'sourceSeal', 'sealId')) ?? '-';
-    const payload = `${srcHandoff}|${this.targetRefOfManifest(target)}|${asText(at(manifest, 'materialDigest'))}|${sealId}`;
+    const payload = frozen
+      ? `work-handoff-frozen/1|${this.digest(manifest)}`
+      : `${srcHandoff}|${this.targetRefOfManifest(target)}|${asText(at(manifest, 'materialDigest'))}|${sealId}`;
     if (!this.verify(trusted.publicKey, payload, text(proof, 'signature'))) fail('SEAL_PROOF_INVALID', 403);
+    const importId = `whi-${hash(`${device.id}:${rk}`).slice(0, 32)}`;
+    const fingerprint = this.digest(body);
+    const existing = this.loadImport(device.id, importId);
+    if (existing != null) {
+      if (existing.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      return { status: 200, body: this.importView(existing) };
+    }
     // Target authorization on this host.
     const tkind = text(target, 'kind');
     const imp = {} as HandoffImport;
@@ -3034,7 +3277,29 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       const identity = this.local.okNative(await this.local.nativeCall(backend, 'GET', '/identity', null, undefined));
       if (asText(at(identity, 'storeId')) !== backend) fail('LOCAL_SOURCE_IDENTITY_CHANGED', 409);
       imp.targetStoreId = backend; imp.targetEngineId = engine; imp.targetProjectRef = project;
+      if (frozen) {
+        const targetProof = at(manifest, 'targetPreflight');
+        this.ensureSigningKey();
+        const pair = this.signingKeyPair!;
+        if (!isPiEngine(engine) || hostKey !== this.namespace ||
+            !isRecord(targetProof) || targetProof.schemaVersion !== 'work-handoff-target-preflight/1' ||
+            targetProof.sourceHostRef !== sourceHostRef || targetProof.requestKey !== manifest.requestKey ||
+            targetProof.targetDeviceId !== device.id || targetProof.grantRevision !== device.revision ||
+            targetProof.kid !== pair.kid || !asText(targetProof.optionsRevision) ||
+            canonical(targetProof.target) !== canonical(target) ||
+            canonical(targetProof.sourceRef) !== canonical(manifest.sourceRef) ||
+            !this.verify(pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+              canonical(this.peerPreflightBinding(targetProof)), text(targetProof, 'signature'))) {
+          fail('HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+        }
+        const manifestItems = this.manifestItems(manifest);
+        if (!manifestItems.some(item => item.type === 'DOC' && item.sizeBytes > 0) ||
+            this.itemsDigest(manifestItems) !== manifest.materialDigest) fail('MANIFEST_DIGEST_MISMATCH', 409);
+        imp.targetOptionsRevision = text(targetProof, 'optionsRevision');
+        imp.targetPolicyPresetId = asText(at(target, 'policyPresetId'));
+      }
     } else if (tkind === 'ACS') {
+      if (frozen || !this.acsUpstream) fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
       if (!(device.actions ?? []).includes('CREATE')) fail('DEVICE_SCOPE_DENIED', 403);
       imp.targetStoreId = asText(at(await this.ownerStatus(), 'storeId')) ?? '';
       if ((target as JsonObject).projectRef != null) imp.targetProjectRef = text(target, 'projectRef');
@@ -3046,18 +3311,22 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       if (imp.targetWorkspaceAlias == null) fail('HANDOFF_TARGET_NO_EXECUTION_LANE', 409);
       id(imp.targetWorkspaceAlias);
     } else fail('MANIFEST_INVALID', 422);
-    const importId = `whi-${hash(`${device.id}:${rk}`).slice(0, 32)}`;
-    const fingerprint = this.digest(body);
-    const existing = this.loadImport(device.id, importId);
-    if (existing != null) {
-      if (existing.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
-      return { status: 200, body: this.importView(existing) };
+    const current = await this.auth.authenticate(token);
+    if (current.revision !== device.revision || current.id !== device.id) fail('GRANT_REVISION_CONFLICT', 409);
+    const concurrent = this.loadImport(device.id, importId);
+    if (concurrent) {
+      if (concurrent.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      return { status: 200, body: this.importView(concurrent) };
+    }
+    if (frozen && this.store.transaction(() => this.store.list<HandoffImport>(IMPORT_KIND))
+        .some(row => row.sourceHostRef === sourceHostRef && row.sourceHandoffId === srcHandoff)) {
+      fail('HANDOFF_IMPORT_ALREADY_BOUND', 409);
     }
     imp.importId = importId; imp.deviceId = device.id; imp.requestKey = rk; imp.fingerprint = fingerprint;
     imp.manifestJson = JSON.stringify(manifest); imp.manifestDigest = asText(at(manifest, 'materialDigest'))!;
     imp.sourceHandoffId = srcHandoff; imp.sourceSealRef = sealId; imp.sealBinding = payload;
     imp.sourceHostRef = sourceHostRef; imp.sourceKeyId = text(proof, 'sourceKeyId');
-    imp.sealScheme = 'RSA-SHA256'; imp.sealSignature = text(proof, 'signature');
+    imp.sealScheme = scheme; imp.sealSignature = text(proof, 'signature');
     imp.phase = 'STAGED'; imp.grantRevision = device.revision;
     imp.received = {}; imp.chunks = []; imp.stagedRefs = {}; imp.receipts = []; imp.spentKeys = [];
     imp.evidenceAt = 0;
@@ -3134,10 +3403,14 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     }
     if (declared == null) fail('MANIFEST_MATERIAL_UNDECLARED', 409);
     const expected = asLong(at(declared, 'sizeBytes'));
+    const dir = join(this.materialsDir, 'imports', imp.importId);
+    const file = join(dir, name);
     // Zero-byte declarations complete through a single empty slice: an empty
     // file can never arrive via nonzero chunks (R03).
     if (expected === 0 && offset === 0 && slice!.length === 0) {
       if (sha256hex(slice!) !== asText(at(declared, 'sha256'))) fail('MATERIAL_DIGEST_MISMATCH', 409);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, slice!);
       imp.received[name] = 0;
       if (!imp.chunks.includes(`complete:${name}`)) imp.chunks.push(`complete:${name}`);
       this.saveImport(imp);
@@ -3149,15 +3422,21 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     for (const applied of imp.chunks) {
       if (applied.startsWith(`${name}|${offset}|`)) fail('MATERIAL_CHUNK_DIGEST_MISMATCH', 409);
     }
-    const soFar = imp.received[name];
-    if (soFar != null && soFar !== offset) fail('INVALID_MATERIAL', 400);
-    const dir = join(this.materialsDir, 'imports', imp.importId);
+    if ((imp.received[name] ?? 0) !== offset) fail('INVALID_MATERIAL', 400);
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, name);
     if (offset === 0) writeFileSync(file, slice!);
     else {
-      const fd = openSync(file, 'a');
-      try { writeSync(fd, slice!, 0, slice!.length); } finally { closeSync(fd); }
+      // The file write may have succeeded before the ledger commit. Write at
+      // the recorded offset so replay replaces that slice instead of appending.
+      const fd = openSync(file, 'r+');
+      try {
+        let written = 0;
+        while (written < slice!.length) {
+          const count = writeSync(fd, slice!, written, slice!.length - written, offset + written);
+          if (count === 0) fail('MATERIAL_WRITE_FAILED', 503);
+          written += count;
+        }
+      } finally { closeSync(fd); }
     }
     imp.chunks.push(chunkId); imp.received[name] = offset + slice!.length;
     if (offset + slice!.length === expected) {
@@ -3166,6 +3445,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         try { unlinkSync(file); } catch { /* best effort */ }
         imp.received[name] = 0;
         imp.chunks = imp.chunks.filter((c) => !(c.startsWith(`${name}|`) || c === `complete:${name}`));
+        this.saveImport(imp);
         fail('MATERIAL_DIGEST_MISMATCH', 409);
       }
       imp.chunks.push(`complete:${name}`);
@@ -3198,8 +3478,14 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       if (imp.phase === 'STARTED') return { status: 200, body: this.importView(imp) };
       if (imp.phase === 'CANCELLED' || imp.phase === 'CANCELLING') fail('HANDOFF_IMPORT_CANCELLED', 409);
       if (imp.phase !== 'STAGED' && imp.phase !== 'STARTING') fail('HANDOFF_PHASE_MISMATCH', 409);
-      if ((await this.auth.authenticate(token)).revision !== imp.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
-      if (!(device.actions ?? []).includes('HANDOFF') || !((await this.auth.authenticate(token)).actions ?? []).includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
+      const current = await this.auth.authenticate(token);
+      if (!device.actions?.includes('HANDOFF') || !current.actions?.includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
+      if (current.revision !== imp.grantRevision) {
+        // Grant append may have committed before the import state did. Permit
+        // recovery of that exact observed task only, with its current scope.
+        if (!imp.targetOptionsRevision || !imp.targetLaunchWire || !imp.targetLaunchTaskRef) fail('GRANT_REVISION_CONFLICT', 409);
+        await this.auth.authorizeLocal(token, imp.targetStoreId!, imp.targetLaunchTaskRef, 'OBSERVE');
+      }
       // Gate: valid seal proof, all declared bytes present, digests still match.
       const trusted = this.peer(imp.sourceHostRef, imp.sourceKeyId);
       if (trusted == null) fail('PEER_NOT_TRUSTED', 403);
@@ -3217,7 +3503,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       imp.phase = 'STARTING'; this.saveImport(imp);
     }
     try {
-      await this.startImportTarget(device, imp);
+      await this.startImportTarget(token, device, imp);
       imp.phase = 'STARTED'; imp.spentKeys.push(ck);
       this.appendReceipts(imp.receipts, this.receipt(this.targetRefOfManifest(at(JSON.parse(imp.manifestJson), 'targetAgentRef')), 'STARTED', 'CREATED', 'STARTED', 'TARGET_BOUND'));
     } catch (failure) {
@@ -3228,7 +3514,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     return { status: 200, body: this.importView(imp) };
   }
 
-  private async startImportTarget(device: Device, imp: HandoffImport): Promise<void> {
+  private async startImportTarget(token: string, device: Device, imp: HandoffImport): Promise<void> {
     if (imp.targetTaskRef != null) return;
     const manifest = JSON.parse(imp.manifestJson) as JsonObject;
     let prompt = this.importPrompt(manifest);
@@ -3237,6 +3523,43 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       // Stage imported bytes into the project material profile, then LAUNCH once.
       const items = this.manifestItems(manifest);
       const dir = join(this.materialsDir, 'imports', imp.importId);
+      if (imp.targetOptionsRevision) {
+        const prior = await this.local.nativeCall(imp.targetStoreId!, 'GET', `/task-requests/${createKey}`, null, undefined);
+        let task: string | undefined;
+        if (prior.status === 200) {
+          task = asText(at(prior.body, 'taskId'));
+          if (!task || (at(prior.body, 'requestKey') ?? createKey) !== createKey) fail('LOCAL_REPLY_INVALID', 502);
+        } else if (prior.status === 404 && at(prior.body, 'code') === 'REQUEST_NOT_FOUND') {
+          if (imp.targetLaunchTaskRef) fail('LAUNCH_OUTCOME_UNKNOWN', 503);
+          const revision = await this.nativeTargetOptions(token, at(manifest, 'targetAgentRef') as JsonObject);
+          if (revision !== imp.targetOptionsRevision) fail('HANDOFF_TARGET_PREFLIGHT_CHANGED', 409);
+          await this.stageToNative(device, imp.targetStoreId!, imp.targetProjectRef!, imp.targetEngineId!, items, createKey, imp.stagedRefs, dir);
+          if (items.some(item => item.sizeBytes > 0 && ['DOC', 'TRANSCRIPT'].includes(item.type) &&
+              (!imp.stagedRefs[item.relName] || imp.stagedRefs[item.relName].startsWith('pac-export:')))) {
+            fail('HANDOFF_MATERIAL_CHANNEL_UNAVAILABLE', 409);
+          }
+          const current = await this.auth.authorizeLaunch(token, imp.targetStoreId!, imp.targetProjectRef!, imp.targetEngineId!);
+          if (current.revision !== imp.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
+          imp.targetLaunchWire ??= {
+            requestKey: createKey, projectId: imp.targetProjectRef, engineId: imp.targetEngineId,
+            optionsRevision: imp.targetOptionsRevision, instruction: prompt,
+            ...(imp.targetPolicyPresetId ? { policyPresetId: imp.targetPolicyPresetId } : {}),
+          };
+          this.saveImport(imp);
+          const started = this.local.okNative(await this.local.nativeCall(imp.targetStoreId!, 'POST', '/tasks', imp.targetLaunchWire, createKey));
+          task = asText(at(started, 'taskId'));
+          if (!task) fail('LOCAL_REPLY_INVALID', 502);
+        } else fail('LAUNCH_OUTCOME_UNKNOWN', 503);
+        id(task);
+        if (imp.targetLaunchTaskRef && imp.targetLaunchTaskRef !== task) fail('LOCAL_REPLY_INVALID', 502);
+        imp.targetLaunchTaskRef = task;
+        this.saveImport(imp);
+        await this.auth.appendLaunchedTask(device.id, imp.grantRevision, imp.targetStoreId!, imp.targetProjectRef!, imp.targetEngineId!, task);
+        imp.targetTaskRef = task;
+        imp.grantRevision = this.deviceRevision(device.id, imp.grantRevision);
+        this.saveImport(imp);
+        return;
+      }
       await this.stageToNative(device, imp.targetStoreId!, imp.targetProjectRef!, imp.targetEngineId!, items, createKey, imp.stagedRefs, dir);
       this.saveImport(imp);
       const preflight = this.local.okNative(await this.local.nativeCall(imp.targetStoreId!, 'POST', '/task-preflights',
@@ -3349,6 +3672,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         return { status: 200, body: this.importView(imp) };
       }
       if (imp.phase !== 'STARTED') {
+        if (imp.targetLaunchWire != null) fail('HANDOFF_REMOTE_TARGET_RECONCILE_REQUIRED', 409);
         imp.phase = 'CANCELLED'; imp.spentKeys.push(ck);
         this.appendReceipts(imp.receipts, this.receipt(imp.sourceHostRef, 'CANCELLED', 'NOT_STARTED', 'CANCELLED', 'CANCELLED_BEFORE_START'));
         this.saveImport(imp); this.audit(device, 'HANDOFF_IMPORT_CANCEL', imp.importId, 'CANCELLED');
@@ -3451,7 +3775,10 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       // breaks a read; the report simply stays absent.
       try {
         const evidenceDigest = hash(imp.evidenceJson);
-        const payload = `${imp.importId}|${imp.sourceHandoffId}|${imp.targetTaskRef}|${evidenceDigest}|${imp.evidenceAt}`;
+        this.ensureSigningKey();
+        const frozenManifestDigest = imp.targetOptionsRevision ? this.digest(JSON.parse(imp.manifestJson)) : undefined;
+        const payload = `${imp.importId}|${imp.sourceHandoffId}|${imp.targetTaskRef}|${evidenceDigest}|${imp.evidenceAt}`
+          + (frozenManifestDigest ? `|${frozenManifestDigest}` : '');
         out.consumptionReport = {
           scheme: 'RSA-SHA256',
           sourceKeyId: this.signingKeyPair!.kid,
@@ -3460,6 +3787,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
           targetTaskRef: imp.targetTaskRef,
           verifiedAt: imp.evidenceAt,
           evidenceDigest,
+          ...(frozenManifestDigest ? { frozenManifestDigest } : {}),
           signature: this.sign(payload),
         };
       } catch { /* report stays unsigned */ }

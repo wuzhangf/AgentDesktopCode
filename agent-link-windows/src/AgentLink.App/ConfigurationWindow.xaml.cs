@@ -282,6 +282,22 @@ public partial class ConfigurationWindow : Window
 
     private void Phone_Click(object sender, RoutedEventArgs e) => openPhone();
 
+    private async void HandoffPeers_Click(object sender, RoutedEventArgs e)
+    {
+        await RunAsync(async () =>
+        {
+            var key = await call(new("handoffSigningKey"));
+            var peers = await call(new("handoffPeers"));
+            if (!key.Ok || key.Data is not JsonObject publicKey || publicKey["available"]?.GetValue<bool>() != true ||
+                !peers.Ok || peers.Data is not JsonObject directory)
+            {
+                SetNotice(key.Error ?? peers.Error ?? "此电脑的交接密钥暂不可用。", error: true);
+                return;
+            }
+            new HandoffPeersWindow(call, publicKey, directory) { Owner = this }.ShowDialog();
+        });
+    }
+
     private async void CloudLaunch_Click(object sender, RoutedEventArgs e)
     {
         await RunAsync(async () =>

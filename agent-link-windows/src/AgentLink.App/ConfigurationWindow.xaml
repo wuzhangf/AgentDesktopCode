@@ -63,6 +63,7 @@
             <DockPanel>
                 <Button DockPanel.Dock="Right" Content="手机连接" Click="Phone_Click"/>
                 <Button DockPanel.Dock="Right" Content="云任务授权" Click="CloudLaunch_Click" Margin="0,0,8,0"/>
+                <Button DockPanel.Dock="Right" Content="交接对端" Click="HandoffPeers_Click" Margin="0,0,8,0"/>
                 <Image DockPanel.Dock="Left" Source="{StaticResource BrandMark}" Width="30" Height="30" Margin="0,0,12,0"/>
                 <TextBlock Text="配置管理" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
             </DockPanel>

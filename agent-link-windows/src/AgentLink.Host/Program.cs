@@ -640,6 +640,12 @@ internal sealed class LinkHost : IDisposable
             if (!status.Ready || ports is null) return new(false, "后台网关暂未就绪");
             switch (request.Operation)
             {
+                case "handoffSigningKey":
+                    return new(true, Data: await OwnerAsync(HttpMethod.Get, "work-handoffs/signing-key", null, cancellation));
+                case "handoffPeers":
+                    return new(true, Data: await OwnerAsync(HttpMethod.Get, "work-handoffs/trusted-peer-keys", null, cancellation));
+                case "setHandoffPeer" when request.Args is JsonObject peer:
+                    return new(true, Data: await OwnerAsync(HttpMethod.Put, "work-handoffs/trusted-peer-keys", peer, cancellation));
                 case "cloudLaunch" or "setCloudLaunch":
                     var cloudCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
                     return request.Operation == "cloudLaunch"
