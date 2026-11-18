@@ -752,14 +752,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.childMessages = new ChildMessagesAccess(devices, agentUpstream);
   }
 
-  // WorkHandoffAccess (Java PersonalWorkHandoffService, M04-Mac) — the
-  // durable handoff coordinator needs BOTH the ACS upstream (source/target
-  // ACS lanes + imports) and worker-local access; either missing → its
-  // routes 503 like Java's null-injection paths.
-  if (!ctx.acsHandoffBridge && agentUpstream !== undefined && localTasks !== undefined) {
+  // WorkHandoffAccess shares the coordinator with ACS-enabled gateways.
+  // Without ACS it only coordinates locally authorized native tasks.
+  if (!ctx.acsHandoffBridge && localTasks !== undefined) {
     ctx.workHandoffs = new WorkHandoffAccess(
       store, devices, agentUpstream, localTasks,
       join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id);
+    if (agentUpstream === undefined) ctx.nativeLocalHandoffs = true;
   }
 
   // ClientAccessService is always constructible — its SourcePort fails
@@ -970,6 +969,12 @@ export async function main(): Promise<void> {
     void built.cliSupervisor.start();
   }
   built.cloudLaunch?.start();
+  const handoffProgress = built.ctx.nativeLocalHandoffs ? setInterval(() => {
+    void built.ctx.workHandoffs?.advanceConfirmedLocalHandoffs?.().catch(() => {
+      console.error(JSON.stringify({ listener: 'device-gateway', action: 'handoff-background', state: 'ERROR' }));
+    });
+  }, 1000) : undefined;
+  handoffProgress?.unref();
 
   // Bonjour advertisement — phones discover this host as "_agentlink._tcp".
   // The advert is public discovery facts only; pairing still needs owner
@@ -1029,6 +1034,7 @@ export async function main(): Promise<void> {
     console.log(JSON.stringify({ listener: 'device-gateway', signal, action: 'shutdown' }));
     if (scanTimer !== undefined) clearTimeout(scanTimer);
     clearInterval(refreshAlternates);
+    if (handoffProgress) clearInterval(handoffProgress);
     built.cloudLaunch?.stop();
     mdns.stop();
     let pending = listeners.length;

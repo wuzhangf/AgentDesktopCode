@@ -747,7 +747,12 @@ internal sealed class LinkHost : IDisposable
                     var scopes = LaunchScopes.FromCatalog(inviteCap?["localSource"]);
                     var actions = new List<string> { "OBSERVE", "CONTROL", "INTERACT", "APPROVE" };
                     if (scopes.Count > 0)
+                    {
                         actions.AddRange(["LAUNCH", "COLLABORATE", "ADOPT"]);
+                        if (inviteCap?["nativeLocalHandoffs"]?.GetValue<bool>() == true &&
+                            scopes.Any(scope => scope.EngineId is "pi" or "sage-pi" or "codex"))
+                            actions.Add("HANDOFF");
+                    }
                     if (request.Args?["createAcs"]?.GetValue<bool>() == true)
                     {
                         if (inviteCap?["acsSessionCreate"]?.GetValue<bool>() != true)

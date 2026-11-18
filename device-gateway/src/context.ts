@@ -312,6 +312,7 @@ export interface GatewayChildMessages {
 // ---------------------------------------------------------------------------
 
 export interface GatewayWorkHandoffs {
+  advanceConfirmedLocalHandoffs?(): Promise<void>;
   /** Java remote() — the whole /personal/v1/work-handoffs dispatcher. */
   remote(
     token: string,
@@ -462,8 +463,9 @@ export interface GatewayContext {
   agentSessions?: GatewayAgentSessions;
   /** Undefined when no ACS upstream is wired (Java childMessages==null). */
   childMessages?: GatewayChildMessages;
-  /** Undefined when the handoff coordinator is not wired (needs localTasks+acs). */
+  /** Undefined when the handoff coordinator is not wired. */
   workHandoffs?: GatewayWorkHandoffs;
+  nativeLocalHandoffs?: true;
   /** Undefined → POST /personal/v1/transcriptions fails TRANSCRIPTION_NOT_CONFIGURED. */
   transcription?: GatewayTranscription;
   /** Undefined → /hooks/v1 fails APPROVALS_NOT_CONFIGURED; phone routes 404. */

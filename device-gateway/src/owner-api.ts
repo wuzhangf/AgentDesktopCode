@@ -223,6 +223,7 @@ export async function handleOwnerRoute(
     if (method === 'GET' && path === `${ROOT}/capabilities`) {
       const out: JsonObject = { ...(await ctx.auth.ownerStatus()) };
       out.acsSessionCreate = ctx.agentSessions !== undefined;
+      out.nativeLocalHandoffs = ctx.nativeLocalHandoffs === true;
       // The tray's member-center entry reads this same field on the owner
       // surface — phone-api already publishes it (MC-R06).
       out.dailyOrigin = ctx.commercial?.dailyOrigin ?? null;

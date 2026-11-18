@@ -13,8 +13,8 @@
  *   trusted-peer RSA-SHA256 signed consumption report) closes the loop.
  * - Materials live under materialsDir/{handoffs,imports}/<owner>/<relName>,
  *   written tmp→rename, every byte SHA-256 tracked in the manifest.
- * - Reads never advance the record; only the owner device (original deviceId
- *   + HANDOFF scope) may drive a phase — cloud/phone/target never race it.
+ * - Reads never advance the record. Explicit confirmation can delegate
+ *   bounded local progress under the same device grant and phase lock.
  */
 import {
   createHash, createPrivateKey, createPublicKey, generateKeyPairSync,
@@ -32,7 +32,7 @@ import type {
 } from './context.js';
 import {
   Device, exact as exactFields, fail, GatewayError, hash,
-  id as checkId, isRecord, text as fieldText,
+  id as checkId, isRecord, permitsLaunch, scopeContains, text as fieldText,
 } from './protocol.js';
 
 type Json = JsonObject;
@@ -158,6 +158,8 @@ interface Handoff {
   pendingStep?: string;
   pendingReason?: string;
   grantRevision: number;
+  backgroundUntil?: number;
+  backgroundGrantRevision?: number;
   candidateRevision: number;
   materialRevision: number;
   candidateItemsDigest?: string;
@@ -184,6 +186,7 @@ interface Handoff {
   sealProofKid?: string;
   sealProofSig?: string;
   targetTaskRef?: string;
+  targetLaunchWire?: JsonObject;
   targetRunRef?: string;
   importBinding?: string;
   targetRetries?: TargetRetry[];
@@ -256,7 +259,10 @@ const AUDIT_KIND = 'action-audit';
 const PHASES = ['PREPARING', 'AWAITING_CONFIRM', 'SOURCE_SEALING',
   'FINALIZING_MATERIALS', 'TARGET_STAGING', 'TARGET_STARTING', 'TAKEN_OVER'];
 const TERMINAL = ['TAKEN_OVER', 'FAILED', 'CANCELLED'];
-const ENGINES = ['pi', 'codex'];
+const BACKGROUND_PHASES = ['SOURCE_SEALING', 'FINALIZING_MATERIALS', 'TARGET_STAGING', 'TARGET_STARTING'];
+const BACKGROUND_TTL_MS = 20 * 60 * 1000;
+const isPiEngine = (engine: string | undefined): boolean => engine === 'pi' || engine === 'sage-pi';
+const ENGINES = ['pi', 'sage-pi', 'codex'];
 const CHUNK = 262144;
 const SUBSTANTIVE_REPLY_BYTES = 96;
 const ACK_SHAPED = /^(收到|已收到|明白了?|知道了?|好的?|好|嗯|了解|收到。?|ok|okay|acknowledged?|understood|noted|got\s*it|will\s*do|roger|copy(\s*that)?|done|yes)[\s!。.！,，、~～…·-]*$/i;
@@ -359,16 +365,22 @@ function sleep(ms: number): Promise<void> {
 export class WorkHandoffAccess implements GatewayWorkHandoffs {
   private signingKeyPair: { kid: string; publicKey: KeyObject; privateKey: KeyObject } | undefined;
   private readonly locks = new Map<string, Promise<void>>();
+  private backgroundRunning = false;
 
   constructor(
     private readonly store: GatewayStoreView,
     private readonly auth: GatewayAuth,
-    private readonly acs: HandoffAcs,
+    private readonly acsUpstream: HandoffAcs | undefined,
     private readonly local: GatewayLocalTasks,
     private readonly materialsDir: string,
     private readonly signingDir: string,
     private readonly namespace: string,
   ) {}
+
+  private get acs(): HandoffAcs {
+    if (!this.acsUpstream) fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+    return this.acsUpstream;
+  }
 
   private sourceKey(did: string, clientKey: string): string {
     return `mobile-${hash(`${this.namespace}:${did}:${clientKey}`)}`;
@@ -440,8 +452,56 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prior = this.locks.get(key) ?? Promise.resolve();
     const next = prior.then(fn, fn);
-    this.locks.set(key, next.then(() => undefined, () => undefined));
-    return next;
+    const settled = next.then(() => undefined, () => undefined);
+    this.locks.set(key, settled);
+    try { return await next; }
+    finally { if (this.locks.get(key) === settled) this.locks.delete(key); }
+  }
+
+  private canProgressInBackground(h: Handoff | undefined): h is Handoff {
+    return h !== undefined && h.targetHostKey === 'local' && h.sourceKind === 'WORKER_LOCAL'
+      && h.targetKind === 'WORKER_LOCAL' && BACKGROUND_PHASES.includes(h.phase)
+      && (h.backgroundUntil ?? 0) > Date.now() && h.failureCode == null;
+  }
+
+  async advanceConfirmedLocalHandoffs(): Promise<void> {
+    if (this.acsUpstream || this.backgroundRunning) return;
+    this.backgroundRunning = true;
+    try {
+      const pending = this.store.transaction(() => this.store.list<Handoff>(HANDOFF_KIND));
+      const batch = pending.filter(h => this.canProgressInBackground(h))
+        .sort((a, b) => a.updatedAt - b.updatedAt).slice(0, 4);
+      for (const candidate of batch) {
+        await this.withLock(this.recordId(candidate.deviceId, candidate.handoffId), async () => {
+          const h = this.loadHandoff(candidate.deviceId, candidate.handoffId);
+          if (!this.canProgressInBackground(h)) return;
+          try {
+            const actor = await this.auth.activeDevice(h.deviceId);
+            this.checkBackgroundDevice(actor, h);
+            await this.advanceHandoff(h, actor, `handoff:${h.requestKey}:${h.phase}`, {});
+          } catch (error) {
+            if (!(error instanceof GatewayError)) throw error;
+            if (h.failureCode == null) {
+              h.backgroundUntil = undefined;
+              this.saveHandoff(h);
+            }
+          }
+        });
+      }
+    } finally { this.backgroundRunning = false; }
+  }
+
+  private checkBackgroundDevice(actor: Device, h: Handoff): void {
+    if (actor.revision !== h.backgroundGrantRevision || actor.revision !== h.grantRevision) {
+      fail('GRANT_REVISION_CONFLICT', 409);
+    }
+    const actions = actor.actions ?? [];
+    if (!actions.includes('HANDOFF') || !actions.includes('OBSERVE')
+        || !scopeContains(actor, 'WORKER_LOCAL', h.sourceStoreId, h.sourceTaskId!)) fail('DEVICE_SCOPE_DENIED', 403);
+    const targetAllowed = h.targetTaskRef != null
+      ? scopeContains(actor, 'WORKER_LOCAL', h.targetStoreId!, h.targetTaskRef)
+      : actions.includes('LAUNCH') && permitsLaunch(actor, h.targetStoreId!, h.targetProjectRef!, h.targetEngineId!);
+    if (!targetAllowed) fail('DEVICE_SCOPE_DENIED', 403);
   }
 
   // ---- signing key (Java ensureSigningKey/sign/verify/publicSigningKey) -----
@@ -554,6 +614,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     key: string | null,
     rawQuery: string | null,
   ): Promise<LocalTaskResult> {
+    if (rawQuery === '') rawQuery = null;
     const device = await this.auth.authenticate(token);
     if (tail.length === 0) {
       if (method === 'GET') {
@@ -567,7 +628,10 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       fail('OPERATION_NOT_ALLOWED', 403);
     }
     for (const segment of tail) id(segment);
-    if (tail[0] === 'imports') return this.imports(token, device, method, tail, body, key, rawQuery);
+    if (tail[0] === 'imports') {
+      if (!this.acsUpstream) fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+      return this.imports(token, device, method, tail, body, key, rawQuery);
+    }
     if (tail[0] === 'requests' && tail.length === 2 && method === 'GET') {
       if (rawQuery != null) fail('INVALID_REQUEST', 400);
       return this.requestLookup(token, device, tail[1]);
@@ -695,6 +759,10 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (!['ACS', 'WORKER_LOCAL'].includes(sourceKind)) fail('INVALID_REQUEST', 400);
     if (!['ACS', 'WORKER_LOCAL'].includes(targetKind)) fail('INVALID_REQUEST', 400);
     if (!(device.actions ?? []).includes('HANDOFF')) fail('DEVICE_SCOPE_DENIED', 403);
+    const hostKey = text(tgt, 'hostKey'); id(hostKey);
+    if (!this.acsUpstream && (sourceKind !== 'WORKER_LOCAL' || targetKind !== 'WORKER_LOCAL' || hostKey !== 'local')) {
+      fail('HANDOFF_GATEWAY_TARGET_UNAVAILABLE', 409);
+    }
 
     const h = {} as Handoff;
     h.sourceKind = sourceKind; h.targetKind = targetKind;
@@ -727,11 +795,14 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       if (asText(at(facts, 'taskId')) !== task) fail('LOCAL_BINDING_MISMATCH', 409);
       const engine = asText(at(facts, 'engineId')) ?? '';
       if (!ENGINES.includes(engine)) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+      if (!this.acsUpstream && !['AVAILABLE', 'BLOCKED_BY_STATE'].includes(
+        asText(at(facts, 'sourceCapabilities', 'actions', 'handoff.seal', 'state')) ?? '')) {
+        fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+      }
       if ((src as JsonObject).engineId != null && text(src, 'engineId') !== engine) fail('LOCAL_BINDING_MISMATCH', 409);
       h.sourceStoreId = backend; h.sourceTaskId = task; h.sourceEngineId = engine;
     }
 
-    const hostKey = text(tgt, 'hostKey'); id(hostKey);
     h.targetHostKey = hostKey;
     if (hostKey === 'local') {
       if (targetKind === 'ACS') {
@@ -827,7 +898,11 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   // ---------- confirm ----------
 
   private async confirm(token: string, device: Device, h: Handoff, body: unknown, key: string | null): Promise<LocalTaskResult> {
-    exact(body, ['requestKey', 'expectedMaterialRevision', 'expectedMaterialDigest']);
+    exact(body, ['requestKey', 'expectedMaterialRevision', 'expectedMaterialDigest', 'allowBackgroundProgress']);
+    const background = at(body, 'allowBackgroundProgress');
+    if (background !== undefined && typeof background !== 'boolean') fail('INVALID_REQUEST', 400);
+    if (background && (this.acsUpstream || h.sourceKind !== 'WORKER_LOCAL'
+      || h.targetHostKey !== 'local' || h.targetKind !== 'WORKER_LOCAL')) fail('HANDOFF_BACKGROUND_UNAVAILABLE', 409);
     const ck = text(body, 'requestKey');
     if (ck !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
     if (h.spentKeys.includes(ck)) return { status: 200, body: await this.authorizedView(token, h) };
@@ -841,10 +916,17 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         && text(body, 'expectedMaterialDigest') !== h.candidateItemsDigest) {
       fail('MATERIAL_REVISION_CONFLICT', 409);
     }
+    if (background && at(body, 'expectedMaterialDigest') == null) fail('MATERIAL_REVISION_CONFLICT', 409);
     if ((await this.auth.authenticate(token)).revision !== h.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
     await this.authForHandoff(token, h);
     if (!(device.actions ?? []).includes('HANDOFF') || !((await this.auth.authenticate(token)).actions ?? []).includes('HANDOFF')) {
       fail('DEVICE_SCOPE_DENIED', 403);
+    }
+    if (background) {
+      const actor = await this.phaseDevice(token, h);
+      if (actor.revision !== h.grantRevision) fail('GRANT_REVISION_CONFLICT', 409);
+      h.backgroundGrantRevision = actor.revision;
+      h.backgroundUntil = Date.now() + BACKGROUND_TTL_MS;
     }
     h.materialRevision = h.candidateRevision;
     h.phase = 'SOURCE_SEALING'; h.pendingReason = undefined; h.spentKeys.push(ck);
@@ -1041,6 +1123,11 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     // and every required scope; a GET hint is never authority.
     const device2 = await this.phaseDevice(token, h);
     if (device2.revision !== h.grantRevision) this.reauthorize(h, device2, ck);
+    await this.advanceHandoff(h, device2, ck, body);
+    return { status: 200, body: await this.authorizedView(token, h) };
+  }
+
+  private async advanceHandoff(h: Handoff, device2: Device, ck: string, body: unknown): Promise<void> {
     const before = h.phase;
     try {
       switch (before) {
@@ -1066,7 +1153,6 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     // failure code next to TAKEN_OVER (R26).
     if (h.phase !== before) { h.failureCode = undefined; h.failurePhase = undefined; }
     this.saveHandoff(h);
-    return { status: 200, body: await this.authorizedView(token, h) };
   }
 
   private advance(h: Handoff, next: string, sourceState: string, effect: string, reason: string): void {
@@ -1470,7 +1556,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     let seal: Json;
     if (h.sourceKind === 'WORKER_LOCAL') {
       const wire: JsonObject = {};
-      if (h.sourceEngineId === 'pi') {
+      if (isPiEngine(h.sourceEngineId)) {
         let existing: Json | '__MISSING__' | undefined;
         try { existing = await this.piSealOrStop(device, h); }
         catch (uncertain) {
@@ -1521,7 +1607,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   private async piSealOrStop(device: Device, h: Handoff): Promise<Json | '__MISSING__' | undefined> {
     const base = `/tasks/${h.sourceTaskId}`;
     let facts = this.local.okNative(await this.local.nativeCall(h.sourceStoreId, 'GET', base, null, undefined));
-    if (asText(at(facts, 'taskId')) !== h.sourceTaskId || asText(at(facts, 'engineId')) !== 'pi') fail('LOCAL_BINDING_MISMATCH', 409);
+    if (asText(at(facts, 'taskId')) !== h.sourceTaskId || asText(at(facts, 'engineId')) !== h.sourceEngineId) fail('LOCAL_BINDING_MISMATCH', 409);
     const fenced = at(facts, 'sealedFor');
     if (isRecord(fenced)) {
       if (asText(at(fenced, 'target')) !== h.handoffId) fail('SOURCE_ALREADY_SEALED', 409);
@@ -1670,7 +1756,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       // Pi report `name` is the human objective, not a material path. Keep
       // Codex's existing part/name contract; only this proven Pi projection
       // uses its stable id. The fact JSON retains the name.
-      const piReport = h.sourceEngineId === 'pi'
+      const piReport = isPiEngine(h.sourceEngineId)
         && asText(at(exportJson, 'schemaVersion')) === 'handoff-export/1'
         && asText(at(part, 'kind')) === 'COLLABORATION_REPORT';
       const name = piReport ? text(part, 'id')
@@ -1786,6 +1872,11 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (h.targetHostKey === 'local' && h.targetKind === 'WORKER_LOCAL') {
       await this.stageToNative(device, h.targetStoreId!, h.targetProjectRef!, h.targetEngineId!, h.items,
         this.launchKey(h), h.stagedRefs, this.itemDir('handoffs', h.handoffId));
+      if (!this.acsUpstream && h.items.some(item => item.sizeBytes > 0 &&
+        (item.type === 'DOC' || item.type === 'TRANSCRIPT') &&
+        (!h.stagedRefs[item.relName] || h.stagedRefs[item.relName].startsWith('pac-export:')))) {
+        fail('HANDOFF_MATERIAL_CHANNEL_UNAVAILABLE', 409);
+      }
       h.materialBinding = 'MATERIAL_UPLOADS';
     } else if (h.targetHostKey === 'local' && h.targetKind === 'ACS') {
       h.materialBinding = 'INLINE_REFERENCES';
@@ -1814,11 +1905,12 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     d: Device, backend: string, project: string, engine: string,
     items: Item[], createKey: string, staged: Record<string, string>, dir: string,
   ): Promise<void> {
-    const pi = engine === 'pi';
+    const pi = isPiEngine(engine);
     const base = pi ? '/material-uploads' : `/projects/${project}/material-uploads`;
     for (const item of items) {
       if (staged[item.relName] != null) continue;
       const bytes = new Uint8Array(readFileSync(join(dir, item.relName)));
+      if (bytes.length !== item.sizeBytes || sha256hex(bytes) !== item.sha256) fail('LOCAL_ARTIFACT_CHANGED', 409);
       if (bytes.length < 1) {
         // Empty blobs carry no bytes; hosts reject sizeBytes<1, so keep the
         // digest as a PAC export reference instead of staging a lie.
@@ -1838,7 +1930,15 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
           this.withTarget(create, createKey, item, bytes, media), create));
         const uploadKey = asText(at(upload, 'uploadKey'));
         if (uploadKey == null) fail('LOCAL_REPLY_INVALID', 502);
-        for (let offset = 0; offset < bytes.length;) {
+        const existingRef = asText(at(upload, 'materialRef'));
+        if (existingRef && at(upload, 'state') === 'SEALED') {
+          if (at(upload, 'sha256') !== item.sha256) fail('LOCAL_ARTIFACT_CHANGED', 409);
+          staged[item.relName] = existingRef;
+          continue;
+        }
+        const received = asLong(at(upload, 'nextOffset'));
+        if (!Number.isSafeInteger(received) || received < 0 || received > bytes.length) fail('LOCAL_REPLY_INVALID', 502);
+        for (let offset = received; offset < bytes.length;) {
           const slice = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length));
           const chunkKey = this.sourceKey(d.id, `mu-chunk:${uploadKey}:${offset}`);
           const digest = sha256hex(slice);
@@ -1852,13 +1952,16 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         const sealKey = this.sourceKey(d.id, `mu-seal:${uploadKey}`);
         const sealed = this.local.okNative(await this.local.nativeCall(backend, 'POST', `${base}/${uploadKey}/seal`,
           { requestKey: sealKey, sha256: item.sha256 }, sealKey));
+        const sealedDigest = at(sealed, 'sha256');
+        if (sealedDigest != null && sealedDigest !== item.sha256) fail('LOCAL_ARTIFACT_CHANGED', 409);
         staged[item.relName] = asText(at(sealed, 'materialRef')) ?? uploadKey;
       } catch (rejected) {
         // A deterministic refusal (media ceiling, kind allowlist, target
         // binding) must not wedge TARGET_STAGING forever — the item stays
         // retrievable as a PAC export reference while transient upstream
         // faults still propagate for retry.
-        if (rejected instanceof GatewayError && rejected.httpStatus >= 400 && rejected.httpStatus < 500) {
+        if (rejected instanceof GatewayError && rejected.code !== 'LOCAL_ARTIFACT_CHANGED' &&
+            rejected.httpStatus >= 400 && rejected.httpStatus < 500) {
           staged[item.relName] = `pac-export:${item.sha256}`;
         } else throw rejected;
       }
@@ -1890,7 +1993,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (n.endsWith('.json')) return 'application/json';
     if (n.endsWith('.md')) return 'text/markdown';
     if (n.endsWith('.txt') || n.endsWith('.log') || n.endsWith('.patch') || n.endsWith('.diff') || n.endsWith('.csv')) return 'text/plain';
-    if (engine === 'pi' && (item.type === 'BUNDLE' || n.endsWith('.bundle') || n.endsWith('.git'))) return 'application/x-git-bundle';
+    if (isPiEngine(engine) && (item.type === 'BUNDLE' || n.endsWith('.bundle') || n.endsWith('.git'))) return 'application/x-git-bundle';
     return null;
   }
 
@@ -2073,24 +2176,23 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       await this.bindNativeTarget(d, h, prior.body as Json);
       return;
     }
-    const preflight = this.local.okNative(await this.local.nativeCall(h.targetStoreId!, 'POST', '/task-preflights',
-      { projectId: h.targetProjectRef, engineId: h.targetEngineId }, undefined));
-    if (asText(at(preflight, 'projectId')) !== h.targetProjectRef || asText(at(preflight, 'engineId')) !== h.targetEngineId) {
-      fail('LOCAL_BINDING_MISMATCH', 409);
+    if (prior.status !== 404) { h.pendingReason = 'LAUNCH_OUTCOME_UNKNOWN'; return; }
+    if (h.targetLaunchWire == null) {
+      const preflight = this.local.okNative(await this.local.nativeCall(h.targetStoreId!, 'POST', '/task-preflights',
+        { projectId: h.targetProjectRef, engineId: h.targetEngineId }, undefined));
+      if (asText(at(preflight, 'projectId')) !== h.targetProjectRef || asText(at(preflight, 'engineId')) !== h.targetEngineId) {
+        fail('LOCAL_BINDING_MISMATCH', 409);
+      }
+      const optionsRevision = asText(at(preflight, 'optionsRevision'));
+      if (optionsRevision == null) fail('PREFLIGHT_CHANGED', 409);
+      h.targetLaunchWire = {
+        requestKey: launchKey, projectId: h.targetProjectRef, engineId: h.targetEngineId,
+        optionsRevision, instruction: this.takeoverPrompt(h),
+        ...(h.policyPresetId == null ? {} : { policyPresetId: h.policyPresetId }),
+      };
+      this.saveHandoff(h);
     }
-    const optionsRevision = asText(at(preflight, 'optionsRevision'));
-    if (optionsRevision == null) fail('PREFLIGHT_CHANGED', 409);
-    const wire: JsonObject = {
-      requestKey: launchKey,
-      projectId: h.targetProjectRef,
-      engineId: h.targetEngineId,
-      optionsRevision,
-      instruction: this.takeoverPrompt(h),
-    };
-    // Neither engine accepts materials[] on task create: refs ride the first
-    // NATIVE_FOLLOW_UP message after launch instead — attachNativeMaterials.
-    if (h.policyPresetId != null) wire.policyPresetId = h.policyPresetId;
-    const reply = await this.local.nativeCall(h.targetStoreId!, 'POST', '/tasks', wire, launchKey);
+    const reply = await this.local.nativeCall(h.targetStoreId!, 'POST', '/tasks', h.targetLaunchWire, launchKey);
     if (reply.status < 200 || reply.status >= 300) {
       if (reply.status === 404 || reply.status >= 500) { h.pendingReason = 'LAUNCH_OUTCOME_UNKNOWN'; return; }
       const code = asText(at(reply.body, 'code')) ?? '';
@@ -2106,6 +2208,9 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     h.targetTaskRef = task;
     await this.auth.appendLaunchedTask(d.id, h.grantRevision, h.targetStoreId!, h.targetProjectRef!, h.targetEngineId!, task);
     h.grantRevision = this.deviceRevision(d.id, h.grantRevision);
+    if (h.backgroundGrantRevision === d.revision && h.grantRevision === d.revision + 1) {
+      h.backgroundGrantRevision = h.grantRevision;
+    }
     // Persist the advanced grant revision immediately — a lost reply after
     // this point must not leave the ledger one revision behind the device row.
     this.saveHandoff(h);
@@ -2129,6 +2234,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     stagedRefs: Record<string, string>, keySuffix: string, revision: number,
     receipts: Receipt[], targetRef: string,
   ): Promise<void> {
+    if (this.hasReceipt(receipts, 'MATERIAL_BOUND')) return;
     const ordered = [...items].sort((a, b) => {
       const pa = MATERIAL_PRIORITY.indexOf(a.type); const pb = MATERIAL_PRIORITY.indexOf(b.type);
       return (pa < 0 ? MATERIAL_PRIORITY.length : pa) - (pb < 0 ? MATERIAL_PRIORITY.length : pb);
@@ -2148,13 +2254,16 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (mats.length === 0) return;
     const key = this.sourceKey(d.id, keySuffix);
     // Idempotent re-drive: a recorded op means the follow-up already landed.
-    const prior = await this.local.nativeCall(storeId, 'GET', `/task-requests/${key}`, null, undefined);
+    const scoped = await this.local.nativeCall(storeId, 'GET', `/tasks/${taskRef}/interaction-requests/${key}`, null, undefined);
+    const prior = scoped.status === 404
+      ? await this.local.nativeCall(storeId, 'GET', `/task-requests/${key}`, null, undefined) : scoped;
     if (prior.status === 200 && prior.body != null) {
       if (!this.hasReceipt(receipts, 'MATERIAL_BOUND')) {
         this.appendReceipts(receipts, this.receipt(targetRef, 'TARGET_STARTING', 'STARTED', 'MATERIAL_BOUND', 'FIRST_MESSAGE_ATTACHED'));
       }
       return;
     }
+    if (prior.status !== 404) return;
     // The worker interact contract fences every dispatch on the task's
     // current generation/session/turn/command — read them live.
     const detail = await this.local.nativeCall(storeId, 'GET', `/tasks/${taskRef}`, null, undefined);
@@ -2380,7 +2489,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     await this.attachNativeMaterialsTo(d, h);
     const e = await this.nativeEvidenceJson(d, h.targetStoreId!, h.targetTaskRef!,
       this.launchKey(h), this.sourceKey(d.id, `attach:${h.handoffId}`),
-      h.materialBinding === 'MATERIAL_UPLOADS' && this.attachPending(h.items, h.stagedRefs, h.receipts));
+      h.materialBinding === 'MATERIAL_UPLOADS' && Object.values(h.stagedRefs).some(ref => !ref.startsWith('pac-export:')));
     if (e != null) { h.evidenceJson = e; return true; }
     return false;
   }
@@ -2686,6 +2795,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     out.targetAgentRef = tgt;
     out.candidateRevision = h.candidateRevision;
     if (h.materialRevision > 0) out.materialRevision = h.materialRevision;
+    if (h.backgroundUntil != null) out.backgroundUntil = h.backgroundUntil;
     if (h.materialDigest != null) out.materialDigest = h.materialDigest;
     else if (h.candidateItemsDigest != null) out.candidateMaterialDigest = h.candidateItemsDigest;
     if (h.pendingReason != null) out.pendingReason = h.pendingReason;

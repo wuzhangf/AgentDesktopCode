@@ -105,6 +105,10 @@ const INPUT = 'local-input';
 const GRAPHICS = 'local-graphics';
 const HISTORY_LIMIT = 128;
 const REJECTED = new Set([400, 403, 409, 422, 428]);
+const COLLABORATION_ACTION: Readonly<Record<string, string>> = {
+  COLLAB_CREATE: 'COLLABORATE', COLLAB_PREFLIGHT: 'COLLABORATE',
+  COLLAB_PREVIEW: 'COLLABORATE', COLLAB_STOP: 'CONTROL', ADOPT_APPLY: 'ADOPT',
+};
 const OFFICE_PROTOCOL = 'mac-native-capabilities/1';
 const OFFICE_RECIPE = 'mac.native-work/1';
 const WORKFLOW_RECIPE = 'mac.app-workflow/1';
@@ -356,7 +360,7 @@ export class LocalTaskAccess {
     key?: string,
     deadlineMillis?: number,
   ): Promise<LocalResult> {
-    const result = await this.source(backend, method, tail, body, key, deadlineMillis);
+    const result = await this.source(backend, method, tail, method === 'GET' ? undefined : body, key, deadlineMillis);
     return { status: result.status, body: result.data as Json | null };
   }
 
@@ -722,6 +726,9 @@ export class LocalTaskAccess {
     const historyTranscript = method === 'GET' && p[1] === 'history' && p[2] === 'sessions' && p.length === 4;
     if (query !== null && query !== '') {
       if (historyPage || historyTranscript) LocalTaskAccess.validateHistoryQuery(query, historyTranscript);
+      else if (method === 'GET' && p.length === 8 && p[3] === 'collaborations' && p[7] === 'messages') {
+        LocalTaskAccess.validateMessagesQuery(query);
+      }
       else if (messagesPage) LocalTaskAccess.validateMessagesQuery(query);
       else LocalTaskAccess.validateQuery(query);
     }
@@ -958,6 +965,7 @@ export class LocalTaskAccess {
     if (p.length >= 3 && p[1] === 'tasks') {
       const task = p[2]!;
       await this.auth.authorizeLocal(token, backend, task, 'OBSERVE');
+      if (p[3] === 'collaborations') return this.collaboration(token, backend, task, method, p.slice(4), body, key, query);
       if (p.length >= 4 && p[3] === 'graphics') {
         return this.graphics(token, backend, task, method, p, body, key, query);
       }
@@ -1060,6 +1068,127 @@ export class LocalTaskAccess {
       }
     }
     fail('OPERATION_NOT_ALLOWED', 403);
+  }
+
+  private async collaboration(token: string, backend: string, task: string, method: string,
+    parts: string[], body: unknown, key: string | null, query: string | null): Promise<LocalResult> {
+    const [group, lane, reference, leaf] = parts;
+    const base = `/tasks/${task}/collaborations`;
+    const boundGroup = async (): Promise<Json> => {
+      const result = this.ok(await this.source(backend, 'GET', `${base}/${group}`));
+      if (result.collaborationId !== group || result.taskId !== task) fail('LOCAL_BINDING_MISMATCH', 409);
+      return result;
+    };
+    if (method === 'GET') {
+      const childMessages = parts.length === 4 && lane === 'children' && leaf === 'messages';
+      const preview = parts.length === 3 && lane === 'previews';
+      const adoptions = (parts.length === 2 || parts.length === 3) && lane === 'adoptions';
+      if (!(parts.length === 0 || parts.length === 1 && group !== 'preflight' || childMessages || preview || adoptions)) {
+        fail('OPERATION_NOT_ALLOWED', 403);
+      }
+      if (childMessages || preview || adoptions) await boundGroup();
+      const suffix = parts.length === 0 ? '' : `/${parts.join('/')}`;
+      const read = this.ok(await this.source(backend, 'GET', `${base}${suffix}${query ? `?${query}` : ''}`));
+      if (read.taskId != null && read.taskId !== task || group && read.collaborationId != null && read.collaborationId !== group ||
+          childMessages && read.childId != null && read.childId !== reference || preview && read.previewId !== reference) {
+        fail('LOCAL_BINDING_MISMATCH', 409);
+      }
+      await this.auth.authorizeLocal(token, backend, task, 'OBSERVE');
+      return { status: 200, body: this.visible(read) };
+    }
+    if (method !== 'POST' || query) fail('OPERATION_NOT_ALLOWED', 403);
+    id(key);
+    const preflight = parts.length === 1 && group === 'preflight';
+    const plan = preflight || parts.length === 0;
+    const preview = parts.length === 2 && lane === 'previews';
+    const adopt = parts.length === 4 && lane === 'previews' && leaf === 'adoptions';
+    const stop = parts.length === 2 && lane === 'stop';
+    if (!(plan || preview || adopt || stop)) fail('OPERATION_NOT_ALLOWED', 403);
+    const operation = plan ? preflight ? 'COLLAB_PREFLIGHT' : 'COLLAB_CREATE'
+      : preview ? 'COLLAB_PREVIEW' : adopt ? 'ADOPT_APPLY' : 'COLLAB_STOP';
+    const action = COLLABORATION_ACTION[operation]!;
+    const parsed = plan ? exact(body, 'requestKey', 'objective', 'name', 'units', 'children',
+      ...(preflight ? [] : ['expectedPreflightId', 'expectedPreflightDigest', 'expectedPlanDigest']))
+      : preview ? exact(body, 'requestKey', 'childId', 'paths')
+        : adopt ? exact(body, 'requestKey', 'expectedPreviewId', 'expectedPreviewDigest') : exact(body, 'requestKey');
+    if (parsed.requestKey !== key) fail('IDEMPOTENCY_KEY_MISMATCH', 400);
+    const device = await this.auth.authorizeLocal(token, backend, task, action);
+    const fingerprint = LocalTaskAccess.digest({ parts, body: parsed });
+    const checkExisting = (row: DeviceRequest): void => {
+      if (row.operation !== operation || row.hash !== fingerprint || row.backendStoreId !== backend || row.taskId !== task) {
+        fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      }
+    };
+    const known = this.find(INPUT, device.id, key!);
+    if (known) {
+      checkExisting(known);
+      return this.recoverInput(token, backend, task, key!);
+    }
+    const details = this.ok(await this.source(backend, 'GET', `/tasks/${task}`));
+    if (details.taskId !== task) fail('LOCAL_BINDING_MISMATCH', 409);
+    if (!['pi', 'sage-pi'].includes(asText(details.engineId))) fail('LOCAL_SOURCE_UPGRADE_REQUIRED', 409);
+    let wire: Json = { ...parsed };
+    if (plan) {
+      if (parsed.children != null && parsed.units != null || parsed.objective != null && parsed.name != null ||
+          parsed.expectedPreflightDigest != null && parsed.expectedPlanDigest != null) fail('INVALID_REQUEST', 400);
+      const children = parsed.children ?? parsed.units;
+      if (!Array.isArray(children) || children.length < 1 || children.length > 8) fail('PI_COLLAB_SPEC_REQUIRED', 409);
+      for (const child of children) {
+        const checked = exact(child, 'childId', 'goal', 'dependsOn', 'budget', 'writeScope', 'contextPackageIds');
+        id(text(checked, 'childId'));
+        if (!text(checked, 'goal').trim()) fail('PI_COLLAB_SPEC_REQUIRED', 409);
+      }
+      const digest = parsed.expectedPlanDigest ?? parsed.expectedPreflightDigest;
+      if (!preflight && (typeof digest !== 'string' || typeof parsed.expectedPreflightId !== 'string')) fail('PREFLIGHT_STALE', 409);
+      if (!preflight) id(parsed.expectedPreflightId);
+      const name = parsed.objective == null ? parsed.name : Array.from(text(parsed, 'objective').split(/[\r\n]/, 1)[0]!.trim()).slice(0, 128).join('');
+      wire = { children, ...(name ? { name } : {}),
+        ...(preflight ? {} : { expectedPreflightId: parsed.expectedPreflightId, expectedPlanDigest: digest }) };
+    } else {
+      await boundGroup();
+      if (preview) id(text(parsed, 'childId'));
+      if (adopt) {
+        if (reference !== text(parsed, 'expectedPreviewId')) fail('PREVIEW_STALE', 409);
+        const reviewed = this.ok(await this.source(backend, 'GET', `${base}/${group}/previews/${reference}`));
+        if (reviewed.taskId !== task || reviewed.collaborationId !== group || reviewed.previewId !== reference ||
+            reviewed.planDigest !== text(parsed, 'expectedPreviewDigest')) fail('PREVIEW_STALE', 409);
+        id(reviewed.childId);
+        if (!Array.isArray(reviewed.files) || reviewed.files.length === 0) fail('PREVIEW_STALE', 409);
+        const paths = reviewed.files.map(file => text(file as Json, 'path'));
+        if (new Set(paths).size !== paths.length) fail('LOCAL_REPLY_INVALID', 502);
+        wire = { ...wire, childId: reviewed.childId, mode: 'FILES', paths };
+      }
+    }
+    const sourceKey = await this.sourceKey(device.id, key!);
+    const current = await this.auth.authorizeLocal(token, backend, task, action);
+    if (current.revision !== device.revision) fail('GRANT_REVISION_CONFLICT', 409);
+    const concurrent = this.find(INPUT, device.id, key!);
+    if (concurrent) {
+      checkExisting(concurrent);
+      return this.recoverInput(token, backend, task, key!);
+    }
+    this.historyLimit(INPUT, device.id);
+    const row: DeviceRequest = { deviceId: device.id, clientKey: key!, sourceKey, backendStoreId: backend,
+      taskId: task, operation, hash: fingerprint, grantRevision: device.revision,
+      wire: { ...wire, requestKey: sourceKey }, state: 'DISPATCHED' };
+    this.save(INPUT, row);
+    const flight = `input:${LocalTaskAccess.recordKey(device.id, key!)}`;
+    this.flights.add(flight);
+    try {
+      const suffix = adopt ? `/${group}/adoptions` : parts.length ? `/${parts.join('/')}` : '';
+      const reply = await this.source(backend, 'POST', `${base}${suffix}`, row.wire, sourceKey);
+      row.state = reply.status < 300 ? 'OBSERVED' : REJECTED.has(reply.status) ? 'REJECTED' : 'UNKNOWN';
+      row.result = reply.data;
+      if (reply.status >= 400) row.code = asText(isRecord(reply.data) ? reply.data.code : null) || 'LOCAL_REPLY_UNCONFIRMED';
+    } catch (error) {
+      if (!(error instanceof GatewayError)) throw error;
+      row.state = 'UNKNOWN'; row.code = error.code;
+    } finally {
+      this.save(INPUT, row);
+      this.flights.delete(flight);
+    }
+    await this.auth.authorizeLocal(token, backend, task, action);
+    return { status: 200, body: this.requestView(row) };
   }
 
   private static sessionFileSummary(raw: unknown): Json | undefined {
@@ -1945,9 +2074,14 @@ export class LocalTaskAccess {
       return record;
     });
     if (r === undefined) {
-      return { status: 200, body: this.requestView(this.find(INPUT, device.id, key)!) };
+      const current = this.find(INPUT, device.id, key)!;
+      const action = COLLABORATION_ACTION[current.operation ?? ''];
+      if (action) await this.auth.authorizeLocal(token, backend, task, action);
+      return { status: 200, body: this.requestView(current) };
     }
     try {
+      const action = COLLABORATION_ACTION[r.operation ?? ''];
+      if (action) await this.auth.authorizeLocal(token, backend, task, action);
       if (r.state !== 'REJECTED') {
         try {
           const result = await this.source(backend, 'GET', `/tasks/${task}/interaction-requests/${r.sourceKey}`);
@@ -1965,7 +2099,7 @@ export class LocalTaskAccess {
         }
       }
       this.save(INPUT, r);
-      await this.auth.authorizeLocal(token, backend, task, 'OBSERVE');
+      await this.auth.authorizeLocal(token, backend, task, action ?? 'OBSERVE');
       return { status: 200, body: this.requestView(r) };
     } finally {
       this.flights.delete(flight);

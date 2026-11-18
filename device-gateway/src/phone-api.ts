@@ -535,6 +535,8 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
       ? await hasAcsHandoff(ctx, device, req.relayIngress === true)
       : ctx.workHandoffs !== undefined && actions.has('HANDOFF');
     if (capabilities.handoff && ctx.acsHandoffBridge) capabilities.handoffTargetKinds = ['ACS_LOCAL'];
+    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetKinds = ['NATIVE_LOCAL'];
+    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffBackgroundProgress = true;
     return { status: 200, body: view };
   }
 
@@ -671,7 +673,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     const tail = path === '/personal/v1/work-handoffs' ? [] : javaSplit(path).slice(4);
     const input = method === 'POST' ? jsonBody(req) : null;
     const result = await ctx.workHandoffs.remote(
-      token, method, tail, input, idempotencyHeader(req), req.rawQuery);
+      token, method, tail, input, method === 'POST' ? idempotencyHeader(req) : null, req.rawQuery);
     return { status: result.status, body: result.body };
   }
 
