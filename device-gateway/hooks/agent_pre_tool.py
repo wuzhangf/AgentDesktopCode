@@ -402,6 +402,7 @@ def main() -> int:
     if not tool or not asking:
         return 0
     if session_auto(agent, session_id):
+        log(f"DECISION auto-allow event={event!r} tool={tool!r} session={session_id[:12]!r}")
         print(approve_out(agent, event))
         return 0
 
@@ -442,7 +443,9 @@ def main() -> int:
         "ttlMillis": int(ANSWER_TIMEOUT_S * 1000),
     })
     if not ask or ask.get("state") != "PENDING":
+        log(f"DECISION ask-failed abstain tool={tool!r} id={approval_id}")
         return 0
+    log(f"DECISION phone-ask tool={tool!r} id={approval_id}")
 
     deadline = time.time() + ANSWER_TIMEOUT_S
     while time.time() < deadline:
@@ -453,6 +456,7 @@ def main() -> int:
         state = row.get("state")
         if state == "PENDING":
             continue
+        log(f"DECISION answered state={state!r} id={approval_id}")
         if state == "APPROVED":
             # Desktop-hosted codex re-prompts in-app for every grant — the
             # owner's choice is "one tap covers the session": any approval
@@ -467,6 +471,7 @@ def main() -> int:
         return 0  # EXPIRED / CANCELLED / unknown → desktop flow
 
     # Timed out: pull the card down so the phone doesn't show a stale question.
+    log(f"DECISION timeout abstain id={approval_id}")
     call(cfg, token, "POST", f"/hooks/v1/approvals/{approval_id}/cancel")
     return 0
 
