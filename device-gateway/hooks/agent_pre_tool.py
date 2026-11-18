@@ -128,7 +128,9 @@ def block_out(agent: str, event: str, reason: str) -> str:
 # Fields the phone needs to decide — everything else (file bodies, patches,
 # env blobs) stays on the Mac instead of riding the relay to the phone.
 SAFE_INPUT_KEYS = {"file_path", "path", "command", "url", "query", "pattern",
-                   "notebook_path", "old_path", "new_path", "files"}
+                   "notebook_path", "old_path", "new_path", "files",
+                   "reason", "grantRoot", "permissions", "additionalPermissions",
+                   "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"}
 INPUT_VALUE_LIMIT = 500
 # "Allow this session" flags are session-scoped, not forever — expire them.
 AUTO_MARKER_TTL_S = 24 * 3600
@@ -142,6 +144,8 @@ def safe_input(tool_input: dict) -> dict:
         value = tool_input.get(key)
         if isinstance(value, list):
             value = " ".join(str(v) for v in value)
+        if isinstance(value, dict):
+            value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if value is not None:
             out[key] = str(value)[:INPUT_VALUE_LIMIT]
     return out
@@ -181,6 +185,30 @@ def question_for(tool: str, tool_input: dict) -> str:
     if tool.startswith("mcp__"):
         return f"允许 MCP 工具 {tool}?"
     return f"允许 {tool}?"
+
+
+def permission_question(payload: dict, tool_input: dict, fallback: str) -> str:
+    """Summarize WHAT a PermissionRequest asks for — a bare tool name makes the
+    phone owner approve blind. Codex may hoist the ask's substance to the
+    payload level, so merge both surfaces before rendering."""
+    src = dict(tool_input) if isinstance(tool_input, dict) else {}
+    for key in ("reason", "permissions", "additionalPermissions", "grantRoot",
+                "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"):
+        if src.get(key) is None and payload.get(key) is not None:
+            src[key] = payload[key]
+    reason = str(src.get("reason") or "").strip()
+    spec = next((src[k] for k in ("permissions", "additionalPermissions",
+                                  "proposedExecpolicyAmendment",
+                                  "proposedNetworkPolicyAmendment")
+                 if src.get(k) is not None), None)
+    if spec is not None:
+        try:
+            spec = json.dumps(spec, ensure_ascii=False, separators=(",", ":"))[:220]
+        except (TypeError, ValueError):
+            spec = None
+    if reason and spec:
+        return f"{reason[:120]} — {spec}"
+    return reason or spec or fallback
 
 
 def agent_mode(agent: str) -> str:
@@ -352,13 +380,19 @@ def main() -> int:
     # requests in the same turn from colliding on one approval id.
     approval_id = f"{agent}-{tool_use_id or str(os.getpid())}-{int(time.time() * 1000)}"[:128]
     question = question_for(tool, tool_input if isinstance(tool_input, dict) else {})
+    shown_input = tool_input
     if event == "PermissionRequest":
-        question = f"越权请求 · {question}"
+        question = f"越权请求 · {permission_question(payload, tool_input, question)}"
+        shown_input = dict(tool_input) if isinstance(tool_input, dict) else {}
+        for key in ("reason", "permissions", "additionalPermissions", "grantRoot",
+                    "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"):
+            if shown_input.get(key) is None and payload.get(key) is not None:
+                shown_input[key] = payload[key]
     ask = call(cfg, token, "POST", "/hooks/v1/approvals", body={
         "approvalId": approval_id,
         "agent": agent,
         "toolName": tool,
-        "toolInput": safe_input(tool_input),
+        "toolInput": safe_input(shown_input),
         "question": question,
         "options": ["允许一次", "本会话允许", "拒绝"],
         "projectDir": cwd,
