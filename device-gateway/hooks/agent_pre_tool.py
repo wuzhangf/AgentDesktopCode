@@ -18,6 +18,7 @@ Usage: agent_pre_tool.py <agent>     (agent = claude, codex, ...)
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -128,7 +129,9 @@ def block_out(agent: str, event: str, reason: str) -> str:
 # Fields the phone needs to decide — everything else (file bodies, patches,
 # env blobs) stays on the Mac instead of riding the relay to the phone.
 SAFE_INPUT_KEYS = {"file_path", "path", "command", "url", "query", "pattern",
-                   "notebook_path", "old_path", "new_path", "files"}
+                   "notebook_path", "old_path", "new_path", "files",
+                   "reason", "grantRoot", "permissions", "additionalPermissions",
+                   "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"}
 INPUT_VALUE_LIMIT = 500
 # "Allow this session" flags are session-scoped, not forever — expire them.
 AUTO_MARKER_TTL_S = 24 * 3600
@@ -142,6 +145,8 @@ def safe_input(tool_input: dict) -> dict:
         value = tool_input.get(key)
         if isinstance(value, list):
             value = " ".join(str(v) for v in value)
+        if isinstance(value, dict):
+            value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if value is not None:
             out[key] = str(value)[:INPUT_VALUE_LIMIT]
     return out
@@ -181,6 +186,30 @@ def question_for(tool: str, tool_input: dict) -> str:
     if tool.startswith("mcp__"):
         return f"允许 MCP 工具 {tool}?"
     return f"允许 {tool}?"
+
+
+def permission_question(payload: dict, tool_input: dict, fallback: str) -> str:
+    """Summarize WHAT a PermissionRequest asks for — a bare tool name makes the
+    phone owner approve blind. Codex may hoist the ask's substance to the
+    payload level, so merge both surfaces before rendering."""
+    src = dict(tool_input) if isinstance(tool_input, dict) else {}
+    for key in ("reason", "permissions", "additionalPermissions", "grantRoot",
+                "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"):
+        if src.get(key) is None and payload.get(key) is not None:
+            src[key] = payload[key]
+    reason = str(src.get("reason") or "").strip()
+    spec = next((src[k] for k in ("permissions", "additionalPermissions",
+                                  "proposedExecpolicyAmendment",
+                                  "proposedNetworkPolicyAmendment")
+                 if src.get(k) is not None), None)
+    if spec is not None:
+        try:
+            spec = json.dumps(spec, ensure_ascii=False, separators=(",", ":"))[:220]
+        except (TypeError, ValueError):
+            spec = None
+    if reason and spec:
+        return f"{reason[:120]} — {spec}"
+    return reason or spec or fallback
 
 
 def agent_mode(agent: str) -> str:
@@ -269,18 +298,54 @@ def workspace_ok(tool_input: dict, cwd: str) -> bool:
     return True
 
 
-def session_auto(agent: str, session_id: str) -> bool:
-    if not session_id:
+_SHELL_NAMES = {"sh", "bash", "zsh", "env", "dash", "python", "python3"}
+
+
+def desktop_host() -> bool:
+    """True when the codex that spawned us lives inside a .app bundle
+    (ChatGPT desktop, Codex.app) rather than a bare CLI/bridge binary.
+    Walks past generic shell wrappers to the nearest real ancestor —
+    stopping there, NOT continuing to the terminal, is what keeps a CLI
+    codex launched from Terminal.app from misreading as desktop."""
+    pid = os.getppid()
+    try:
+        for _ in range(8):
+            if pid <= 1:
+                return False
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "command=", "-o", "ppid="],
+                text=True, timeout=2).strip()
+            if not out:
+                return False
+            cmd, _, ppid = out.rpartition(" ")
+            exe = cmd.split(None, 1)[0].rsplit("/", 1)[-1] if cmd.split() else ""
+            if exe in _SHELL_NAMES:
+                pid = int(ppid)
+                continue
+            return ".app/" in cmd
+    except Exception:
         return False
-    flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{session_id}"
-    return flag.exists()
+    return False
 
 
-def mark_session_auto(agent: str, session_id: str) -> None:
-    if not session_id:
+def session_auto(agent: str, session_id: str) -> bool:
+    base = Path.home() / ".agent-gateway"
+    if session_id and (base / f"auto-{agent}-{session_id}").exists():
+        return True
+    # ChatGPT.app fragments one conversation across several codex session ids
+    # (chat turn UUID + codenamed exec sessions), so a desktop approval is
+    # scoped to the app host itself rather than any single session id.
+    if (base / f"auto-{agent}-desktop").exists() and desktop_host():
+        return True
+    return False
+
+
+def mark_session_auto(agent: str, session_id: str, desktop: bool = False) -> None:
+    suffix = "desktop" if desktop else session_id
+    if not suffix:
         return
     try:
-        flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{session_id}"
+        flag = Path.home() / ".agent-gateway" / f"auto-{agent}-{suffix}"
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(str(time.time()))
     except OSError:
@@ -302,6 +367,8 @@ def main() -> int:
     cwd = payload.get("cwd") or payload.get("workdir") or ""
     tool_use_id = (payload.get("tool_use_id") or payload.get("toolUseId")
                    or payload.get("tool_call_id") or "")
+
+    log(f"DEBUG event={event!r} tool={tool!r} session={session_id[:12]!r} keys={sorted(payload.keys())}")
 
     # Master switch: Agent Link's "手机协同" toggle writes link.state; off
     # means every tool call passes silently to the desktop dialog.
@@ -335,6 +402,7 @@ def main() -> int:
     if not tool or not asking:
         return 0
     if session_auto(agent, session_id):
+        log(f"DECISION auto-allow event={event!r} tool={tool!r} session={session_id[:12]!r}")
         print(approve_out(agent, event))
         return 0
 
@@ -352,21 +420,32 @@ def main() -> int:
     # requests in the same turn from colliding on one approval id.
     approval_id = f"{agent}-{tool_use_id or str(os.getpid())}-{int(time.time() * 1000)}"[:128]
     question = question_for(tool, tool_input if isinstance(tool_input, dict) else {})
+    shown_input = tool_input
     if event == "PermissionRequest":
-        question = f"越权请求 · {question}"
+        question = f"越权请求 · {permission_question(payload, tool_input, question)}"
+        shown_input = dict(tool_input) if isinstance(tool_input, dict) else {}
+        for key in ("reason", "permissions", "additionalPermissions", "grantRoot",
+                    "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"):
+            if shown_input.get(key) is None and payload.get(key) is not None:
+                shown_input[key] = payload[key]
+    desktop = desktop_host()
     ask = call(cfg, token, "POST", "/hooks/v1/approvals", body={
         "approvalId": approval_id,
         "agent": agent,
         "toolName": tool,
-        "toolInput": safe_input(tool_input),
+        "toolInput": safe_input(shown_input),
         "question": question,
-        "options": ["允许一次", "本会话允许", "拒绝"],
+        # Desktop-hosted codex grants the whole session on any approval —
+        # offering 允许一次 there would promise semantics we don't honor.
+        "options": ["本会话允许", "拒绝"] if desktop else ["允许一次", "本会话允许", "拒绝"],
         "projectDir": cwd,
         "sessionRef": session_id,
         "ttlMillis": int(ANSWER_TIMEOUT_S * 1000),
     })
     if not ask or ask.get("state") != "PENDING":
+        log(f"DECISION ask-failed abstain tool={tool!r} id={approval_id}")
         return 0
+    log(f"DECISION phone-ask tool={tool!r} id={approval_id}")
 
     deadline = time.time() + ANSWER_TIMEOUT_S
     while time.time() < deadline:
@@ -377,9 +456,13 @@ def main() -> int:
         state = row.get("state")
         if state == "PENDING":
             continue
+        log(f"DECISION answered state={state!r} id={approval_id}")
         if state == "APPROVED":
-            if row.get("decision") == "APPROVED_SESSION":
-                mark_session_auto(agent, session_id)
+            # Desktop-hosted codex re-prompts in-app for every grant — the
+            # owner's choice is "one tap covers the session": any approval
+            # there implies 本会话允许, no separate option needed.
+            if row.get("decision") == "APPROVED_SESSION" or desktop:
+                mark_session_auto(agent, session_id, desktop)
             print(approve_out(agent, event))
             return 0
         if state == "DENIED":
@@ -388,6 +471,7 @@ def main() -> int:
         return 0  # EXPIRED / CANCELLED / unknown → desktop flow
 
     # Timed out: pull the card down so the phone doesn't show a stale question.
+    log(f"DECISION timeout abstain id={approval_id}")
     call(cfg, token, "POST", f"/hooks/v1/approvals/{approval_id}/cancel")
     return 0
 
