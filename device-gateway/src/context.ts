@@ -328,6 +328,8 @@ export interface GatewayWorkHandoffs {
   registerPeer(body: unknown): MaybePromise<JsonObject>;
   /** Java listPeers(). */
   listPeers(): MaybePromise<JsonObject>;
+  recoveryOptions?(): MaybePromise<JsonObject>;
+  setRecovery?(body: unknown): MaybePromise<JsonObject>;
 }
 
 // ---------------------------------------------------------------------------

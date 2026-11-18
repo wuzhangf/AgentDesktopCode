@@ -741,7 +741,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         const binding = await bindingFor(ctx, device);
         if (beforeDispatch !== undefined) await beforeDispatch();
         return parseReply(await acs.call(method, path,
-          body === undefined ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
+          body == null ? undefined : new Uint8Array(Buffer.from(JSON.stringify(body), 'utf8')),
           key, binding));
       },
       callBytes: async (device, method, path, body, key) => parseReply(await acs.call(
@@ -752,12 +752,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.childMessages = new ChildMessagesAccess(devices, agentUpstream);
   }
 
-  // WorkHandoffAccess shares the coordinator with ACS-enabled gateways.
-  // Without ACS it only coordinates locally authorized native tasks.
-  if (!ctx.acsHandoffBridge && localTasks !== undefined) {
+  // The Windows ACS bridge keeps Java as the source coordinator. Its
+  // gateway ledger only receives signed ACS imports from peer hosts.
+  if (localTasks !== undefined) {
     ctx.workHandoffs = new WorkHandoffAccess(
       store, devices, agentUpstream, localTasks,
-      join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id);
+      join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id, ctx.acsHandoffBridge === true);
     if (agentUpstream === undefined) ctx.nativeLocalHandoffs = true;
   }
 

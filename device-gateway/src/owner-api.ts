@@ -220,15 +220,24 @@ export async function handleOwnerRoute(
     const { path, method } = req;
     const parts = javaSplit(path);
     if (method === 'GET' && path === `${ROOT}/work-handoffs/signing-key`) {
-      if (!ctx.nativeLocalHandoffs || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
+      if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 200, body: {
         ...(await ctx.workHandoffs.publicSigningKey()), peerHostRef: (await ctx.auth.ownerStatus()).personalHostId,
       } };
     }
     if (path === `${ROOT}/work-handoffs/trusted-peer-keys`) {
-      if (!ctx.nativeLocalHandoffs || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
+      if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       if (method === 'GET') return { status: 200, body: await ctx.workHandoffs.listPeers() };
       if (method === 'PUT') return { status: 200, body: await ctx.workHandoffs.registerPeer(jsonBody(req)) };
+    }
+    if (path === `${ROOT}/work-handoffs/recovery-grants`) {
+      if (!ctx.nativeLocalHandoffs || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
+      if (method === 'GET' && ctx.workHandoffs.recoveryOptions) return { status: 200, body: {
+        ...(await ctx.workHandoffs.recoveryOptions()), devices: await ctx.auth.devices(),
+      } };
+      if (method === 'PUT' && ctx.workHandoffs.setRecovery) {
+        return { status: 200, body: await ctx.workHandoffs.setRecovery(jsonBody(req)) };
+      }
     }
 
     if (method === 'GET' && path === `${ROOT}/capabilities`) {

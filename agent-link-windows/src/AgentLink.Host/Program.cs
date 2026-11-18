@@ -646,6 +646,10 @@ internal sealed class LinkHost : IDisposable
                     return new(true, Data: await OwnerAsync(HttpMethod.Get, "work-handoffs/trusted-peer-keys", null, cancellation));
                 case "setHandoffPeer" when request.Args is JsonObject peer:
                     return new(true, Data: await OwnerAsync(HttpMethod.Put, "work-handoffs/trusted-peer-keys", peer, cancellation));
+                case "handoffRecoveries":
+                    return new(true, Data: await OwnerAsync(HttpMethod.Get, "work-handoffs/recovery-grants", null, cancellation));
+                case "setHandoffRecovery" when request.Args is JsonObject recovery:
+                    return new(true, Data: await OwnerAsync(HttpMethod.Put, "work-handoffs/recovery-grants", recovery, cancellation));
                 case "cloudLaunch" or "setCloudLaunch":
                     var cloudCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
                     return request.Operation == "cloudLaunch"

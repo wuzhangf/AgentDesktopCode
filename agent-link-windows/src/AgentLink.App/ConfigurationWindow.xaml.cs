@@ -298,6 +298,20 @@ public partial class ConfigurationWindow : Window
         });
     }
 
+    private async void HandoffRecovery_Click(object sender, RoutedEventArgs e)
+    {
+        await RunAsync(async () =>
+        {
+            var reply = await call(new("handoffRecoveries"));
+            if (!reply.Ok || reply.Data is not JsonObject view)
+            {
+                SetNotice(reply.Error ?? "暂时无法查看交接恢复。", error: true);
+                return;
+            }
+            new HandoffRecoveryWindow(call, view) { Owner = this }.ShowDialog();
+        });
+    }
+
     private async void CloudLaunch_Click(object sender, RoutedEventArgs e)
     {
         await RunAsync(async () =>

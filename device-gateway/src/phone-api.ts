@@ -536,8 +536,10 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
       ? await hasAcsHandoff(ctx, device, req.relayIngress === true)
       : ctx.workHandoffs !== undefined && actions.has('HANDOFF');
     if (capabilities.handoff && ctx.acsHandoffBridge) capabilities.handoffTargetKinds = ['ACS_LOCAL'];
-    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetKinds = ['NATIVE_LOCAL', 'NATIVE_REMOTE'];
+    if (capabilities.handoff && ctx.acsHandoffBridge && ctx.workHandoffs && actions.has('CREATE')) capabilities.handoffAcsImport = true;
+    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetKinds = ['NATIVE_LOCAL', 'NATIVE_REMOTE', 'ACS_REMOTE'];
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffBackgroundProgress = true;
+    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffRecovery = true;
     return { status: 200, body: view };
   }
 
@@ -669,9 +671,21 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   // Java: /personal/v1/work-handoffs/** → workHandoffs.remote — the durable
   // handoff coordinator (M04). Absent coordinator → UPSTREAM_UNAVAILABLE.
   if (path === '/personal/v1/work-handoffs' || path.startsWith('/personal/v1/work-handoffs/')) {
-    if (ctx.acsHandoffBridge) return acsHandoff(ctx, req, token, device);
-    if (ctx.workHandoffs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
     const tail = path === '/personal/v1/work-handoffs' ? [] : javaSplit(path).slice(4);
+    if (ctx.acsHandoffBridge) {
+      const importRoute = ['imports', 'target-preflights', 'trusted-peer-keys'].includes(tail[0]);
+      const lookup = tail[0] === 'requests' && method === 'GET';
+      if (!req.relayIngress && ctx.workHandoffs && (importRoute || lookup)) {
+        try {
+          return await ctx.workHandoffs.remote(token, method, tail, method === 'POST' ? jsonBody(req) : null,
+            method === 'POST' ? idempotencyHeader(req) : null, req.rawQuery);
+        } catch (error) {
+          if (!lookup || !(error instanceof GatewayError) || error.httpStatus !== 404) throw error;
+        }
+      }
+      return acsHandoff(ctx, req, token, device);
+    }
+    if (ctx.workHandoffs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
     const input = method === 'POST' ? jsonBody(req) : null;
     const result = await ctx.workHandoffs.remote(
       token, method, tail, input, method === 'POST' ? idempotencyHeader(req) : null, req.rawQuery);
