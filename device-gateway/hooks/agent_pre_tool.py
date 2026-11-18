@@ -346,6 +346,10 @@ def main() -> int:
     tool_use_id = (payload.get("tool_use_id") or payload.get("toolUseId")
                    or payload.get("tool_call_id") or "")
 
+    if event == "PermissionRequest":
+        keys = sorted(tool_input.keys()) if isinstance(tool_input, dict) else type(tool_input).__name__
+        log(f"DEBUG permission-request keys={sorted(payload.keys())} tool={tool!r} input_keys={keys}")
+
     # Master switch: Agent Link's "手机协同" toggle writes link.state; off
     # means every tool call passes silently to the desktop dialog.
     try:
@@ -377,9 +381,6 @@ def main() -> int:
         asking = True
     if not tool or not asking:
         return 0
-    if event == "PermissionRequest":
-        keys = sorted(tool_input.keys()) if isinstance(tool_input, dict) else type(tool_input).__name__
-        log(f"DEBUG permission-request keys={sorted(payload.keys())} tool={tool!r} input_keys={keys}")
     if session_auto(agent, session_id):
         print(approve_out(agent, event))
         return 0
@@ -406,13 +407,16 @@ def main() -> int:
                     "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendment"):
             if shown_input.get(key) is None and payload.get(key) is not None:
                 shown_input[key] = payload[key]
+    desktop = desktop_host()
     ask = call(cfg, token, "POST", "/hooks/v1/approvals", body={
         "approvalId": approval_id,
         "agent": agent,
         "toolName": tool,
         "toolInput": safe_input(shown_input),
         "question": question,
-        "options": ["允许一次", "本会话允许", "拒绝"],
+        # Desktop-hosted codex grants the whole session on any approval —
+        # offering 允许一次 there would promise semantics we don't honor.
+        "options": ["本会话允许", "拒绝"] if desktop else ["允许一次", "本会话允许", "拒绝"],
         "projectDir": cwd,
         "sessionRef": session_id,
         "ttlMillis": int(ANSWER_TIMEOUT_S * 1000),
@@ -433,7 +437,7 @@ def main() -> int:
             # Desktop-hosted codex re-prompts in-app for every grant — the
             # owner's choice is "one tap covers the session": any approval
             # there implies 本会话允许, no separate option needed.
-            if row.get("decision") == "APPROVED_SESSION" or desktop_host():
+            if row.get("decision") == "APPROVED_SESSION" or desktop:
                 mark_session_auto(agent, session_id)
             print(approve_out(agent, event))
             return 0
