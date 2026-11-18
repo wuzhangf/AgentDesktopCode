@@ -24,7 +24,17 @@ interface Grant {
   revision: number;
   scopes: LaunchScope[];
   controls: boolean;
+  approvals: boolean;
 }
+
+type CloudAction = 'message' | 'stop' | 'approval_response';
+type PendingApproval = {
+  kind: 'CONFIRM';
+  questionId: string;
+  fingerprint: string;
+  round: number;
+  summary: string;
+};
 
 interface Action {
   id: string;
@@ -32,7 +42,7 @@ interface Action {
   scope: string;
   workId: string;
   generation: number;
-  kind: 'message' | 'stop';
+  kind: CloudAction;
   requestKey: string;
   fingerprint: string;
   outcome?: 'executed' | 'expired' | 'conflict';
@@ -57,6 +67,7 @@ interface Delivery {
   activeRunId?: string;
   executionEpoch?: number;
   supportedActions?: string[];
+  pendingInputs?: PendingApproval[];
   eventNumber?: number;
   pendingObservation?: Json;
 }
@@ -131,7 +142,8 @@ export class WindowsCloudLaunch {
             || !identifier(scope.engineId) || scope.engineId === 'macos') return;
         scopes.push({ backendStoreId: scope.backendStoreId, projectId: scope.projectId, engineId: scope.engineId });
       }
-      return { revision: value.revision, scopes, controls: value.controls === true };
+      return { revision: value.revision, scopes, controls: value.controls === true,
+        approvals: value.approvals === true };
     } catch { return; }
   }
 
@@ -175,7 +187,7 @@ export class WindowsCloudLaunch {
       this.store.put('windows-cloud-directory', session.scope, { checkedAt: Date.now(), grant: grantDigest });
     }
     if (!grant || grant.scopes.length === 0 || this.abort.signal.aborted) return;
-    const kinds = grant.controls ? `${kind},${actionKind}` : kind;
+    const kinds = grant.controls || grant.approvals ? `${kind},${actionKind}` : kind;
     const batch = await this.hosted(session, 'GET', `/task-claims?limit=4&kinds=${kinds}`);
     for (const command of Array.isArray(batch.commands) ? batch.commands : []) {
       try {
@@ -348,14 +360,18 @@ export class WindowsCloudLaunch {
       if (!state) return;
       const pins = this.pins(reply.body);
       const run = pins ? `win-run-${hash(JSON.stringify(pins))}` : undefined;
-      const supported = this.supportedActions(session, reply.body, pins);
-      if (state === row.observedState && run === row.activeRunId &&
-          JSON.stringify(supported) === JSON.stringify(row.supportedActions)) return;
       const epoch = (row.executionEpoch ?? 1) + (row.activeRunId && row.activeRunId !== run ? 1 : 0);
+      const pendingInputs = await this.pendingApprovals(session, row, `${rootPath}/tasks/${taskId}`, reply.body, pins, epoch);
+      const supported = this.supportedActions(session, reply.body, pins, pendingInputs);
+      const projectedState = pendingInputs.length > 0 && ['running', 'waiting_input'].includes(state)
+        ? 'waiting_approval' : state;
+      if (projectedState === row.observedState && run === row.activeRunId &&
+          JSON.stringify(supported) === JSON.stringify(row.supportedActions) &&
+          JSON.stringify(pendingInputs) === JSON.stringify(row.pendingInputs ?? [])) return;
       row.eventNumber = (row.eventNumber ?? 0) + 1;
-      row.pendingObservation = { state, sourceState, nativeTaskId: taskId,
+      row.pendingObservation = { state: projectedState, sourceState, nativeTaskId: taskId,
         eventId: `win-${row.id}-${row.eventNumber}`, observedAt: new Date().toISOString(),
-        executionEpoch: epoch, activeRunId: run, supportedActions: supported };
+        executionEpoch: epoch, activeRunId: run, supportedActions: supported, pendingInputs };
       this.save(row);
     }
     await this.hosted(session, 'POST', `/tasks/${row.workId}/observations`, row.pendingObservation);
@@ -363,6 +379,7 @@ export class WindowsCloudLaunch {
     row.activeRunId = row.pendingObservation.activeRunId as string | undefined;
     row.executionEpoch = row.pendingObservation.executionEpoch as number;
     row.supportedActions = row.pendingObservation.supportedActions as string[];
+    row.pendingInputs = row.pendingObservation.pendingInputs as PendingApproval[] | undefined;
     if (['succeeded', 'failed', 'cancelled'].includes(row.observedState)) {
       row.phase = 'result';
       row.resultObservedAt = row.pendingObservation.observedAt as string;
@@ -379,10 +396,40 @@ export class WindowsCloudLaunch {
       ...(typeof nativeTurnId === 'string' && nativeTurnId ? { nativeTurnId } : {}) };
   }
 
-  private supportedActions(session: Session, facts: Json, pins: Json | undefined): string[] {
-    if (!pins || this.grant(session)?.controls !== true || !isRecord(facts.capabilities)) return [];
-    return [...(facts.capabilities.followUp === true ? ['message'] : []),
-      ...(facts.capabilities.stop === true ? ['stop'] : [])];
+  private supportedActions(session: Session, facts: Json, pins: Json | undefined,
+    pending: PendingApproval[]): CloudAction[] {
+    if (!pins) return [];
+    const capabilities = isRecord(facts.capabilities) ? facts.capabilities : {};
+    const grant = this.grant(session);
+    return [...(grant?.controls && capabilities.followUp === true ? ['message' as const] : []),
+      ...(grant?.controls && capabilities.stop === true ? ['stop' as const] : []),
+      ...(grant?.approvals && pending.length > 0 ? ['approval_response' as const] : [])];
+  }
+
+  private async pendingApprovals(session: Session, row: Delivery, route: string,
+    facts: Json, pins: Json | undefined, epoch: number): Promise<PendingApproval[]> {
+    if (!this.grant(session)?.approvals || !pins?.nativeTurnId || !['pi', 'sage-pi'].includes(String(facts.engineId)) ||
+        !['RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL'].includes(String(facts.state))) return [];
+    const reply = await this.local(session, row, access => access.remote(row.id, 'GET',
+      `${route}/input-requests`, null, null, null));
+    const questions = isRecord(reply.body) && Array.isArray(reply.body.items) ? reply.body.items : [];
+    const pending: PendingApproval[] = [];
+    const seen = new Set<string>();
+    for (const q of questions.filter(isRecord)) {
+      if (q.state !== 'PENDING' || q.method !== 'confirm' || !identifier(q.inputRequestId) ||
+          q.generation !== pins.generation || q.nativeSessionId !== pins.nativeSessionId ||
+          q.nativeTurnId !== pins.nativeTurnId || q.targetCommandId !== pins.targetCommandId ||
+          typeof q.title !== 'string' || !q.title.trim()) continue;
+      const summary = [q.title, typeof q.message === 'string' ? q.message : '']
+        .map(field => field.trim()).filter(Boolean).join('\n');
+      if (Buffer.byteLength(summary) > 1024) continue;
+      if (seen.has(q.inputRequestId) || pending.length === 32) return [];
+      seen.add(q.inputRequestId);
+      pending.push({ kind: 'CONFIRM', questionId: q.inputRequestId, round: epoch,
+        summary,
+        fingerprint: hash(JSON.stringify([pins, q.inputRequestId, q.title, q.message ?? null])) });
+    }
+    return pending.sort((a, b) => a.questionId.localeCompare(b.questionId));
   }
 
   private launchFor(action: Action): Delivery | undefined {
@@ -394,7 +441,8 @@ export class WindowsCloudLaunch {
         !Number.isSafeInteger(command.deliveryGeneration) || !isRecord(command.payload)) return;
     const payload = command.payload;
     if (!identifier(payload.operationId) || payload.workId !== command.workId ||
-        !isRecord(payload.payload) || (payload.kind !== 'message' && payload.kind !== 'stop')) return;
+        !isRecord(payload.payload) ||
+        (payload.kind !== 'message' && payload.kind !== 'stop' && payload.kind !== 'approval_response')) return;
     const id = hash(`${session.scope}:${command.commandId}`);
     const fingerprint = hash(JSON.stringify(payload));
     const existing = this.store.get<Action>(actions, id);
@@ -404,7 +452,10 @@ export class WindowsCloudLaunch {
       generation: command.deliveryGeneration as number };
     if (existing) {
       this.store.put(actions, id, action);
-      return this.resumeAction(session, action);
+      // The local input ledger is written before any Worker dispatch. Only
+      // a missing local row under a freshly claimed delivery permits another
+      // admission attempt, with the original key and current guards.
+      if (await this.resumeAction(session, action) !== 'unstarted') return;
     }
     const launch = this.launchFor(action);
     const deadline = Math.min(time(payload.expiresAt), time(command.claimUntil));
@@ -425,21 +476,30 @@ export class WindowsCloudLaunch {
       const facts = isRecord(current.body) ? current.body : {};
       const pins = this.pins(facts);
       const run = pins ? `win-run-${hash(JSON.stringify(pins))}` : undefined;
+      const pending = action.kind === 'approval_response'
+        ? await this.pendingApprovals(session, launch, taskPath, facts, pins, launch.executionEpoch ?? 1) : [];
       if (!pins || !run || run !== launch.activeRunId || run !== input.activeRunId || run !== execution.activeRunId
           || input.executionEpoch !== launch.executionEpoch || input.executionEpoch !== execution.executionEpoch
-          || execution.nativeTaskId !== launch.taskId || !this.supportedActions(session, facts, pins).includes(action.kind)) {
+          || execution.nativeTaskId !== launch.taskId || !this.supportedActions(session, facts, pins, pending).includes(action.kind)) {
         decide('conflict', 'stale_execution');
+      } else if (action.kind === 'approval_response' &&
+          (!pending.some(q => q.questionId === input.questionId && q.round === input.round && q.fingerprint === input.fingerprint)
+            || (input.decision !== 'approve' && input.decision !== 'reject'))) {
+        decide('conflict', 'stale_approval');
       } else if (action.kind === 'message' && (typeof input.text !== 'string' || !input.text.trim()
           || Buffer.byteLength(input.text, 'utf8') > 16384)) {
         decide('conflict', 'message_invalid');
       } else {
         const body = { ...pins, requestKey: action.requestKey,
-          ...(action.kind === 'stop' ? { intent: 'STOP' } : { kind: 'NATIVE_FOLLOW_UP', content: input.text }) };
-        const tail = action.kind === 'stop' ? 'commands' : 'messages';
+          ...(action.kind === 'stop' ? { intent: 'STOP' }
+            : action.kind === 'approval_response' ? { response: { confirmed: input.decision === 'approve' } }
+              : { kind: 'NATIVE_FOLLOW_UP', content: input.text }) };
+        const tail = action.kind === 'stop' ? 'commands'
+          : action.kind === 'approval_response' ? `input-requests/${String(input.questionId)}/responses` : 'messages';
         this.store.put(actions, id, action);
         try {
           const reply = await this.local(session, launch, access => access.remote(launch.id, 'POST',
-            `${taskPath}/${tail}`, body, action.requestKey, null), deadline, true);
+            `${taskPath}/${tail}`, body, action.requestKey, null), deadline, action.kind);
           if (isRecord(reply.body) && reply.body.state === 'REJECTED') decide('conflict', 'source_rejected');
         } catch (error) {
           if (!(error instanceof GatewayError) || ![400, 403, 409, 422].includes(error.httpStatus)) throw error;
@@ -450,14 +510,22 @@ export class WindowsCloudLaunch {
     await this.resumeAction(session, action);
   }
 
-  private async resumeAction(session: Session, action: Action): Promise<void> {
+  private async resumeAction(session: Session, action: Action): Promise<void | 'unstarted'> {
     if (action.closed) return;
     if (!action.outcome) {
       const launch = this.launchFor(action);
       if (!launch?.taskId || !identifier(launch.target.backendId)) return;
       const route = `/personal/v1/local-tasks/${launch.target.backendId}/tasks/${launch.taskId}`;
-      const reply = await this.local(session, launch, access => access.remote(launch.id, 'GET',
-        `${route}/requests/${action.requestKey}`, null, null, null));
+      let reply;
+      try {
+        reply = await this.local(session, launch, access => access.remote(launch.id, 'GET',
+          `${route}/requests/${action.requestKey}`, null, null, null));
+      } catch (error) {
+        if (error instanceof GatewayError && error.httpStatus === 404 && error.code === 'NOT_FOUND') {
+          return 'unstarted';
+        }
+        throw error;
+      }
       if (!isRecord(reply.body)) return;
       if (reply.body.state === 'REJECTED') {
         action.outcome = 'conflict';
@@ -468,6 +536,8 @@ export class WindowsCloudLaunch {
         if (action.kind === 'stop' && source.state !== 'STOPPED' &&
             !(source.state === 'SUCCEEDED' && ['CANCELLED', 'STOPPED'].includes(String(end)))) return;
         if (action.kind === 'message' && !['ACCEPTED', 'SUCCEEDED'].includes(String(source.state))) return;
+        if (action.kind === 'approval_response' &&
+            (source.kind !== 'INPUT_RESPONSE' || source.taskId !== launch.taskId || source.state !== 'CONSUMED')) return;
         action.outcome = 'executed';
       } else return;
       this.store.put(actions, action.id, action);
@@ -480,12 +550,13 @@ export class WindowsCloudLaunch {
   }
 
   private async local<T>(session: Session, row: Delivery,
-    operation: (access: LocalTaskAccess) => Promise<T>, deadline?: number, controls = false): Promise<T> {
+    operation: (access: LocalTaskAccess) => Promise<T>, deadline?: number, control?: CloudAction): Promise<T> {
     const principal = `win-cloud-${hash(JSON.stringify([row.scope, row.grantRevision]))}`;
     const assertCurrent = (): Grant => {
       const grant = this.grant(session);
       if (this.abort.signal.aborted || this.session()?.scope !== session.scope || grant?.revision !== row.grantRevision
-          || !grant.scopes.some(scope => this.matches(scope, row.target)) || controls && !grant.controls) {
+          || !grant.scopes.some(scope => this.matches(scope, row.target))
+          || control && !(control === 'approval_response' ? grant.approvals : grant.controls)) {
         fail('CLOUD_SCOPE_CHANGED', 403);
       }
       return grant;
@@ -493,7 +564,8 @@ export class WindowsCloudLaunch {
     const device = (): Device => {
       const grant = assertCurrent();
       return { id: principal, revision: grant.revision, state: 'ACTIVE', scopeVersion: 2,
-        actions: controls ? ['OBSERVE', 'LAUNCH', 'INTERACT', 'CONTROL'] : ['OBSERVE', 'LAUNCH'],
+        actions: ['OBSERVE', 'LAUNCH',
+          ...(control === 'approval_response' ? ['APPROVE'] : control ? ['INTERACT', 'CONTROL'] : [])],
         launchScopes: grant.scopes,
         resources: this.store.get('windows-cloud-resources', principal) ?? [],
         absoluteExpiry: 0, idleExpiry: 0, accessExpiry: 0, recoverUntil: 0, spentRefresh: [] };

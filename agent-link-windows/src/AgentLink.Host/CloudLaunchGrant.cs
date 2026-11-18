@@ -19,6 +19,7 @@ internal static class CloudLaunchGrant
         {
             ["revision"] = current?["revision"]?.DeepClone() ?? JsonValue.Create(0),
             ["controls"] = current?["controls"]?.DeepClone() ?? JsonValue.Create(false),
+            ["approvals"] = current?["approvals"]?.DeepClone() ?? JsonValue.Create(false),
             ["allowed"] = new JsonArray((current?["launchScopes"] as JsonArray ?? []).OfType<JsonObject>()
                 .Select(scope => (JsonNode?)JsonValue.Create(Key(scope, "backendStoreId"))).ToArray()),
             ["targets"] = new JsonArray(targets.Select(target => (JsonNode?)new JsonObject
@@ -40,6 +41,10 @@ internal static class CloudLaunchGrant
             return new(false, "授权参数无效");
         var binding = session.Scope.Split('\n');
         var current = ReadGrant(binding);
+        var approve = false;
+        if (request["approvals"] is JsonNode approvalSetting &&
+            (approvalSetting is not JsonValue approvalsValue || !approvalsValue.TryGetValue<bool>(out approve)))
+            return new(false, "审批授权参数无效");
         var actual = current?["revision"]?.GetValue<int>() ?? 0;
         if (actual != expected) return new(false, "云任务授权已变化，请刷新后重试");
         var targets = Targets(capabilities).ToDictionary(target => Key(target, "backendId"), StringComparer.Ordinal);
@@ -57,9 +62,12 @@ internal static class CloudLaunchGrant
             });
         }
         var existing = current?["launchScopes"] as JsonArray ?? [];
+        var sameScopes = existing.OfType<JsonObject>().Select(scope => Key(scope, "backendStoreId")).ToHashSet().SetEquals(seen);
         controls = controls && scopes.Count > 0;
-        var unchanged = existing.OfType<JsonObject>().Select(scope => Key(scope, "backendStoreId")).ToHashSet().SetEquals(seen)
-            && (current?["controls"]?.GetValue<bool>() ?? false) == controls;
+        var previousApproval = current?["approvals"]?.GetValue<bool>() ?? false;
+        var approvals = scopes.Count > 0 && (request["approvals"] is null ? sameScopes && previousApproval : approve);
+        var unchanged = sameScopes
+            && (current?["controls"]?.GetValue<bool>() ?? false) == controls && previousApproval == approvals;
         if (unchanged) return Read(capabilities);
         if (MemberCredentials.FileSession(requireCloudProfile: true)?.Scope != session.Scope) return new(false, "会员账号已切换");
         var grant = new JsonObject
@@ -67,6 +75,7 @@ internal static class CloudLaunchGrant
             ["schemaVersion"] = Schema, ["memberId"] = binding[0], ["workspaceId"] = binding[1],
             ["instanceId"] = binding[2], ["revision"] = checked(actual + 1), ["launchScopes"] = scopes,
             ["controls"] = controls,
+            ["approvals"] = approvals,
         };
         LinkIdentity.SaveAtomic(GrantPath, JsonSerializer.SerializeToUtf8Bytes(grant, LinkProtocol.Json));
         return Read(capabilities);

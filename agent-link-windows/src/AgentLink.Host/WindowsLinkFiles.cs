@@ -44,7 +44,8 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
     private async Task<LinkReply> ExecuteAsync(LinkRequest request, CancellationToken cancellation)
     {
         if (!File.Exists(worker)) return new(false, "此安装不包含文件传输组件。");
-        if (request.Operation is not ("overview" or "send" or "receive" or "resume" or "retain" or "removeRetention"))
+        if (request.Operation is not ("overview" or "send" or "receive" or "resume" or "retain" or "removeRetention"
+            or "grantAccess" or "receiveGrant" or "revokeGrant"))
             return new(false, "文件操作不可用。");
         var session = MemberCredentials.FileSession();
         if (session is null) return new(false, "请先在 Agent Link 登录会员。");
@@ -63,7 +64,7 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
         };
         if (request.Args is JsonObject args)
         {
-            foreach (var name in new[] { "source", "destination", "recipientId", "requestKey", "transferId" })
+            foreach (var name in new[] { "source", "destination", "recipientId", "requestKey", "transferId", "granteeId", "grantId" })
             {
                 if (args[name] is JsonValue value && value.TryGetValue<string>(out var text))
                     input[name] = text;

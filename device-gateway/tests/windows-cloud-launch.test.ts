@@ -19,7 +19,7 @@ it('publishes only owner-approved targets and recovers both replies across resta
   ].join('\n'));
   const target = { sourceKind: 'NATIVE', backendId: 'store', projectId: 'project', engineId: 'pi', capabilityRevision: '1' };
   writeFileSync(grant, JSON.stringify({ schemaVersion: 'windows-cloud-launch-grant/1', revision: 1,
-    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance', controls: true,
+    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance', controls: true, approvals: true,
     launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }] }));
   const command = { commandId: 'delivery', workId: 'work', kind: 'link.task.launch.v2', deliveryGeneration: 1,
     payload: { target: { ...target, instanceId: 'instance' }, payloadDigest: 'digest', nativeRequestKey: 'original-key',
@@ -31,6 +31,11 @@ it('publishes only owner-approved targets and recovers both replies across resta
   let launches = 0;
   let stops = 0;
   let stopKey: string | undefined;
+  let approvalKey: string | undefined;
+  let approvalWrites = 0;
+  let approvalConsumed = false;
+  let questionReads = 0;
+  let beforeInputFailed = false;
   const stopReceipt = { state: 'SUCCEEDED', result: { taskId: task.taskId, state: 'CANCELLED' } };
   const transport: LocalTransportLike = {
     workerLocal: () => row, workerLocalRows: () => [row], identity: async () => 'store',
@@ -43,7 +48,29 @@ it('publishes only owner-approved targets and recovers both replies across resta
           sourceKey = key;
           throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
         case `GET /task-requests/${sourceKey}`: return { status: 200, data: task };
-        case 'GET /tasks/native-task': return { status: 200, data: task };
+        case 'GET /tasks/native-task':
+          if (questionReads === 3 && !beforeInputFailed) {
+            beforeInputFailed = true;
+            throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
+          }
+          return { status: 200, data: task };
+        case 'GET /tasks/native-task/input-requests':
+          questionReads++;
+          return { status: 200, data: { items: [{ inputRequestId: 'question',
+            method: 'confirm', title: '授权验收操作', message: '批准本轮操作',
+            state: approvalConsumed ? 'ANSWERED' : 'PENDING',
+            generation: 'generation', nativeSessionId: 'session',
+            nativeTurnId: 'turn', targetCommandId: 'run',
+          }] } };
+        case 'POST /tasks/native-task/input-requests/question/responses':
+          expect(body).toEqual({ requestKey: key, response: { confirmed: true },
+            generation: 'generation', nativeSessionId: 'session', nativeTurnId: 'turn', targetCommandId: 'run' });
+          approvalWrites++;
+          approvalKey = key;
+          throw new LocalTransportError('LOCAL_SOURCE_UNAVAILABLE', 503);
+        case `GET /tasks/native-task/interaction-requests/${approvalKey}`:
+          return { status: 200, data: { taskId: task.taskId, kind: 'INPUT_RESPONSE',
+            state: approvalConsumed ? 'CONSUMED' : 'DISPATCHING' } };
         case 'POST /tasks/native-task/commands':
           expect(body).toEqual({ requestKey: key, intent: 'STOP', generation: 'generation',
             nativeSessionId: 'session', nativeTurnId: 'turn', targetCommandId: 'run' });
@@ -63,6 +90,9 @@ it('publishes only owner-approved targets and recovers both replies across resta
   const results: unknown[] = [];
   let actionAccepted = false;
   let staleRejected = false;
+  let approvalAccepted = false;
+  let staleApprovalRejected = false;
+  const expiresAt = new Date(Date.now() + 25_000).toISOString();
   const hosted: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : String(input));
     expect(url.origin).toBe(origin);
@@ -75,7 +105,17 @@ it('publishes only owner-approved targets and recovers both replies across resta
         if (!accepted) return Response.json({ commands: [command] });
         const execution = events[0];
         if (!execution || actionAccepted) return Response.json({ commands: [] });
-        const expiresAt = new Date(Date.now() + 25_000).toISOString();
+        if (!approvalAccepted) {
+          const [question] = execution.pendingInputs as Record<string, unknown>[];
+          expect(question).toMatchObject({ questionId: 'question', kind: 'CONFIRM', round: 1 });
+          const approval = (commandId: string, fingerprint: unknown) => ({
+            commandId, workId: 'work', kind: 'link.task.action.v2', deliveryGeneration: 1, claimUntil: expiresAt,
+            payload: { operationId: commandId, kind: 'approval_response', workId: 'work', expiresAt,
+              payload: { activeRunId: execution.activeRunId, executionEpoch: execution.executionEpoch,
+                questionId: question.questionId, round: question.round, fingerprint, decision: 'approve' } },
+          });
+          return Response.json({ commands: [approval('stale-approval', 'retired'), approval('approve', question.fingerprint)] });
+        }
         const stop = (commandId: string, activeRunId: unknown) => ({
           commandId, workId: 'work', kind: 'link.task.action.v2', deliveryGeneration: 1, claimUntil: expiresAt,
           payload: { operationId: commandId, kind: 'stop', workId: 'work', expiresAt,
@@ -97,6 +137,14 @@ it('publishes only owner-approved targets and recovers both replies across resta
       case 'POST /task-claims/stale-stop/receipt':
         expect(body).toEqual({ deliveryGeneration: 1, outcome: 'conflict', detail: 'stale_execution' });
         staleRejected = true;
+        return Response.json({});
+      case 'POST /task-claims/stale-approval/receipt':
+        expect(body).toEqual({ deliveryGeneration: 1, outcome: 'conflict', detail: 'stale_approval' });
+        staleApprovalRejected = true;
+        return Response.json({});
+      case 'POST /task-claims/approve/receipt':
+        expect(body).toEqual({ deliveryGeneration: 1, outcome: 'executed' });
+        approvalAccepted = true;
         return Response.json({});
       case 'POST /task-claims/stop/receipt':
         expect(body).toEqual({ deliveryGeneration: 1, outcome: 'executed' });
@@ -126,12 +174,29 @@ it('publishes only owner-approved targets and recovers both replies across resta
     await build().tick();
     expect(launches).toBe(1);
     expect(receiptPosts).toBe(2);
+    expect(staleApprovalRejected).toBe(true);
+    expect(beforeInputFailed).toBe(true);
+    expect(approvalAccepted).toBe(false);
+    expect(approvalWrites).toBe(0);
+    store.close();
+    store = new GatewayStore(dir);
+    await build().tick();
+    expect(approvalWrites).toBe(1);
+    approvalConsumed = true;
+    store.close();
+    store = new GatewayStore(dir);
+    await build().tick();
+    expect(approvalAccepted).toBe(true);
+    expect(approvalWrites).toBe(1);
     expect(staleRejected).toBe(true);
     expect(actionAccepted).toBe(true);
     expect(stops).toBe(1);
     await build().tick();
     expect(events).toEqual([
-      expect.objectContaining({ state: 'running', nativeTaskId: 'native-task', supportedActions: ['stop'] }),
+      expect.objectContaining({ state: 'waiting_approval', nativeTaskId: 'native-task',
+        supportedActions: ['stop', 'approval_response'] }),
+      expect.objectContaining({ state: 'running', nativeTaskId: 'native-task',
+        supportedActions: ['stop'], pendingInputs: [] }),
       expect.objectContaining({ state: 'cancelled', nativeTaskId: 'native-task' }),
     ]);
     expect(results).toEqual([expect.objectContaining({ refs: [{ ref: 'native://store/tasks/native-task', mediaType: 'application/json' }] })]);
