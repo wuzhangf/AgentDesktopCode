@@ -18,6 +18,7 @@ Usage: agent_pre_tool.py <agent>     (agent = claude, codex, ...)
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -297,6 +298,20 @@ def workspace_ok(tool_input: dict, cwd: str) -> bool:
     return True
 
 
+def desktop_host() -> bool:
+    """True when the codex that spawned us lives inside a .app bundle
+    (ChatGPT desktop, Codex.app) rather than a bare CLI/bridge binary —
+    those sessions re-prompt in-app per ask, so a phone approval is meant
+    to cover the whole session, not one turn."""
+    try:
+        out = subprocess.check_output(
+            ["ps", "-p", str(os.getppid()), "-o", "command="],
+            text=True, timeout=2).strip()
+        return ".app/" in out
+    except Exception:
+        return False
+
+
 def session_auto(agent: str, session_id: str) -> bool:
     if not session_id:
         return False
@@ -362,6 +377,9 @@ def main() -> int:
         asking = True
     if not tool or not asking:
         return 0
+    if event == "PermissionRequest":
+        keys = sorted(tool_input.keys()) if isinstance(tool_input, dict) else type(tool_input).__name__
+        log(f"DEBUG permission-request keys={sorted(payload.keys())} tool={tool!r} input_keys={keys}")
     if session_auto(agent, session_id):
         print(approve_out(agent, event))
         return 0
@@ -412,7 +430,10 @@ def main() -> int:
         if state == "PENDING":
             continue
         if state == "APPROVED":
-            if row.get("decision") == "APPROVED_SESSION":
+            # Desktop-hosted codex re-prompts in-app for every grant — the
+            # owner's choice is "one tap covers the session": any approval
+            # there implies 本会话允许, no separate option needed.
+            if row.get("decision") == "APPROVED_SESSION" or desktop_host():
                 mark_session_auto(agent, session_id)
             print(approve_out(agent, event))
             return 0
