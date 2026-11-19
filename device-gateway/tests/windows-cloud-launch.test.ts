@@ -208,3 +208,50 @@ it('publishes only owner-approved targets and recovers both replies across resta
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('ignores malformed session files and clears targets when the session rotates', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'windows-cloud-test-'));
+  const session = join(dir, 'connector.env');
+  const grant = join(dir, 'grant.json');
+  const origin = 'https://hosted.test';
+  const base = (extra: string[]) => writeFileSync(session, [
+    `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+    'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+    'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+    ...extra,
+  ].join('\n'));
+  writeFileSync(grant, JSON.stringify({ schemaVersion: 'windows-cloud-launch-grant/1', revision: 1,
+    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance',
+    launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }] }));
+  let calls = 0;
+  const hosted: typeof fetch = async () => { calls++; return Response.json({ commands: [] }); };
+  const transport: LocalTransportLike = {
+    workerLocal: () => { throw Error('not used'); }, workerLocalRows: () => [],
+    identity: async () => 'store', rawBytes: async () => { throw Error('not used'); },
+    raw: async () => { throw Error('not used'); },
+  };
+  const store = new GatewayStore(dir);
+  const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
+  vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store', projects: [], engines: [] });
+  const build = () => new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted);
+  try {
+    // Wrong origin: a connector file for another hosted realm must idle.
+    writeFileSync(session, `PAC_RELAY_MEMBER_ORIGIN=https://other.test\nPAC_RELAY_CLIENT_ID=agent-link\n` +
+      'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture\nPAC_RELAY_MEMBER_ID=member\n' +
+      'PAC_RELAY_WORKSPACE_ID=workspace\nPAC_RELAY_AGENT_INSTANCE_ID=instance\n');
+    await build().tick();
+    // Wrong client: a non agent-link session (e.g. a phone session file) must idle.
+    writeFileSync(session, `PAC_RELAY_MEMBER_ORIGIN=${origin}\nPAC_RELAY_CLIENT_ID=phone\n` +
+      'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture\nPAC_RELAY_MEMBER_ID=member\n' +
+      'PAC_RELAY_WORKSPACE_ID=workspace\nPAC_RELAY_AGENT_INSTANCE_ID=instance\n');
+    await build().tick();
+    expect(calls).toBe(0);
+    // A Mac-written file omits the refresh token — the consumer never reads it.
+    base([]);
+    await build().tick();
+    expect(calls).toBeGreaterThan(0);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
