@@ -330,7 +330,8 @@ export interface GatewayWorkHandoffs {
   listPeers(): MaybePromise<JsonObject>;
   recoveryOptions?(): MaybePromise<JsonObject>;
   setRecovery?(body: unknown): MaybePromise<JsonObject>;
-  gatewayPeerKey?(payload: unknown): JsonObject | undefined;
+  gatewayPeerKey?(payload: unknown): JsonObject | JsonObject[] | undefined;
+  gatewayRetirementPeerKey?(payload: unknown): JsonObject | undefined;
   signGatewayExport?(view: JsonObject): JsonObject;
 }
 

@@ -296,7 +296,8 @@ async function acsHandoffCapabilities(ctx: GatewayContext, device: Device, relay
 }
 
 async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, device: Device): Promise<HttpResponse> {
-  if (req.relayIngress === true || !ctx.acs || !ctx.auth.appendCreatedSession || !device.actions?.includes('HANDOFF')) {
+  if (req.relayIngress === true || !ctx.acs || !ctx.auth.appendCreatedSession ||
+      !device.actions?.includes('HANDOFF') || !device.actions.includes('OBSERVE')) {
     fail('WORK_HANDOFFS_NOT_CONFIGURED', 409);
   }
   const root = '/personal/v1/work-handoffs';
@@ -304,9 +305,9 @@ async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, 
   const method = req.method;
   const tail = path.slice(root.length);
   const ref = '/wh-[a-f0-9]{16,64}';
-  const read = method === 'GET' && (tail === '' || /^\/requests\/[A-Za-z0-9._-]{1,128}$/.test(tail)
+  const read = method === 'GET' && (tail === '' || tail === '/recovery-grants' || /^\/requests\/[A-Za-z0-9._-]{1,128}$/.test(tail)
     || new RegExp('^' + ref + '(?:/materials(?:/[A-Za-z0-9._-]{1,128}/chunks)?|/target-retries/[A-Za-z0-9._-]{1,128})?$').test(tail));
-  const write = method === 'POST' && (tail === '' || new RegExp('^' + ref + '/(?:confirm|continue|retry-target|cancel)$').test(tail));
+  const write = method === 'POST' && (tail === '' || new RegExp('^' + ref + '/(?:confirm|continue|retry-target|cancel|material-continuations)$').test(tail));
   if (!read && !write) fail('OPERATION_NOT_ALLOWED', 403);
   if (req.rawQuery !== null) {
     if (!read || !tail.endsWith('/chunks') || req.rawQuery.length > 4096) fail('INVALID_REQUEST', 400);
@@ -318,12 +319,14 @@ async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, 
   const grant = await ctx.auth.authenticate(token);
   if (grant.revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
   const peerKey = write ? ctx.workHandoffs?.gatewayPeerKey?.(payload) : undefined;
+  const retirementPeerKey = write ? ctx.workHandoffs?.gatewayRetirementPeerKey?.(payload) : undefined;
   const wire = {
     gatewayHostId: ctx.config.personalHostId, grantRevision: grant.revision, sessions: grant.sessions ?? [],
     mayCreate: grant.actions?.includes('CREATE') === true, method, path, payload,
     ...(key === undefined ? {} : { key }),
     ...(req.rawQuery === null ? {} : { query: req.rawQuery }),
     ...(peerKey === undefined ? {} : { peerKey }),
+    ...(retirementPeerKey === undefined ? {} : { retirementPeerKey }),
   };
   const upstream = await acsCall(ctx, 'POST', handoffUpstream,
     new TextEncoder().encode(JSON.stringify(wire)), undefined, bound);
@@ -549,8 +552,10 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     if (capabilities.handoff && ctx.acsHandoffBridge && ctx.workHandoffs && actions.has('CREATE')) capabilities.handoffAcsImport = true;
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetKinds = ['NATIVE_LOCAL', 'NATIVE_REMOTE', 'ACS_REMOTE'];
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffBackgroundProgress = true;
-    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffRecovery = true;
-    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetSealing = true;
+    if (capabilities.handoff && (ctx.nativeLocalHandoffs || acsHandoff?.remoteRecovery === true))
+      capabilities.handoffRecovery = true;
+    if (capabilities.handoff && (ctx.nativeLocalHandoffs || capabilities.handoffAcsImport))
+      capabilities.handoffTargetSealing = true;
     return { status: 200, body: view };
   }
 
@@ -684,7 +689,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   if (path === '/personal/v1/work-handoffs' || path.startsWith('/personal/v1/work-handoffs/')) {
     const tail = path === '/personal/v1/work-handoffs' ? [] : javaSplit(path).slice(4);
     if (ctx.acsHandoffBridge) {
-      const importRoute = ['imports', 'target-preflights', 'trusted-peer-keys'].includes(tail[0]);
+      const importRoute = ['imports', 'import-recoveries', 'target-preflights', 'trusted-peer-keys'].includes(tail[0]);
       const lookup = tail[0] === 'requests' && method === 'GET';
       if (!req.relayIngress && ctx.workHandoffs && (importRoute || lookup)) {
         try {

@@ -755,9 +755,20 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   // The Windows ACS bridge keeps Java as the source coordinator. Its
   // gateway ledger only receives signed ACS imports from peer hosts.
   if (localTasks !== undefined) {
+    const acsSourceRecovery = acs && ctx.acsHandoffBridge ? async (body: JsonObject) => {
+      const binding = await bindingFor(ctx, { id: '848920e1-ecde-4e1f-8d1f-c0a2daeef703', label: 'Windows Link handoff owner' });
+      const reply = await acs.call('POST', '/api/v2/personal-access/gateway-work-handoff-recovery',
+        new TextEncoder().encode(JSON.stringify({ ...body, gatewayHostId: host.id })), undefined, binding);
+      let value: JsonObject;
+      try { value = JSON.parse(Buffer.from(reply.body).toString('utf8')); }
+      catch { return fail('UPSTREAM_UNAVAILABLE', 503); }
+      if (reply.status !== 200) fail(typeof value.code === 'string' ? value.code : 'UPSTREAM_UNAVAILABLE', reply.status);
+      return value;
+    } : undefined;
     ctx.workHandoffs = new WorkHandoffAccess(
       store, devices, agentUpstream, localTasks,
-      join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id, ctx.acsHandoffBridge === true);
+      join(opts.dataDir, 'materials'), join(opts.dataDir, 'signing'), host.id, ctx.acsHandoffBridge === true,
+      acsSourceRecovery);
     if (agentUpstream === undefined) ctx.nativeLocalHandoffs = true;
   }
 

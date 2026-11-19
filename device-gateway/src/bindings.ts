@@ -61,7 +61,9 @@ const parseRecord = (body: Uint8Array): BindingRecord => {
   };
 };
 
-const register = async (ctx: GatewayContext, device: Device): Promise<BindingRecord> => {
+type ClientIdentity = Pick<Device, 'id' | 'label'>;
+
+const register = async (ctx: GatewayContext, device: ClientIdentity): Promise<BindingRecord> => {
   if (ctx.acs === undefined) fail('UPSTREAM_UNAVAILABLE', 503);
   const registrationKey = crypto.randomUUID();
   const body = new TextEncoder().encode(JSON.stringify({
@@ -98,7 +100,7 @@ const heartbeat = async (ctx: GatewayContext, record: BindingRecord): Promise<bo
   return true;
 };
 
-const acquire = async (ctx: GatewayContext, device: Device, slot: BindingSlot): Promise<BindingRecord> => {
+const acquire = async (ctx: GatewayContext, device: ClientIdentity, slot: BindingSlot): Promise<BindingRecord> => {
   // A locally-expired lease heartbeats 401 upstream for sure — skip the
   // round trip; a near-expired one may still be live (clock skew, restart).
   if (slot.record !== undefined && slot.record.expiresAt > Date.now()
@@ -111,7 +113,7 @@ const acquire = async (ctx: GatewayContext, device: Device, slot: BindingSlot): 
 };
 
 /** Java binding(device): register once per device, heartbeat, reuse until release(). */
-export function bindingFor(ctx: GatewayContext, device: Device): Promise<string> {
+export function bindingFor(ctx: GatewayContext, device: ClientIdentity): Promise<string> {
   let map = BINDINGS.get(ctx);
   if (!map) {
     map = new Map();

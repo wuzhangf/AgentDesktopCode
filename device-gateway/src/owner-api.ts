@@ -231,7 +231,7 @@ export async function handleOwnerRoute(
       if (method === 'PUT') return { status: 200, body: await ctx.workHandoffs.registerPeer(jsonBody(req)) };
     }
     if (path === `${ROOT}/work-handoffs/recovery-grants`) {
-      if (!ctx.nativeLocalHandoffs || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
+      if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       if (method === 'GET' && ctx.workHandoffs.recoveryOptions) return { status: 200, body: {
         ...(await ctx.workHandoffs.recoveryOptions()), devices: await ctx.auth.devices(),
       } };
