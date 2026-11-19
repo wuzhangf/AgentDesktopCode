@@ -283,14 +283,15 @@ const messageBudget = (): number => 16 * 1024 * 1024;
 
 const handoffUpstream = '/api/v2/personal-access/gateway-work-handoffs';
 
-async function hasAcsHandoff(ctx: GatewayContext, device: Device, relay: boolean): Promise<boolean> {
+async function acsHandoffCapabilities(ctx: GatewayContext, device: Device, relay: boolean): Promise<JsonObject | undefined> {
   // The shared Java relay manifest does not currently advertise this route.
-  if (relay || !ctx.acs || !ctx.auth.appendCreatedSession || !device.actions?.includes('HANDOFF')) return false;
+  if (relay || !ctx.acs || !ctx.auth.appendCreatedSession || !device.actions?.includes('HANDOFF')) return undefined;
   try {
     const reply = await acsCall(ctx, 'GET', handoffUpstream, undefined, undefined, await bindingFor(ctx, device));
-    return reply.status === 200 && asObj(acsJson(reply)).schemaVersion === 'gateway-work-handoffs/1';
+    const value = asObj(acsJson(reply));
+    return reply.status === 200 && value.schemaVersion === 'gateway-work-handoffs/1' ? value : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -316,11 +317,13 @@ async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, 
   const bound = await bindingFor(ctx, device);
   const grant = await ctx.auth.authenticate(token);
   if (grant.revision !== device.revision) fail('GRANT_REVISION_CHANGED', 409);
+  const peerKey = write ? ctx.workHandoffs?.gatewayPeerKey?.(payload) : undefined;
   const wire = {
     gatewayHostId: ctx.config.personalHostId, grantRevision: grant.revision, sessions: grant.sessions ?? [],
     mayCreate: grant.actions?.includes('CREATE') === true, method, path, payload,
     ...(key === undefined ? {} : { key }),
     ...(req.rawQuery === null ? {} : { query: req.rawQuery }),
+    ...(peerKey === undefined ? {} : { peerKey }),
   };
   const upstream = await acsCall(ctx, 'POST', handoffUpstream,
     new TextEncoder().encode(JSON.stringify(wire)), undefined, bound);
@@ -333,6 +336,10 @@ async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, 
     const sid = asText(data.createdSessionId);
     id(sid);
     await ctx.auth.appendCreatedSession(grant.id, grant.revision, sid);
+  }
+  if (data.result.gatewayFrozenExport === true) {
+    if (!read || !tail.endsWith('/materials') || !ctx.workHandoffs?.signGatewayExport) fail('SEAL_PROOF_INVALID', 409);
+    return { status: upstream.status, body: ctx.workHandoffs.signGatewayExport(data.result) };
   }
   return { status: upstream.status, body: data.result };
 }
@@ -532,14 +539,18 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
       && (actions.has('CREATE') || (device.sessions ?? []).length > 0);
     capabilities.inbox = true;
     capabilities.notifications = false;
+    const acsHandoff = ctx.acsHandoffBridge ? await acsHandoffCapabilities(ctx, device, req.relayIngress === true) : undefined;
     capabilities.handoff = ctx.acsHandoffBridge
-      ? await hasAcsHandoff(ctx, device, req.relayIngress === true)
+      ? acsHandoff != null
       : ctx.workHandoffs !== undefined && actions.has('HANDOFF');
-    if (capabilities.handoff && ctx.acsHandoffBridge) capabilities.handoffTargetKinds = ['ACS_LOCAL'];
+    if (capabilities.handoff && ctx.acsHandoffBridge) capabilities.handoffTargetKinds =
+      acsHandoff?.remoteSource === true && ctx.workHandoffs?.signGatewayExport
+        ? ['ACS_LOCAL', 'NATIVE_REMOTE', 'ACS_REMOTE'] : ['ACS_LOCAL'];
     if (capabilities.handoff && ctx.acsHandoffBridge && ctx.workHandoffs && actions.has('CREATE')) capabilities.handoffAcsImport = true;
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetKinds = ['NATIVE_LOCAL', 'NATIVE_REMOTE', 'ACS_REMOTE'];
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffBackgroundProgress = true;
     if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffRecovery = true;
+    if (capabilities.handoff && ctx.nativeLocalHandoffs) capabilities.handoffTargetSealing = true;
     return { status: 200, body: view };
   }
 

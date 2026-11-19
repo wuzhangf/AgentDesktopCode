@@ -18,13 +18,13 @@ internal sealed class HandoffRecoveryWindow : Window
         var layout = new StackPanel { Margin = new Thickness(18) };
         layout.Children.Add(new TextBlock
         {
-            Text = "只授权恢复所选交接，有效期 30 分钟。新手机须已配对并有目标权限。",
+            Text = "授权有效期为 30 分钟。跨电脑交接需在源电脑授权原交接，并在目标电脑授权原导入。新手机须分别配对，并持有相应权限。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12),
         });
         var handoffs = new ComboBox { DisplayMemberPath = nameof(Option.Label), Margin = new Thickness(0, 4, 0, 12) };
         var devices = new ComboBox { DisplayMemberPath = nameof(Option.Label), Margin = new Thickness(0, 4, 0, 12) };
-        layout.Children.Add(new TextBlock { Text = "原交接" });
+        layout.Children.Add(new TextBlock { Text = "原交接或原导入" });
         layout.Children.Add(handoffs);
         layout.Children.Add(new TextBlock { Text = "新手机" });
         layout.Children.Add(devices);
@@ -37,8 +37,12 @@ internal sealed class HandoffRecoveryWindow : Window
         var notice = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) };
         layout.Children.Add(notice);
 
-        handoffs.ItemsSource = (view["items"] as JsonArray ?? []).OfType<JsonObject>().Select(row => new Option(
-            row["handoffId"]?.GetValue<string>() ?? "", $"{row["sourceTaskId"]} → {row["target"]} · {row["phase"]}")).ToArray();
+        handoffs.ItemsSource = (view["items"] as JsonArray ?? []).OfType<JsonObject>().Select(row =>
+        {
+            var label = row["recordKind"]?.GetValue<string>() == "IMPORT" ? "目标导入" : "源交接";
+            return new Option(row["handoffId"]?.GetValue<string>() ?? "",
+                $"{label} · {row["sourceTaskId"]} → {row["target"]} · {row["phase"]}");
+        }).ToArray();
         devices.ItemsSource = (view["devices"] as JsonArray ?? []).OfType<JsonObject>()
             .Where(row => row["state"]?.GetValue<string>() == "ACTIVE").Select(row => new Option(
                 row["deviceGrantId"]?.GetValue<string>() ?? "", $"{row["label"]} · {row["deviceGrantId"]}")).ToArray();
@@ -48,7 +52,7 @@ internal sealed class HandoffRecoveryWindow : Window
         {
             if (handoffs.SelectedItem is not Option record || devices.SelectedItem is not Option device)
             {
-                notice.Text = "请选择原交接和新手机。";
+                notice.Text = "请选择恢复记录和新手机。";
                 return;
             }
             grant.IsEnabled = revoke.IsEnabled = false;
