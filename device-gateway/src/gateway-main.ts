@@ -839,7 +839,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
   const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
-      join(opts.dataDir, 'windows-cloud-launch.json')) : undefined;
+      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1') : undefined;
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 

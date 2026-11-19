@@ -87,6 +87,7 @@ export class WindowsCloudLaunch {
     private readonly sessionFile: string,
     private readonly grantFile: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly recoveryOnly = false,
   ) {}
 
   start(): void {
@@ -170,7 +171,7 @@ export class WindowsCloudLaunch {
     if (!session) return;
     const grant = this.grant(session);
     const prior = this.store.get<{ checkedAt: number; grant: string }>('windows-cloud-directory', session.scope);
-    if (!grant && !prior) return;
+    if (!this.recoveryOnly && !grant && !prior) return;
     // Existing receipts and observations keep moving when publication or
     // claiming hits a temporary endpoint error.
     for (const row of this.store.list<Delivery>(journal)) {
@@ -181,6 +182,7 @@ export class WindowsCloudLaunch {
       if (action.scope !== session.scope || action.closed) continue;
       try { await this.resumeAction(session, action); } catch { /* keep the original action outbox */ }
     }
+    if (this.recoveryOnly) return;
     const grantDigest = hash(JSON.stringify(grant ?? null));
     if (!prior || prior.grant !== grantDigest || Date.now() - prior.checkedAt > 30_000) {
       await this.publish(session, grant);
@@ -398,7 +400,7 @@ export class WindowsCloudLaunch {
 
   private supportedActions(session: Session, facts: Json, pins: Json | undefined,
     pending: PendingApproval[]): CloudAction[] {
-    if (!pins) return [];
+    if (this.recoveryOnly || !pins) return [];
     const capabilities = isRecord(facts.capabilities) ? facts.capabilities : {};
     const grant = this.grant(session);
     return [...(grant?.controls && capabilities.followUp === true ? ['message' as const] : []),
@@ -408,7 +410,7 @@ export class WindowsCloudLaunch {
 
   private async pendingApprovals(session: Session, row: Delivery, route: string,
     facts: Json, pins: Json | undefined, epoch: number): Promise<PendingApproval[]> {
-    if (!this.grant(session)?.approvals || !pins?.nativeTurnId || !['pi', 'sage-pi'].includes(String(facts.engineId)) ||
+    if (this.recoveryOnly || !this.grant(session)?.approvals || !pins?.nativeTurnId || !['pi', 'sage-pi'].includes(String(facts.engineId)) ||
         !['RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL'].includes(String(facts.state))) return [];
     const reply = await this.local(session, row, access => access.remote(row.id, 'GET',
       `${route}/input-requests`, null, null, null));
@@ -562,11 +564,20 @@ export class WindowsCloudLaunch {
       return grant;
     };
     const device = (): Device => {
-      const grant = assertCurrent();
-      return { id: principal, revision: grant.revision, state: 'ACTIVE', scopeVersion: 2,
+      // Old receipts need the original local principal. For read/lookup
+      // operations, derive only its already-journaled scope even after
+      // withdrawal. Any new execution still requires the current grant.
+      if (this.abort.signal.aborted || this.session()?.scope !== session.scope) fail('CLOUD_SCOPE_CHANGED', 403);
+      const target = row.target;
+      if (!identifier(target.backendId) || !identifier(target.projectId) || !identifier(target.engineId)) {
+        fail('CLOUD_SCOPE_CHANGED', 403);
+      }
+      const scopes = deadline !== undefined ? assertCurrent().scopes
+        : [{ backendStoreId: target.backendId, projectId: target.projectId, engineId: target.engineId }];
+      return { id: principal, revision: row.grantRevision, state: 'ACTIVE', scopeVersion: 2,
         actions: ['OBSERVE', 'LAUNCH',
           ...(control === 'approval_response' ? ['APPROVE'] : control ? ['INTERACT', 'CONTROL'] : [])],
-        launchScopes: grant.scopes,
+        launchScopes: scopes,
         resources: this.store.get('windows-cloud-resources', principal) ?? [],
         absoluteExpiry: 0, idleExpiry: 0, accessExpiry: 0, recoverUntil: 0, spentRefresh: [] };
     };

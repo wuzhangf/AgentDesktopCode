@@ -233,7 +233,8 @@ it('ignores malformed session files and clears targets when the session rotates'
   const store = new GatewayStore(dir);
   const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
   vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store', projects: [], engines: [] });
-  const build = () => new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted);
+  const build = (recoveryOnly = false) =>
+    new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted, recoveryOnly);
   try {
     // Wrong origin: a connector file for another hosted realm must idle.
     writeFileSync(session, `PAC_RELAY_MEMBER_ORIGIN=https://other.test\nPAC_RELAY_CLIENT_ID=agent-link\n` +
@@ -248,6 +249,8 @@ it('ignores malformed session files and clears targets when the session rotates'
     expect(calls).toBe(0);
     // A Mac-written file omits the refresh token — the consumer never reads it.
     base([]);
+    await build(true).tick();
+    expect(calls).toBe(0);
     await build().tick();
     expect(calls).toBeGreaterThan(0);
   } finally {
