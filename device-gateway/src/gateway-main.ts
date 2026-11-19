@@ -822,8 +822,10 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     });
   }
 
-  const cloudOrigin = env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN')?.replace(/\/$/, '');
-  const cloudSession = env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
+  const cloudOrigin = (env('DEVICE_GATEWAY_CLOUD_ORIGIN')
+    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
+  const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
+    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
   const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
       join(opts.dataDir, 'windows-cloud-launch.json')) : undefined;
