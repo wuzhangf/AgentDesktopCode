@@ -10,11 +10,15 @@ same `device-gateway` bundle as the macOS/Windows gateways under
 sh agent-link-linux/packaging/build.sh [--out DIR]
 ```
 
-Produces `agent-link-<version>-linux.tar.gz` (version = `device-gateway`
-package version) containing the gateway bundle, the `cli-bridge` agent
+Produces `agent-link-<version>-linux.tar.gz` containing the gateway bundle, the `cli-bridge` agent
 runtime (`AgentWorkersCode/cli-bridge/host.mjs`, override with
 `WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks and
 a `release-manifest.json` with per-file SHA-256.
+
+Release builds set `AGENT_LINK_PRODUCT_VERSION` and `AGENT_LINK_BUILD_NUMBER`
+from the same release inputs as the Mac package. The archive name uses the
+product version, and the manifest records both values. Development builds
+default to the `device-gateway` package version and build number `1`.
 
 ## Install / upgrade
 

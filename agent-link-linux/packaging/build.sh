@@ -22,8 +22,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-VERSION=$(node -e 'console.log(require(process.argv[1]).version)' "$GATEWAY/package.json")
-[ -n "$VERSION" ] || { echo "could not read gateway version" >&2; exit 1; }
+VERSION=${AGENT_LINK_PRODUCT_VERSION:-$(node -p 'require(process.argv[1]).version' "$GATEWAY/package.json")}
+BUILD_NUMBER=${AGENT_LINK_BUILD_NUMBER:-1}
+node - "$VERSION" "$BUILD_NUMBER" <<'EOF'
+const [version, buildNumber] = process.argv.slice(2);
+if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(version)) {
+  console.error('AGENT_LINK_PRODUCT_VERSION must be a three-part product version.');
+  process.exit(2);
+}
+if (!/^[1-9]\d*$/.test(buildNumber) || !Number.isSafeInteger(Number(buildNumber))) {
+  console.error('AGENT_LINK_BUILD_NUMBER must be a positive decimal integer.');
+  process.exit(2);
+}
+EOF
 
 [ -d "$OUT" ] && { echo "choose a fresh output directory: $OUT" >&2; exit 1; }
 mkdir -p "$OUT/payload/hooks" "$OUT/payload/systemd"
@@ -45,9 +56,9 @@ chmod +x "$OUT/payload/install.sh" "$OUT/payload/uninstall.sh"
 
 GATEWAY_SHA=$(git -C "$REPO" rev-parse HEAD)
 DIRTY=$(git -C "$REPO" status --porcelain -- device-gateway agent-link-linux | wc -l | tr -d ' ')
-node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$GATEWAY_SHA" "$DIRTY" <<'EOF'
+node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$BUILD_NUMBER" "$GATEWAY_SHA" "$DIRTY" <<'EOF'
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const [root, out, version, sha, dirty] = process.argv.slice(2);
+const [root, out, version, buildNumber, sha, dirty] = process.argv.slice(2);
 const files = [];
 const walk = (dir) => {
   for (const name of fs.readdirSync(dir).sort()) {
@@ -61,7 +72,7 @@ const walk = (dir) => {
 };
 walk(root);
 fs.writeFileSync(out, JSON.stringify({
-  schemaVersion: 1, product: 'Agent Link', version,
+  schemaVersion: 1, product: 'Agent Link', version, buildNumber: Number(buildNumber),
   build: 'linux-user-service', gatewayBaseRevision: sha,
   gatewayWorkingTree: dirty !== '0', nodeRequirement: '>=24.18.0',
   files,
