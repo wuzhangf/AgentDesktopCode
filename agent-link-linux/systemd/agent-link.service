@@ -6,8 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.config/agent-link/env
-ExecStart=@NODE@ %h/.local/share/agent-link/device-gateway.mjs
+EnvironmentFile=@ENV_FILE@
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart="@NODE@" "@PREFIX@/device-gateway.mjs"
 Restart=on-failure
 RestartSec=3
 # The gateway keeps owner/hooks surfaces loopback-only; the phone listener
@@ -15,7 +16,7 @@ RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/share/agent-link %h/.config/agent-link
+ReadWritePaths="@PREFIX@" "@CONFIG@" "@PROJECT@"
 PrivateTmp=true
 
 [Install]

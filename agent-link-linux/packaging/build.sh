@@ -34,6 +34,9 @@ cp "$GATEWAY/dist/device-gateway.mjs" "$OUT/payload/device-gateway.mjs"
 # Agent Link bundle ships). Override with WORKER_BRIDGE=/path/host.mjs.
 [ -f "$WORKER_BRIDGE" ] || { echo "cli-bridge host.mjs not found: $WORKER_BRIDGE" >&2; echo "set WORKER_BRIDGE or check out AgentWorkersCode next to this repo" >&2; exit 1; }
 cp "$WORKER_BRIDGE" "$OUT/payload/cli-bridge.mjs"
+if [ -d "$(dirname "$WORKER_BRIDGE")/adapters" ]; then
+    cp -R "$(dirname "$WORKER_BRIDGE")/adapters" "$OUT/payload/adapters"
+fi
 cp "$GATEWAY/hooks/agent_pre_tool.py" "$GATEWAY/hooks/install.py" "$OUT/payload/hooks/"
 cp "$PRODUCT/install.sh" "$PRODUCT/uninstall.sh" "$OUT/payload/"
 cp "$PRODUCT/systemd/agent-link.service" "$OUT/payload/systemd/agent-link.service"

@@ -50,6 +50,10 @@ fi
 mkdir -p "$PREFIX" "$CONFIG_DIR" "$UNIT_DIR" "$PROJECT_DIR"
 cp "$HERE/device-gateway.mjs" "$PREFIX/device-gateway.mjs"
 [ -f "$HERE/cli-bridge.mjs" ] && cp "$HERE/cli-bridge.mjs" "$PREFIX/cli-bridge.mjs"
+if [ -d "$HERE/adapters" ]; then
+    mkdir -p "$PREFIX/adapters"
+    cp -R "$HERE/adapters/." "$PREFIX/adapters/"
+fi
 chmod 755 "$PREFIX"
 mkdir -p "$PREFIX/hooks" "$PREFIX/data"
 for f in agent_pre_tool.py install.py; do
@@ -100,20 +104,19 @@ else
     }
 fi
 
-sed "s|@NODE@|$NODE|" "$HERE/systemd/agent-link.service" > "$UNIT_DIR/agent-link.service"
-# The spawned agent CLIs must be able to write the project dir, and CLI
-# detection scans PATH — include the usual user bin dirs. Patch before the
-# prefix rewrite so the ReadWritePaths match still applies.
-sed -i "s|ReadWritePaths=%h/.local/share/agent-link %h/.config/agent-link|ReadWritePaths=%h/.local/share/agent-link %h/.config/agent-link $PROJECT_DIR|" "$UNIT_DIR/agent-link.service"
-grep -q '^Environment=PATH=' "$UNIT_DIR/agent-link.service" \
-    || sed -i "/^\[Service\]/a Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin" "$UNIT_DIR/agent-link.service"
-# The unit hardcodes %h paths; if a non-default prefix was chosen, patch it.
-if [ "$PREFIX" != "${XDG_DATA_HOME:-$HOME/.local/share}/agent-link" ]; then
-    sed -i "s|%h/.local/share/agent-link|$PREFIX|" "$UNIT_DIR/agent-link.service"
-fi
+# Substitute literal paths into the quoted systemd unit fields.
+unit_path() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/[&|\\]/\\&/g'
+}
+sed -e "s|@NODE@|$(unit_path "$NODE")|g" \
+    -e "s|@PREFIX@|$(unit_path "$PREFIX")|g" \
+    -e "s|@CONFIG@|$(unit_path "$CONFIG_DIR")|g" \
+    -e "s|@ENV_FILE@|$(printf '%s' "$ENV_FILE" | sed -e 's/%/%%/g' -e 's/[&|\\]/\\&/g')|g" \
+    -e "s|@PROJECT@|$(unit_path "$PROJECT_DIR")|g" \
+    "$HERE/systemd/agent-link.service" > "$UNIT_DIR/agent-link.service"
 
 systemctl --user daemon-reload
-systemctl --user enable --now agent-link.service
+systemctl --user enable --now "$UNIT_DIR/agent-link.service"
 sleep 1
 if systemctl --user is-active --quiet agent-link.service; then
     echo "agent-link.service: active"

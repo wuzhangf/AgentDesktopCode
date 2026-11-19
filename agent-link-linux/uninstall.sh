@@ -25,10 +25,14 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 rm -f "$UNIT_DIR/agent-link.service"
 command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload || true
-rm -rf "$PREFIX"
+rm -f "$PREFIX/device-gateway.mjs" "$PREFIX/cli-bridge.mjs" "$PREFIX/release-manifest.json"
+rm -f "$PREFIX/hooks/agent_pre_tool.py" "$PREFIX/hooks/install.py"
+rm -rf "$PREFIX/adapters"
+rmdir "$PREFIX/hooks" 2>/dev/null || true
 if [ "$PURGE" = 1 ]; then
-    rm -rf "$CONFIG_DIR"
+    rm -rf "$PREFIX/data" "$CONFIG_DIR"
+    rmdir "$PREFIX" 2>/dev/null || true
     echo "removed service, payload, env and data"
 else
-    echo "removed service and payload (kept $CONFIG_DIR for reinstall)"
+    echo "removed service and payload (kept $CONFIG_DIR and $PREFIX/data for reinstall)"
 fi
