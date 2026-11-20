@@ -58,6 +58,7 @@ command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload || true
 if [ -d "$PREFIX/program/versions" ]; then
     rm -f "$PREFIX/program/current" "$PREFIX/program/previous"
     rm -f "$PREFIX/program/last-failed-build"
+    rm -f "$PREFIX/program/repair-required"
     rm -rf "$PREFIX/program/versions"
     rm -rf "$PREFIX/program/updater"
     rmdir "$PREFIX/program" 2>/dev/null || true

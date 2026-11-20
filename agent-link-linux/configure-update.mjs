@@ -7,7 +7,7 @@ import { readSlot, syncPath, writeAtomic } from './slots.mjs';
 const timer = 'agent-link-update.timer';
 const service = 'agent-link-update.service';
 const scheduled = 'agent-link-update-scheduled.service';
-const revision = '2\n';
+const revision = '3\n';
 
 const quoted = (value, exec = true) => {
   const path = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%');

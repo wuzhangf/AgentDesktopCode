@@ -65,8 +65,13 @@ stops at logout, the next logged-in session resumes scheduled checks.
 The updater downloads Linux targets for Ubuntu 24.04 x86_64. Its signed
 release record must include `rollout` with `cohortSeed` and `percentage`,
 plus `withdrawnBuilds` containing builds unavailable for installation or
-rollback. An empty list allows recovery to the installed build. A
-withdrawn current build requires repair from a verified package.
+rollback. Withdrawals already verified are kept locally. A higher signed
+build can repair a withdrawn current build through the same updater. If
+candidate startup fails, the installer restores the original data and keeps
+the withdrawn build stopped. A subsequent check can install a newer repair.
+To request repair immediately on a stopped installation, start
+`agent-link-update.service`. Automatic repairs still respect the installation
+window and the safe stop point when the gateway is running.
 
 Use `systemctl --user disable --now agent-link-update.timer` to disable
 automatic checks. To turn them back on, run

@@ -13,6 +13,7 @@ import { canonicalize } from '@tufjs/canonical-json';
 import { stageVerifiedRelease } from '../src/verify-release.mjs';
 import { confirmSparkleCandidate, startSparkleSession } from '../src/sparkle-session.mjs';
 import { selectWindowsRelease } from '../src/windows-release.mjs';
+import { isWithdrawn, rememberWithdrawals } from '../../../agent-link-linux/slots.mjs';
 
 const recordPath = 'channels/stable.json';
 const artifactPath = 'agent-link/releases/link-42/Agent-Link.zip';
@@ -213,6 +214,34 @@ test('refuses expired and replayed metadata', async t => {
   await repo.stage();
   repo.publish({ version: 1 });
   await assert.rejects(repo.stage());
+});
+
+test('withdrawal observation requires a verified record for the installed platform and channel', async t => {
+  const repo = await repository(t);
+  const observed = [];
+  const options = { ...repo.options(), observeRecord: record => observed.push(record) };
+  repo.publish({ release: { availability: 'withdrawn', withdrawnBuilds: [41] } });
+  await assert.rejects(stageVerifiedRelease(options), /unavailable/);
+  assert.deepEqual(observed.map(record => [record.availability, record.withdrawnBuilds]), [['withdrawn', [41]]]);
+  repo.publish({ version: 2, release: { channel: 'preview', withdrawnBuilds: [42] } });
+  await assert.rejects(stageVerifiedRelease(options), /unavailable/);
+  repo.publish({ version: 3, release: { withdrawnBuilds: [43] } });
+  repo.files.set('/targets/' + recordPath, Buffer.from('unverified changes'));
+  await assert.rejects(stageVerifiedRelease(options));
+  assert.equal(observed.length, 1);
+});
+
+test('Linux persists withdrawn builds across newer records and permits unrelated repairs', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'link-linux-withdrawals-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  rememberWithdrawals(root, { availability: 'withdrawn', buildNumber: 42, withdrawnBuilds: [41] });
+  rememberWithdrawals(root, { availability: 'published', buildNumber: 43, withdrawnBuilds: [] });
+  assert.equal(isWithdrawn(root, 'versions/41'), true);
+  assert.equal(isWithdrawn(root, 'versions/42'), true);
+  assert.equal(isWithdrawn(root, 'versions/43'), false);
+  assert.throws(() => rememberWithdrawals(root, { availability: 'published', withdrawnBuilds: ['43'] }),
+    /Invalid signed Linux withdrawal list/);
+  assert.equal(isWithdrawn(root, 'versions/43'), false);
 });
 
 test('allows checking current signed metadata and rollout without fetching archives', async t => {

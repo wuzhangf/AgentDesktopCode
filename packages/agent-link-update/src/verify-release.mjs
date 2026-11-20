@@ -20,10 +20,13 @@ function repositoryUrl(value) {
   return url.href;
 }
 
+function matchesInstallation(release, installed) {
+  return release?.schemaVersion === 'link-release/1' && release.product === 'agent-link' &&
+    release.channel === installed.channel && release.platform === installed.platform && release.arch === installed.arch;
+}
+
 function checkRelease(release, installed) {
-  if (release?.schemaVersion !== 'link-release/1' || release.product !== 'agent-link' ||
-      release.availability !== 'published' || release.channel !== installed.channel ||
-      release.platform !== installed.platform || release.arch !== installed.arch) {
+  if (!matchesInstallation(release, installed) || release.availability !== 'published') {
     throw new Error('Release is unavailable for this platform, architecture or channel');
   }
   if (!POSITIVE_INTEGER(release.buildNumber) || release.buildNumber < installed.buildNumber) {
@@ -53,7 +56,7 @@ function checkRelease(release, installed) {
 /** Verify and stage a full archive using a provisioned TUF metadata cache. */
 export async function stageVerifiedRelease({
   metadataDir, metadataBaseUrl, targetBaseUrl, releaseRecordPath, installed,
-  stagingParent = tmpdir(), metadataOnly = false, allowCurrent = false, authorizeArchive, archiveCache,
+  stagingParent = tmpdir(), metadataOnly = false, allowCurrent = false, authorizeArchive, observeRecord, archiveCache,
 }) {
   if (typeof releaseRecordPath !== 'string' || !SAFE_TARGET_PATH.test(releaseRecordPath)) {
     throw new Error('Invalid release record target path');
@@ -78,6 +81,10 @@ export async function stageVerifiedRelease({
   try {
     const recordPath = await updater.downloadTarget(recordTarget, join(stagingDir, 'release.json'));
     const release = JSON.parse(await readFile(recordPath, 'utf8'));
+    if (observeRecord && matchesInstallation(release, installed) && POSITIVE_INTEGER(release.buildNumber) &&
+        ['published', 'withdrawn'].includes(release.availability)) {
+      await observeRecord(release);
+    }
     const artifact = checkRelease(release, installed);
     const target = await updater.getTargetInfo(artifact.path);
     if (!target || artifact.length !== target.length || artifact.sha256 !== target.hashes.sha256) {

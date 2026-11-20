@@ -6,7 +6,7 @@ import { parseArgs, parseEnv } from 'node:util';
 import { CurrentBuildError, stageVerifiedRelease } from './verify-release.mjs';
 import { extractLinuxArchive } from './linux-archive.mjs';
 import { install, InstallationDeferred, installationPaths } from '../../../agent-link-linux/install-transaction.mjs';
-import { readSlot } from '../../../agent-link-linux/slots.mjs';
+import { isWithdrawn, readSlot, rememberWithdrawals } from '../../../agent-link-linux/slots.mjs';
 import { inMaintenanceWindow, scheduledUpdate } from '../../../agent-link-linux/update-schedule.mjs';
 
 const packageLimit = 128 * 1024 * 1024;
@@ -33,9 +33,11 @@ async function main() {
   if (schedule && !schedule.due()) return;
   schedule?.begin();
   try {
-    const { active } = recovered ?? await install({ args, recoverOnly: true });
-    if (!active) throw new DeferredUpdate('Gateway is stopped', 'busy');
-    await checkForUpdate(args, paths);
+    const gateway = recovered ?? await install({ args, recoverOnly: true });
+    if (args.scheduled && !gateway.active && !gateway.needsRepair) {
+      throw new DeferredUpdate('Gateway is stopped', 'busy');
+    }
+    await checkForUpdate(args, paths, gateway.active);
     schedule?.finish('committed');
   } catch (error) {
     schedule?.finish(error instanceof DeferredUpdate ? error.outcome
@@ -45,7 +47,7 @@ async function main() {
   }
 }
 
-async function checkForUpdate(args, { program, updateRoot, config }) {
+async function checkForUpdate(args, { program, updateRoot, config }, active) {
   function requireMaintenanceWindow() {
     if (args.scheduled && !inMaintenanceWindow(config)) {
       throw new DeferredUpdate('Update downloaded and verified. Waiting for the installation window.', 'waiting-window');
@@ -74,20 +76,21 @@ async function checkForUpdate(args, { program, updateRoot, config }) {
   const settings = JSON.parse(await readFile(join(updateRoot, 'settings.json'), 'utf8'));
   const options = {
     metadataDir, metadataBaseUrl: settings.metadataBaseUrl, targetBaseUrl: settings.targetBaseUrl,
-    releaseRecordPath: settings.releaseRecordPath, stagingParent: updateRoot, archiveCache,
+    releaseRecordPath: settings.releaseRecordPath, stagingParent: updateRoot, archiveCache, allowCurrent: true,
+    observeRecord: release => rememberWithdrawals(updateRoot, release),
     installed: { platform: 'linux', arch: 'x86_64', channel: settings.channel,
       buildNumber, bootstrapVersion: 1, stateVersion: 1 },
   };
   function authorizeArchive(release) {
+    if (isWithdrawn(updateRoot, 'versions/' + release.buildNumber)) {
+      throw new DeferredUpdate('The signed release is withdrawn');
+    }
+    if (!active && !isWithdrawn(updateRoot, current)) {
+      throw new DeferredUpdate('Gateway is stopped', 'busy');
+    }
     if (release.minOS !== 'ubuntu-24.04' || release.compatibility.stateWriteVersion !== 1 ||
         release.artifact.length > packageLimit) {
       throw new DeferredUpdate('Release platform, state compatibility or size does not allow automatic installation');
-    }
-    if (!Array.isArray(release.withdrawnBuilds) ||
-        release.withdrawnBuilds.some(build => !Number.isSafeInteger(build) || build <= 0) ||
-        release.withdrawnBuilds.includes(release.buildNumber) ||
-        release.withdrawnBuilds.includes(buildNumber)) {
-      throw new DeferredUpdate('A trusted rollback version is required; repair from a verified release');
     }
     if (failed.trim() === `versions/${release.buildNumber}`) {
       throw new DeferredUpdate(`Build ${release.buildNumber} previously failed startup`);
@@ -117,7 +120,7 @@ async function checkForUpdate(args, { program, updateRoot, config }) {
     const source = join(stagingDir, 'payload');
     await extractLinuxArchive(archivePath, source);
     await install({
-      source, args, release,
+      source, args, release, repair: isWithdrawn(updateRoot, current),
       authorizeStop: requireMaintenanceWindow,
       confirmCandidate: async () => {
         requireMaintenanceWindow();

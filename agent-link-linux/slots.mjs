@@ -23,6 +23,46 @@ const allowed = new Set([
 export const isPayloadFile = path => typeof path === 'string' &&
   (allowed.has(path) || /^adapters\/[a-zA-Z0-9_-]+\/adapter\.mjs$/.test(path));
 
+const withdrawalFile = 'withdrawn-builds.json';
+const withdrawalLimit = 1024 * 1024;
+const validWithdrawals = builds => Array.isArray(builds) &&
+  builds.every(build => Number.isSafeInteger(build) && build > 0);
+
+function readWithdrawals(updateRoot) {
+  const path = join(updateRoot, withdrawalFile);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.size > withdrawalLimit) throw new Error('Invalid installed withdrawal list');
+    const builds = JSON.parse(readFileSync(path, 'utf8'));
+    if (!validWithdrawals(builds) || new Set(builds).size !== builds.length) {
+      throw new Error('Invalid installed withdrawal list');
+    }
+    return builds;
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+export function rememberWithdrawals(updateRoot, release) {
+  if (!validWithdrawals(release.withdrawnBuilds) ||
+      (release.availability === 'withdrawn' && !validWithdrawals([release.buildNumber]))) {
+    throw new Error('Invalid signed Linux withdrawal list');
+  }
+  const previous = readWithdrawals(updateRoot);
+  const builds = new Set([...previous, ...release.withdrawnBuilds]);
+  if (release.availability === 'withdrawn') builds.add(release.buildNumber);
+  if (builds.size === previous.length) return;
+  const contents = JSON.stringify([...builds]);
+  if (Buffer.byteLength(contents) > withdrawalLimit) throw new Error('Linux withdrawal list is oversized');
+  writeAtomic(join(updateRoot, withdrawalFile), contents);
+}
+
+export function isWithdrawn(updateRoot, slot) {
+  return slot !== undefined && slotName.test(slot) &&
+    readWithdrawals(updateRoot).includes(Number(slot.split('/')[1]));
+}
+
 export function syncPath(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }

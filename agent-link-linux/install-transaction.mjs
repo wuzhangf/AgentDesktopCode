@@ -9,7 +9,7 @@ import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv } from 'node:util';
-import { pruneVersions, readSlot, setSlot, stageVersion, syncPath, writeAtomic } from './slots.mjs';
+import { isWithdrawn, pruneVersions, readSlot, setSlot, stageVersion, syncPath, writeAtomic } from './slots.mjs';
 
 const service = 'agent-link.service';
 const preparation = '/api/v2/personal-access/update-preparation';
@@ -150,7 +150,16 @@ function recoveryDirectory(recovery, data) {
   return recovery;
 }
 
-function restore({ program, marker, journal, data, unit, envFile }, change) {
+function resumeRecovered({ updateRoot, repairMarker }, change) {
+  if ((change.wasActive || change.continueRepair) && isWithdrawn(updateRoot, change.current)) {
+    writeAtomic(repairMarker, change.current + '\n');
+  } else if (change.wasActive) {
+    systemctl('start', service);
+  }
+}
+
+function restore(transaction, change) {
+  const { program, marker, journal, data, unit, envFile } = transaction;
   const recovery = recoveryDirectory(change.recovery, data);
   if (systemctl('show', service, '--property=FragmentPath', '--value')) systemctl('stop', service);
   setSlot(program, 'current', change.current);
@@ -180,7 +189,7 @@ function restore({ program, marker, journal, data, unit, envFile }, change) {
   rmSync(marker);
   syncPath(program);
   systemctl('daemon-reload');
-  if (change.wasActive) systemctl('start', service);
+  resumeRecovered(transaction, change);
 }
 
 export function installationPaths(requestedPrefix) {
@@ -192,11 +201,12 @@ export function installationPaths(requestedPrefix) {
   return { home, prefix, xdgConfig, config, unitDir, program: join(prefix, 'program'), updateRoot: join(prefix, 'updates') };
 }
 
-export async function install({ source, args, release, confirmCandidate, authorizeStop, recoverOnly = false }) {
+export async function install({ source, args, release, confirmCandidate, authorizeStop, repair = false, recoverOnly = false }) {
   const { home, prefix, config, unitDir, program, updateRoot } = installationPaths(args.prefix);
   const marker = join(program, 'pending');
   const journal = join(program, 'transaction.json');
   const lastFailure = join(program, 'last-failed-build');
+  const repairMarker = join(program, 'repair-required');
   const envFile = join(config, 'env');
   const unit = join(unitDir, service);
   const oldEnv = optionalFile(envFile);
@@ -222,15 +232,15 @@ export async function install({ source, args, release, confirmCandidate, authori
   }
   mkdirSync(program, { recursive: true, mode: 0o700 });
   if (realpathSync(program) !== program) throw new Error('Program directory must be local');
-  const transaction = { program, marker, journal, data, unit, envFile };
+  const transaction = { program, marker, journal, data, unit, envFile, repairMarker, updateRoot };
   if (existsSync(journal)) {
     const priorChange = JSON.parse(readFileSync(journal, 'utf8'));
     if (priorChange.data !== data) throw new Error('The interrupted installation used a different state directory');
     const interrupted = existsSync(marker);
     if (interrupted) restore(transaction, priorChange);
-    else if (priorChange.restored && priorChange.wasActive) {
+    else if (priorChange.restored) {
       systemctl('daemon-reload');
-      systemctl('start', service);
+      resumeRecovered(transaction, priorChange);
     }
     if ((interrupted || priorChange.restored) && priorChange.releaseId &&
         /^versions\/[1-9][0-9]*$/.test(priorChange.candidate)) {
@@ -242,18 +252,27 @@ export async function install({ source, args, release, confirmCandidate, authori
     }
     rmSync(journal);
     syncPath(program);
-    return install({ source, args, release, confirmCandidate, authorizeStop, recoverOnly });
+    return install({ source, args, release, confirmCandidate, authorizeStop, repair, recoverOnly });
   }
   // The marker is created before the journal and before touching live files.
   if (existsSync(marker)) {
     rmSync(marker);
     syncPath(program);
   }
-  if (recoverOnly) return { active };
-  if (release && !active) throw new InstallationDeferred('Gateway is stopped');
   const current = readSlot(program, 'current');
   const previous = readSlot(program, 'previous');
+  if (recoverOnly) {
+    return { active, needsRepair: serviceState === 'failed' ||
+      (current !== undefined && optionalFile(repairMarker)?.toString().trim() === current) };
+  }
+  if (release && !active && (!repair || !isWithdrawn(updateRoot, current))) {
+    throw new InstallationDeferred('Gateway is stopped');
+  }
   const candidate = stageVersion(program, source, release);
+  if (isWithdrawn(updateRoot, candidate)) {
+    pruneVersions(program, [current, previous]);
+    throw new Error('A withdrawn Linux build cannot be installed');
+  }
   if (current && Number(candidate.split('/')[1]) < Number(current.split('/')[1])) {
     pruneVersions(program, [current, previous]);
     throw new Error('An older build cannot replace the current program');
@@ -299,7 +318,7 @@ export async function install({ source, args, release, confirmCandidate, authori
     writeAtomic(marker, operationId + '\n');
     const record = { recovery, data, current, previous, hadData, operationId,
       candidate, ...(release ? { releaseId: release.releaseId, sha256: release.artifact.sha256 } : {}),
-      hadUnit: Boolean(oldUnit), hadEnv: Boolean(oldEnv), wasActive: active };
+      hadUnit: Boolean(oldUnit), hadEnv: Boolean(oldEnv), wasActive: active, continueRepair: repair };
     writeAtomic(journal, JSON.stringify(record));
     change = record;
     mkdirSync(data, { recursive: true, mode: 0o700 });
@@ -311,11 +330,14 @@ export async function install({ source, args, release, confirmCandidate, authori
     systemctl('start', service);
     await awaitCandidate(desired, operationId);
     systemctl('enable', unit);
-    if (current !== candidate) setSlot(program, 'previous', current);
+    const fallback = current === candidate ? previous : current;
+    const trustedFallback = isWithdrawn(updateRoot, fallback) ? undefined : fallback;
+    setSlot(program, 'previous', trustedFallback);
+    rmSync(repairMarker, { force: true });
     rmSync(marker);
     committed = true;
     syncPath(program);
-    pruneVersions(program, [candidate, current === candidate ? previous : current]);
+    pruneVersions(program, [candidate, trustedFallback]);
     if (optionalFile(lastFailure)?.toString().trim() === candidate) rmSync(lastFailure);
     console.log(`agent-link.service: active (build ${candidate.split('/')[1]})`);
     console.log(`hooks installer: ${join(program, 'current/hooks/install.py')}`);
@@ -329,7 +351,7 @@ export async function install({ source, args, release, confirmCandidate, authori
       else {
         rmSync(marker, { force: true });
         syncPath(program);
-        if (stopped) systemctl('start', service);
+        if (stopped) resumeRecovered(transaction, { wasActive: active, current });
       }
       recoverable = true;
     } catch (recoveryError) {

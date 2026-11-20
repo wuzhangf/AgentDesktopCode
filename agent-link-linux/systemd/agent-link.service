@@ -11,6 +11,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@START@
 Restart=on-failure
 RestartSec=3
+RestartPreventExitStatus=78
 # The gateway keeps owner/hooks surfaces loopback-only; the phone listener
 # binds per DEVICE_GATEWAY_BIND in the env file.
 NoNewPrivileges=true
