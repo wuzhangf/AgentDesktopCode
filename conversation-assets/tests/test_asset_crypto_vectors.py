@@ -53,6 +53,7 @@ def test_public_vector_round_trip_and_expected_encodings() -> None:
 
 def test_public_vector_unseals_content_key_and_checks_fingerprint() -> None:
     vector = _vector()
+    assert vector["envelope"]["revision"] == vector["revisionId"]
     recipient_public = bytes.fromhex(vector["recipientPublicKeyHex"])
     assert hashlib.sha256(recipient_public).hexdigest() == vector["recipientKeyFingerprint"]
     assert vector["envelope"]["recipientKeyFingerprint"] == vector["recipientKeyFingerprint"]

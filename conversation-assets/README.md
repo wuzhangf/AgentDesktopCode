@@ -42,6 +42,8 @@ python -m xagt_assets.collector upload /path/to/session.jsonl \
 
 For `userHeld`, specify the recipient's X25519 public key, the collector's Ed25519 signing key and their device identifiers. The corresponding recipient private key and trusted signer public key are needed to open the archive. The key files are raw 32-byte values for the offline reader. An explicit local `scan` produces a readable copy and should use a private output location.
 
+With the Android Control catalog enabled for a test account, open **Conversation reading keys** and generate this phone's reading key. Verify the phone's displayed fingerprint before using its copied device ID as `--recipient-device-id`. Decode the copied public key from hexadecimal to a raw 32-byte file for `--recipient-public-key-file`. On the phone, add the collector's signing device ID and independently verified Ed25519 public key as a trusted signer. This permits reading captures addressed to this phone.
+
 ```sh
 python -m xagt_assets.collector upload /path/to/session.jsonl \
   --source-root /path/to/sessions --installation-id example-install \

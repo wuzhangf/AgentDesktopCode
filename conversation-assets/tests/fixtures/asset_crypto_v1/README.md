@@ -18,6 +18,7 @@ Implementations should:
    info `xagt.link/user-held/1/` followed by SHA-256 of the canonical binding.
 4. Treat `sealedKey` as `nonce(12) || AES-GCM(ciphertext+tag)` and use the
    recorded envelope AAD for its authentication.
+5. Require the envelope revision to match the selected conversation revision.
 
 The companion `test_asset_crypto_vectors.py` is the reference positive and
 negative check. A conforming mobile implementation should decrypt the object
