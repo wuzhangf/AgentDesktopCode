@@ -13,7 +13,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
+from importlib.resources import files
 from typing import Any, Callable, Iterator
 
 from .crypto import (EncryptedObject, cloud_decrypt, cloud_encrypt,
@@ -25,7 +25,6 @@ except ImportError:  # pragma: no cover - optional in a minimal client install
     psycopg = None
 
 
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 MODES = {"cloudProcessable", "userHeld"}
 PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -123,7 +122,7 @@ class AssetStore:
             yield conn
 
     def apply_schema(self) -> None:
-        schema = SCHEMA_PATH.read_text(encoding="utf-8")
+        schema = files("xagt_assets").joinpath("schema.sql").read_text(encoding="utf-8")
         with self.connection() as conn:
             if self._sqlite:
                 conn.executescript(schema)

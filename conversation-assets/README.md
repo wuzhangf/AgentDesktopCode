@@ -120,8 +120,26 @@ python -m xagt_assets.unlock /private/conversation.zip \
   --destination /private/revision.json
 ```
 
+## Share selected messages with another device
+
+Create a separate encrypted share bundle on a device that can already open the source revision. Verify the recipient public key with the recipient before issuing the share.
+
+```sh
+python -m xagt_assets.share /private/conversation.zip \
+  --asset-id ASSET_ID --revision-id REVISION_ID --message-id MESSAGE_ID \
+  --source-recipient-private-key /private/device.key \
+  --source-signer-public-key /private/collector.pub \
+  --recipient-device-id target-device --recipient-public-key /private/target.pub \
+  --signer-device-id owner-device --signer-private-key /private/owner.key \
+  --destination /private/shared-messages.zip
+```
+
+Use one `--message-id` per selected message. The two source key options apply to a user-held source. The recipient opens the new asset and revision with `xagt_assets.unlock`, their own private key, and the owner's verified signing public key. The original message IDs and provenance are inside the ciphertext. This offline handoff leaves no server record, and a copy already delivered to a recipient remains readable by that recipient.
+
 ## Verification and current scope
 
 Install test dependencies with `python -m pip install '.[test]'`. Run `python -m pytest tests`. Supply `XAGT_ASSETS_TEST_POSTGRES` pointing to an isolated test server whose test role can create disposable databases to include database and HTTP verification.
 
-Immutable revision payloads remain in PostgreSQL, with bounded attachments in S3-compatible storage. Automatic capture operates on the user's allowlist. Subsequent steps include source discovery, large streamed transfers, content indexing and organization, message-level grants and device enrollment, multi-user self-host administration, and Control app screens. The member capability remains disabled by default in Daily Hosted.
+See [service recovery](RECOVERY.md) for taking a PostgreSQL and object store snapshot at a final write cutoff and verifying it before reopening the instance.
+
+Immutable revision payloads remain in PostgreSQL, with bounded attachments in S3-compatible storage. Automatic capture operates on the user's allowlist. Subsequent steps include source discovery, large streamed transfers, content indexing and organization, online message-level grants and device enrollment, multi-user self-host administration, and Control app screens. The member capability remains disabled by default in Daily Hosted.

@@ -11,12 +11,11 @@ memory, without contacting the Hosted service.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from .unlock import UnlockError, read_revision_bytes
 
@@ -88,16 +87,6 @@ def _source_ref(row: Mapping[str, Any], *, fallback: str) -> str:
     return "&".join(fields) if fields else fallback
 
 
-def _row_identity(row: Mapping[str, Any], source_ref: str, text: str, role: str) -> str:
-    for name in ("messageId", "message_id", "id", "uuid"):
-        value = row.get(name)
-        if isinstance(value, str) and value:
-            return "id:" + value
-    return "ref:" + source_ref if source_ref else "row:" + hashlib.sha256(
-        json.dumps([role, text], ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-
-
 def _is_tool_or_metadata(row: Mapping[str, Any]) -> bool:
     role = str(row.get("role") or "").casefold()
     kind = str(row.get("kind") or row.get("type") or "").casefold()
@@ -137,6 +126,7 @@ def _rows(payload: Mapping[str, Any], *, include_source_paths: bool
 
 def extract_messages(payload: Mapping[str, Any], *, include_tools: bool = False,
                      include_source_paths: bool = True,
+                     require_unambiguous_ids: Collection[str] = (),
                      max_messages: int = DEFAULT_MAX_MESSAGES,
                      max_text_chars: int = DEFAULT_MAX_TEXT_CHARS) -> tuple[NormalizedMessage, ...]:
     """Normalize Pi/Codex or ACS rows into a bounded deduplicated sequence."""
@@ -148,6 +138,7 @@ def extract_messages(payload: Mapping[str, Any], *, include_tools: bool = False,
         raise SearchError("max_text_chars is out of bounds")
     result: list[NormalizedMessage] = []
     seen: set[str] = set()
+    projections: dict[str, tuple[str, str]] = {}
     for row, fallback in _rows(payload, include_source_paths=include_source_paths):
         if not include_tools and _is_tool_or_metadata(row):
             continue
@@ -159,23 +150,29 @@ def extract_messages(payload: Mapping[str, Any], *, include_tools: bool = False,
         if not value:
             continue
         role = row.get("role") if isinstance(row.get("role"), str) else "unknown"
-        reference = _source_ref(row, fallback=fallback) if include_source_paths else fallback
-        identity = _row_identity(row, fallback, value, role)
+        message_id = next((row[name] for name in ("messageId", "message_id", "id", "uuid")
+                           if isinstance(row.get(name), str) and row.get(name)), None)
+        if message_id in require_unambiguous_ids:
+            projection = (role, value)
+            if projections.setdefault(message_id, projection) != projection:
+                raise SearchError("selected message ID has conflicting visible duplicates")
+        identity = "id:" + message_id if message_id is not None else "ref:" + fallback
         if identity in seen:
             continue
+        if len(result) >= max_messages:
+            if require_unambiguous_ids:
+                continue
+            break
         seen.add(identity)
+        reference = _source_ref(row, fallback=fallback) if include_source_paths else fallback
         bounded = value[:max_text_chars]
         timestamp = row.get("timestamp", row.get("createdAt"))
         if not isinstance(timestamp, (str, int, float)):
             timestamp = None
-        message_id = next((row[name] for name in ("messageId", "message_id", "id", "uuid")
-                           if isinstance(row.get(name), str) and row.get(name)), None)
         result.append(NormalizedMessage(
             message_id=message_id, role=role, text=bounded, source_ref=reference,
             timestamp=timestamp, kind=str(row.get("kind") or row.get("type") or "message"),
             truncated=len(value) > len(bounded)))
-        if len(result) >= max_messages:
-            break
     return tuple(result)
 
 

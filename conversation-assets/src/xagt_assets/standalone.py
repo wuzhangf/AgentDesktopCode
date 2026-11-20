@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import json
 import os
 
 from fastapi import FastAPI, Header, HTTPException
@@ -15,6 +16,7 @@ from .catalog import build_catalog_router
 from .collector import _validate_base_url
 from .object_store import S3ObjectStore
 from .read_grants import apply_grant_schema, build_grant_router, check_grant_schema
+from .recovery import verify_storage
 from .search import build_search_router
 from .store import AssetStore
 
@@ -99,7 +101,7 @@ def build_app(store: AssetStore, *, owner_token: bytes, collector_token: bytes |
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "serve", "cleanup-attachments"))
+    parser.add_argument("command", choices=("init", "serve", "cleanup-attachments", "verify-storage"))
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--enable-search", action="store_true", help="serve private keyword search")
     parser.add_argument("--enable-read-grants", action="store_true", help="initialize or serve exact-revision read grants")
@@ -114,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         store.check_schema()
         attachments = _attachments(store)
+        if args.command == "verify-storage":
+            if args.enable_read_grants:
+                check_grant_schema(store)
+            result = verify_storage(store, attachments.object_store if attachments is not None else None)
+            print(json.dumps(result.report()))
+            return 0 if result.ok else 2
         if args.command == "cleanup-attachments":
             if attachments is None:
                 parser.error("S3 attachment storage is required")

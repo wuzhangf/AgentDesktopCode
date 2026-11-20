@@ -13,7 +13,7 @@ import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from importlib.resources import files
 from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path as ApiPath
@@ -25,7 +25,6 @@ from .store import MODES, _aad, _cloud_open
 
 
 MAX_GRANT_TTL_SECONDS = 15 * 60
-GRANT_SCHEMA_PATH = Path(__file__).with_name("grant_schema.sql")
 
 
 class GrantError(ValueError):
@@ -76,7 +75,7 @@ def _bearer(header: str | None) -> str:
 
 def apply_grant_schema(store: Any) -> None:
     """Install only the optional grant tables in the supplied Store."""
-    schema = GRANT_SCHEMA_PATH.read_text(encoding="utf-8")
+    schema = files("xagt_assets").joinpath("grant_schema.sql").read_text(encoding="utf-8")
     with store.connection() as conn:
         if getattr(store, "_sqlite", False):
             conn.executescript(schema)

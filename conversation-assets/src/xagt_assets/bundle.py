@@ -115,7 +115,8 @@ def _signature_payload(manifest: Mapping[str, Any]) -> bytes:
 def export_bundle(destination: str | os.PathLike[str], *, files: Mapping[str, bytes],
                   metadata: Mapping[str, Any] | None = None,
                   signing_private_key: bytes | None = None,
-                  signer_device_id: str | None = None) -> dict[str, Any]:
+                  signer_device_id: str | None = None,
+                  replace_existing: bool = True) -> dict[str, Any]:
     manifest = build_manifest(files=files, metadata=metadata)
     signature: dict[str, Any] | None = None
     if signing_private_key is not None:
@@ -139,7 +140,11 @@ def export_bundle(destination: str | os.PathLike[str], *, files: Mapping[str, by
                 archive.writestr(entry["path"], files[entry["path"]])
             if signature is not None:
                 archive.writestr("provenance/signature.json", _json(signature))
-        os.replace(temporary, target)
+        if replace_existing:
+            os.replace(temporary, target)
+        else:
+            os.link(temporary, target)
+            temporary.unlink()
     except Exception:
         if temporary.exists():
             temporary.unlink()
