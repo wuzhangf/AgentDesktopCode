@@ -218,8 +218,11 @@ def load_records(previous):
 
 def public_download(details, release, artifact, manifest, files):
     fields = {"qualifiedInstallerSha256", "qualifiedUpdateSha256", "publishedAt", "releaseNotes", "installation"}
-    windows = release["platform"] == "windows"
-    if (not isinstance(details, dict) or set(details) != (fields | {"installer"} if windows else fields)
+    platform = release["platform"]
+    separate = isinstance(details, dict) and "installer" in details
+    installer_suffix = {"macos": ".dmg", "windows": ".msi"}.get(platform)
+    if (not isinstance(details, dict) or set(details) - {"installer"} != fields
+            or (separate and not installer_suffix) or (platform == "windows" and not separate)
             or release["availability"] != "published"
             or artifact["sha256"] != details["qualifiedUpdateSha256"]):
         raise ValueError("Public download must identify the qualified update archive")
@@ -231,15 +234,15 @@ def public_download(details, release, artifact, manifest, files):
         if not isinstance(details[field], str) or not details[field].strip() or len(details[field]) > 2048:
             raise ValueError(f"Public download requires {field}")
     installer = {key: artifact[key] for key in ("path", "length", "sha256")}
-    if windows:
+    if separate:
         source = manifest.parent / details["installer"]
-        if not SAFE_NAME.fullmatch(source.name) or source.suffix.lower() != ".msi":
-            raise ValueError("Public Windows download requires the qualified MSI")
+        if not SAFE_NAME.fullmatch(source.name) or source.suffix.lower() != installer_suffix:
+            raise ValueError(f"Public {platform} download requires a qualified {installer_suffix} file")
         parent = artifact["path"].rsplit("/", 1)[0]
         path = f"{parent}/{source.name}"
         info = TargetFile.from_file(path, str(source), SHA)
         if not positive(info.length):
-            raise ValueError("Public Windows installer is empty or oversized")
+            raise ValueError("Public installer is empty or oversized")
         installer = {"path": path, "length": info.length, "sha256": info.hashes["sha256"]}
         files[path] = Target(info, source)
     if installer["sha256"] != details["qualifiedInstallerSha256"]:

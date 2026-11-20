@@ -194,7 +194,9 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   }));
   for (const { archive: name } of entries) await writeFile(join(directory, name), name);
   const windowsInstaller = 'agent-link-0.2.1-windows.msi';
+  const macInstaller = 'Agent-Link-macOS-arm64.dmg';
   await writeFile(join(directory, windowsInstaller), windowsInstaller);
+  await writeFile(join(directory, macInstaller), macInstaller);
   function approval(update, installer = update) {
     return {
       qualifiedInstallerSha256: digest(installer), qualifiedUpdateSha256: digest(update),
@@ -202,7 +204,7 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
       ...(installer !== update ? { installer } : {}),
     };
   }
-  entries[0].download = approval(entries[0].archive);
+  entries[0].download = approval(entries[0].archive, macInstaller);
   entries[1].download = approval(entries[1].archive, windowsInstaller);
   entries[2].download = approval(entries[2].archive);
   async function catalog(output) {
@@ -233,6 +235,11 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   const available = await catalog(first);
   assert.equal(available.length, 3);
   assert(available.every(row => row.channel === 'stable' && row.availability === 'published'));
+  const publicMac = available.find(row => row.platform === 'macos');
+  assert.equal(publicMac.artifact.sha256, digest(macInstaller));
+  assert(publicMac.artifact.path.endsWith('.dmg'));
+  assert.equal(repo.files.get('/targets/' + publicMac.artifact.path.replace(macInstaller,
+    publicMac.artifact.sha256 + '.' + macInstaller)).toString(), macInstaller);
   const publicWindows = available.find(row => row.platform === 'windows');
   assert.equal(publicWindows.artifact.sha256, digest(windowsInstaller));
   assert(publicWindows.artifact.path.endsWith('.msi'));
