@@ -25,12 +25,15 @@ const json = (body: unknown, status = 200): HttpResponse => ({ status, body: bod
 export const handleHooksRoute = async (
   ctx: GatewayContext, req: HttpRequest, hooksToken: string,
 ): Promise<HttpResponse> => {
+  let finish: (() => void) | undefined;
   try {
     if (!constantEqual(req.accessToken, hooksToken)) fail('ACCESS_UNAUTHORIZED', 401);
+    if (ctx.startupUpdate) fail('UPDATE_IN_PROGRESS', 503);
     const approvals = ctx.approvals;
     if (approvals === undefined) fail('APPROVALS_NOT_CONFIGURED', 503);
     const path = req.path;
     const method = req.method;
+    if (method !== 'GET') finish = ctx.updatePreparation?.admit();
 
     if (path === '/hooks/v1/enabled' && method === 'GET') {
       return json({ schemaVersion: 'agent-hooks/1', enabled: await approvals.enabled() });
@@ -56,5 +59,7 @@ export const handleHooksRoute = async (
       return json({ code: 'INVALID_REQUEST', detail: 'INVALID_REQUEST' }, 400);
     }
     throw error;
+  } finally {
+    finish?.();
   }
 };

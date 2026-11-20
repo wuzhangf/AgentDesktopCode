@@ -25,9 +25,6 @@ it('reconciles the original ACS session and first message after both replies are
   ].join('\n'));
   const project = realOrigin ? 'control' : 'project';
   const instruction = realOrigin ? 'Reply with WA001-ACS-CLOUD-OK. Do not change files.' : 'execute the original instruction';
-  writeFileSync(grant, JSON.stringify({ schemaVersion: 'windows-cloud-launch-grant/1', revision: 1,
-    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance',
-    launchScopes: [{ backendStoreId: 'acs-store', projectId: project, engineId: 'acs' }] }));
   let createKey: string | undefined;
   let messageKey: string | undefined;
   let creates = 0;
@@ -62,6 +59,9 @@ it('reconciles the original ACS session and first message after both replies are
       }
       await before?.();
       switch (`${method} ${path}`) {
+        case 'GET /api/v2/projects':
+          return { status: 200, body: [{ projectId: project, workspaceAlias: project,
+            authorityStatus: 'AVAILABLE' }] };
         case 'GET /api/v2/projects/project/session-preflight':
           return { status: 200, body: { projectId: 'project', workspaceAlias: 'project',
             authorityStatus: 'AVAILABLE', modelAvailability: 'AVAILABLE', allowedIntents: ['CODE'],
@@ -125,8 +125,18 @@ it('reconciles the original ACS session and first message after both replies are
   };
   let store = new GatewayStore(dir);
   const build = () => new WindowsCloudLaunch(store, undefined, {} as LocalTransportLike,
-    'host', origin, session, grant, hosted, acs);
+    'host', origin, session, grant, hosted, false, undefined, 'file', undefined, acs);
   try {
+    const directory = await build().ownerGrant();
+    expect(directory.targets).toContainEqual(expect.objectContaining({
+      sourceKind: 'ACS', backendId: 'acs-store', projectId: project, engineId: 'acs',
+    }));
+    const grantRequest = { expectedRevision: directory.revision, expectedScope: directory.scope,
+      launchScopes: [{ backendStoreId: 'acs-store', projectId: project, engineId: 'acs' }],
+      controls: false, approvals: false };
+    await expect(build().ownerGrant({ ...grantRequest, expectedScope: 'other-member' }))
+      .rejects.toMatchObject({ code: 'CLOUD_SESSION_CHANGED' });
+    await expect(build().ownerGrant(grantRequest)).resolves.toMatchObject({ revision: 1 });
     await build().tick();
     store.close();
     store = new GatewayStore(dir);

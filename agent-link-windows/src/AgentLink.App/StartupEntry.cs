@@ -8,7 +8,19 @@ internal static class StartupEntry
     private const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
     private const string Name = "Steercrew.AgentLink";
 
-    private static string Command => "\"" + Environment.ProcessPath + "\" --background";
+    private static string Command => "\"" + (LauncherPath ?? Environment.ProcessPath) + "\" --background";
+
+    internal static string? LauncherPath =>
+        Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_LAUNCHER") is { } launcher &&
+        System.IO.Path.IsPathFullyQualified(launcher) && System.IO.File.Exists(launcher)
+            ? launcher
+            : null;
+
+    internal static bool UpdatesAvailable => Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_UPDATE_AVAILABLE") == "1" &&
+        LauncherPath is not null;
+
+    internal static bool ScheduledUpdatesAvailable => UpdatesAvailable &&
+        Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_SCHEDULE_AVAILABLE") == "1";
 
     internal static bool Registered()
     {

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for a verified Agent Link update
+After=agent-link.service network-online.target
+
+[Service]
+Type=oneshot
+Environment=@XDG_CONFIG@
+ExecStart=/usr/bin/flock -F -n -E 73 @LOCK@ @NODE@ @UPDATER@ --prefix @PREFIX@
+SuccessExitStatus=73
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true

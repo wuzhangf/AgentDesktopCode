@@ -63,8 +63,10 @@ import { GatewayStore } from './store.js';
 import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
-import { WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { clearCloudOwnerGrant, WindowsCloudLaunch } from './windows-cloud-launch.js';
 import { CloudAcs } from './cloud-acs.js';
+import { LinuxMemberEnrollment } from './linux-member.js';
+import { UpdatePreparation } from './update-preparation.js';
 import { PersonalInbox, type InboxSourceReader } from './inbox.js';
 import { LocalTransport, type ConnectionRowLite } from './local-transport.js';
 import { createAcsClient } from './acs.js';
@@ -806,9 +808,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     { storeId: host.storeId, refresher: (task) => queueMicrotask(task) },
   );
   ctx.inbox = inbox;
-  ctx.approvals = new GatewayApprovals(store, opts.localCliOnly ? {
+  const approvals = new GatewayApprovals(store, opts.localCliOnly ? {
     activeDevices: () => devices.activeDevices().filter((device) => device.actions?.includes('APPROVE')),
   } : devices);
+  ctx.approvals = approvals;
+  if (opts.localCliOnly) {
+    ctx.updatePreparation = new UpdatePreparation(config.bootId, transport, () =>
+      approvals.pending().items.length > 0);
+  }
 
   // xagt read-only surface — reader grants + peer records + explicit material
   // entries live in the same store; the cursor key is derived from the store
@@ -839,13 +846,28 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
   const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
-  const cloudAcs = agentUpstream ? new CloudAcs(config.acsStoreId, agentUpstream) : undefined;
-  if (cloudAcs && process.platform === 'win32') {
+  const cloudAcs = process.platform === 'win32' && agentUpstream
+    ? new CloudAcs(config.acsStoreId, agentUpstream) : undefined;
+  if (cloudAcs) {
     ctx.ownerCloudAcsTargets = () => cloudAcs.catalog('owner');
   }
-  const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && (localTasks || cloudAcs)
-    ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
-      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudAcs, fileBinding) : undefined;
+  const cloudRecoveryOnly = env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1';
+  const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
+  const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly
+    ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;
+  const linuxMember = memberSession ? new LinuxMemberEnrollment(memberSession, host.id,
+    session => clearCloudOwnerGrant(store, session)) : undefined;
+  const ownerGrantStorage = linuxMember || (linuxProfile && env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1')
+    ? 'store' : process.platform === 'win32' && env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION') ? 'file' : undefined;
+  const hasCloudSession = linuxMember || (cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession);
+  const cloudLaunch = hasCloudSession && (localTasks || cloudAcs)
+    ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin ?? '', cloudSession ?? '',
+      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudRecoveryOnly,
+      ctx.updatePreparation, ownerGrantStorage, linuxMember, cloudAcs, fileBinding) : undefined;
+  if (ownerGrantStorage && cloudLaunch && !cloudRecoveryOnly) {
+    ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
+  }
+  if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 
@@ -854,9 +876,28 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
+  const updateMarker = env('DEVICE_GATEWAY_STARTUP_UPDATE_FILE');
+  const readUpdateMarker = (): string | undefined => {
+    if (!updateMarker) return undefined;
+    try {
+      return readFileSync(updateMarker, 'utf8').trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+  };
+  const operationId = readUpdateMarker();
+  if (operationId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) {
+    configError('CONFIG_INVALID', 'invalid installation operation marker');
+  }
   const opts = readEnvConfig();
   mkdirSync(opts.dataDir, { recursive: true });
   const built = buildContext(opts);
+  const startup = operationId === undefined ? undefined : { operationId, ready: false };
+  if (startup) {
+    if (!built.ctx.updatePreparation) configError('CONFIG_INVALID', 'installation check requires a local gateway');
+    built.ctx.startupUpdate = startup;
+  }
 
   const phoneServer = createGatewayListener({
     tls: { key: opts.tls.key, cert: opts.tls.cert, ...(opts.tls.ca !== undefined ? { ca: opts.tls.ca } : {}) },
@@ -911,6 +952,48 @@ export async function main(): Promise<void> {
     })));
     built.store.close();
     throw error;
+  }
+
+  let earlyStop: string | undefined;
+  let handleStop = (signal: string): void => { earlyStop ??= signal; };
+  const stopForTerm = (): void => handleStop('SIGTERM');
+  const stopForInterrupt = (): void => handleStop('SIGINT');
+  const stopForParent = (): void => handleStop('parent-stdin-closed');
+  const watchParent = env('DEVICE_GATEWAY_STOP_ON_STDIN_END') === '1';
+  process.on('SIGTERM', stopForTerm);
+  process.on('SIGINT', stopForInterrupt);
+  if (watchParent) {
+    process.stdin.once('end', stopForParent);
+    process.stdin.resume();
+  }
+
+  if (startup && updateMarker) {
+    // All required listeners are bound. Keep requests and background work
+    // fenced until the installer commits the program and state transaction.
+    startup.ready = true;
+    for (let marker = readUpdateMarker(); marker !== undefined && !earlyStop; marker = readUpdateMarker()) {
+      if (marker !== startup.operationId) {
+        configError('CONFIG_INVALID', 'installation operation changed during startup');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (earlyStop) {
+      // A health process exits while the marker is still present. Never open
+      // task intake or start background work just to drain the listeners.
+      await Promise.all(listeners.map(({ server }) => new Promise<void>((closed) => {
+        server.close(() => closed());
+        server.closeAllConnections();
+      })));
+      built.store.close();
+      process.off('SIGTERM', stopForTerm);
+      process.off('SIGINT', stopForInterrupt);
+      if (watchParent) {
+        process.stdin.off('end', stopForParent);
+        process.stdin.pause();
+      }
+      return;
+    }
+    delete built.ctx.startupUpdate;
   }
 
   // Master connect switch: the owner can close the phone listener without
@@ -989,9 +1072,11 @@ export async function main(): Promise<void> {
   }
   built.cloudLaunch?.start();
   const handoffProgress = built.ctx.nativeLocalHandoffs ? setInterval(() => {
-    void built.ctx.workHandoffs?.advanceConfirmedLocalHandoffs?.().catch(() => {
+    if (built.ctx.updatePreparation?.preparing) return;
+    const finish = built.ctx.updatePreparation?.admit();
+    void Promise.resolve(built.ctx.workHandoffs?.advanceConfirmedLocalHandoffs?.()).catch(() => {
       console.error(JSON.stringify({ listener: 'device-gateway', action: 'handoff-background', state: 'ERROR' }));
-    });
+    }).finally(() => finish?.());
   }, 1000) : undefined;
   handoffProgress?.unref();
 
@@ -1067,12 +1152,8 @@ export async function main(): Promise<void> {
     for (const { server } of listeners) server.close(done);
     setTimeout(() => process.exit(1), 5_000).unref();
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  if (env('DEVICE_GATEWAY_STOP_ON_STDIN_END') === '1') {
-    process.stdin.once('end', () => shutdown('parent-stdin-closed'));
-    process.stdin.resume();
-  }
+  handleStop = shutdown;
+  if (earlyStop) shutdown(earlyStop);
 }
 
 const isMain = process.argv[1] !== undefined

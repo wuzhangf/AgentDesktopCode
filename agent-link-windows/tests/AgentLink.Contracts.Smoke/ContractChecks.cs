@@ -12,6 +12,7 @@ internal static class ContractChecks
             case "contract-launch-scopes": LaunchScopesCheck(); break;
             case "contract-menu-model": MenuModel(); break;
             case "contract-quick-configuration": QuickConfiguration(); break;
+            case "contract-update-schedule": WindowsUpdateScheduleCheck.Run(); break;
             default: throw new ArgumentException("Unknown contract case.");
         }
         Console.WriteLine($"PASS: {mode}.");

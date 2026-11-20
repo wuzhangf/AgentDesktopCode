@@ -5,15 +5,62 @@ param(
     [string]$ConnectorPackage,
     [string]$LinkFilesWorker,
     [string]$CliBridge,
+    [switch]$VersionedPayload,
+    [string]$SignTool,
+    [string]$CertificateThumbprint,
+    [string]$TimestampUrl,
+    [string]$TufRoot,
+    [string]$TufMetadataUrl,
+    [string]$TufTargetUrl,
+    [string]$TufRecordPath,
+    [ValidateSet('stable', 'preview')][string]$TufChannel = 'stable',
+    [ValidateRange(1, 2147483647)][int]$BootstrapVersion = 1,
     [string]$OutputRoot = '.local/agent-link-windows-release'
 )
 $ErrorActionPreference = 'Stop'
 $product = Split-Path $PSScriptRoot -Parent
 $repo = Split-Path $product -Parent
 $out = [IO.Path]::GetFullPath($OutputRoot)
-$version = ([xml](Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'AgentLink.wxs'))).Wix.Package.Version
-$managedVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $product 'Directory.Build.props'))).Project.PropertyGroup.Version
-if ($version -ne $managedVersion) { throw 'Installer and managed product versions must match.' }
+$defaultVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $product 'Directory.Build.props'))).Project.PropertyGroup.Version
+$requestedVersion = if ($env:AGENT_LINK_PRODUCT_VERSION) { $env:AGENT_LINK_PRODUCT_VERSION } else { $defaultVersion }
+$parsedVersion = $null
+if ($requestedVersion -notmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z' -or
+    ![version]::TryParse($requestedVersion, [ref]$parsedVersion) -or
+    $parsedVersion.Major -gt 255 -or $parsedVersion.Minor -gt 255 -or $parsedVersion.Build -gt 65535) {
+    throw 'AGENT_LINK_PRODUCT_VERSION must fit the three numeric fields of Windows Installer ProductVersion.'
+}
+$version = $parsedVersion.ToString(3)
+$expectedFileVersion = "1.$version"
+$requestedBuild = if ($env:AGENT_LINK_BUILD_NUMBER) { $env:AGENT_LINK_BUILD_NUMBER } else { '1' }
+[long]$buildNumber = 0
+if ($requestedBuild -notmatch '\A[1-9][0-9]*\z' -or ![long]::TryParse($requestedBuild, [ref]$buildNumber) -or
+    $buildNumber -gt 9007199254740991) {
+    throw 'AGENT_LINK_BUILD_NUMBER must be a positive decimal integer representable in the release record.'
+}
+$versionArgs = @("-p:Version=$version", "-p:FileVersion=$expectedFileVersion")
+$tufConfigured = $TufRoot -or $TufMetadataUrl -or $TufTargetUrl -or $TufRecordPath
+if ($tufConfigured -and (!$VersionedPayload -or !$TufRoot -or !$TufMetadataUrl -or !$TufTargetUrl -or !$TufRecordPath)) {
+    throw 'Windows update configuration requires the versioned bootstrap and all TUF inputs.'
+}
+if ($VersionedPayload) {
+    if ($parsedVersion -le [version]'0.1.11') {
+        throw 'The bridge MSI must use a higher product version than the installed 0.1.11 preview.'
+    }
+    if (!$SignTool -or !$TimestampUrl -or $CertificateThumbprint -notmatch '\A[0-9a-fA-F]{40}\z') {
+        throw 'A versioned MSI requires SignTool, a current-user signing certificate and an RFC 3161 timestamp URL.'
+    }
+    $signing = Get-Item -LiteralPath "Cert:\CurrentUser\My\$CertificateThumbprint"
+    if (!$signing.HasPrivateKey) { throw 'The selected signing certificate has no available private key.' }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $publisher = ([BitConverter]::ToString($hash.ComputeHash($signing.GetPublicKey()))).Replace('-', '') }
+    finally { $hash.Dispose() }
+}
+function Sign-LinkFile([string]$Path) {
+    & $SignTool sign /fd SHA256 /sha1 $CertificateThumbprint /tr $TimestampUrl /td SHA256 $Path
+    if ($LASTEXITCODE) { throw 'Windows release signing failed.' }
+    & $SignTool verify /pa $Path
+    if ($LASTEXITCODE) { throw 'Windows release signature verification failed.' }
+}
 if (Test-Path -LiteralPath $out) { throw 'Choose a fresh output directory.' }
 $payload = Join-Path $out 'payload'
 $hostOutput = Join-Path $payload 'host'
@@ -22,12 +69,15 @@ $gateway = Join-Path $repo 'device-gateway'
 
 & npm.cmd --prefix $gateway run build
 if ($LASTEXITCODE) { throw 'Gateway build failed.' }
-& $Dotnet publish (Join-Path $product 'src/AgentLink.App') -c Release -r win-x64 --self-contained -o $payload
+& $Dotnet publish (Join-Path $product 'src/AgentLink.App') -c Release -r win-x64 --self-contained -o $payload @versionArgs
 if ($LASTEXITCODE) { throw 'Tray build failed.' }
-& $Dotnet publish (Join-Path $product 'src/AgentLink.Host') -c Release -r win-x64 --self-contained -o $hostOutput
+& $Dotnet publish (Join-Path $product 'src/AgentLink.Host') -c Release -r win-x64 --self-contained -o $hostOutput @versionArgs
 if ($LASTEXITCODE) { throw 'Host build failed.' }
 $fileVersion = (Get-Item -LiteralPath (Join-Path $payload 'AgentLink.exe')).VersionInfo.FileVersion
-if ([version]$fileVersion -ne [version]"1.$version") { throw 'Unexpected PE file version; preview upgrades must remain above 1.0.0.0.' }
+$hostFileVersion = (Get-Item -LiteralPath (Join-Path $hostOutput 'AgentLink.Host.exe')).VersionInfo.FileVersion
+if ([version]$fileVersion -ne [version]$expectedFileVersion -or [version]$hostFileVersion -ne [version]$expectedFileVersion) {
+    throw 'Tray and Host executables must both carry the expected PE file version.'
+}
 
 $runtime = (New-Item -ItemType Directory -Path (Join-Path $payload 'runtime')).FullName
 $gatewayOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/gateway')).FullName
@@ -93,10 +143,15 @@ if ($LinkFilesWorker) {
     $filesOutput = (New-Item -ItemType Directory -Path (Join-Path $payload 'components/files')).FullName
     Copy-Item -LiteralPath $LinkFilesWorker -Destination (Join-Path $filesOutput 'agent-link-files.exe')
 }
+if ($VersionedPayload) {
+    Sign-LinkFile (Join-Path $payload 'AgentLink.exe')
+    Sign-LinkFile (Join-Path $hostOutput 'AgentLink.Host.exe')
+}
 $manifest = [ordered]@{
     schemaVersion = 1
     product = 'Agent Link'
     version = $version
+    buildNumber = $buildNumber
     fileVersion = $fileVersion
     build = 'windows-lan-preview'
     gatewayBaseRevision = $gatewaySha
@@ -106,13 +161,63 @@ $manifest = [ordered]@{
     worker = 'external-registration-card + managed-cli-bridge'
     cliBridgeRevision = $cliBridgeSha
     connector = $connectorIncluded
-    files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
+    files = @(Get-ChildItem -LiteralPath $payload -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($payload.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }
     })
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'release-manifest.json') -Encoding utf8
+$payloadArchive = Join-Path $out "Agent-Link-$version-build-$buildNumber-win-x64.zip"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory($payload, $payloadArchive)
+$msiTree = $payload
+if ($VersionedPayload) {
+    $msiTree = (New-Item -ItemType Directory -Path (Join-Path $out 'bootstrap')).FullName
+    $channel = $null
+    $bootstrapArgs = @()
+    if ($tufConfigured) {
+        $updater = Join-Path $repo 'packages/agent-link-update'
+        & npm.cmd --prefix $updater ci --ignore-scripts --no-audit
+        if ($LASTEXITCODE) { throw 'Windows verifier dependency preparation failed.' }
+        $esbuild = Join-Path $gateway 'node_modules/.bin/esbuild.cmd'
+        $verifier = Join-Path $msiTree 'verify-windows.cjs'
+        & $esbuild (Join-Path $updater 'src/windows-cli.mjs') --bundle --platform=node --format=cjs --target=node24 "--outfile=$verifier"
+        if ($LASTEXITCODE) { throw 'Windows verifier bundling failed.' }
+        Copy-Item -LiteralPath $Node -Destination (Join-Path $msiTree 'update-node.exe')
+        Copy-Item -LiteralPath $license -Destination (Join-Path $msiTree 'NODE-LICENSE.txt')
+        $channel = [ordered]@{
+            metadataBaseUrl = $TufMetadataUrl
+            targetBaseUrl = $TufTargetUrl
+            releaseRecordPath = $TufRecordPath
+            channel = $TufChannel
+            nodeSha256 = (Get-FileHash -LiteralPath (Join-Path $msiTree 'update-node.exe')).Hash
+            verifierSha256 = (Get-FileHash -LiteralPath $verifier).Hash
+        }
+        $bootstrapArgs += "-p:LinkTufRoot=$((Resolve-Path -LiteralPath $TufRoot).Path)"
+    }
+    $config = [ordered]@{
+        publisherKey = $publisher
+        bootstrapVersion = $BootstrapVersion
+        channel = $channel
+        seed = [ordered]@{
+            buildNumber = $buildNumber
+            archiveLength = (Get-Item -LiteralPath $payloadArchive).Length
+            archiveSha256 = (Get-FileHash -LiteralPath $payloadArchive).Hash.ToLowerInvariant()
+        }
+    }
+    $configPath = Join-Path $out 'bootstrap-config.json'
+    [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    & $Dotnet publish (Join-Path $product 'src/AgentLink.Launcher') -c Release -r win-x64 --self-contained -o $msiTree @versionArgs @bootstrapArgs "-p:LinkBootstrapConfig=$configPath" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+    if ($LASTEXITCODE) { throw 'Launcher build failed.' }
+    $launcher = Join-Path $msiTree 'AgentLink.exe'
+    if ([version](Get-Item -LiteralPath $launcher).VersionInfo.FileVersion -ne [version]$expectedFileVersion) {
+        throw 'The Launcher PE version differs from the MSI version.'
+    }
+    Sign-LinkFile $launcher
+    Copy-Item -LiteralPath $payloadArchive -Destination (Join-Path $msiTree 'seed.zip')
+}
 $msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
 $icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
-& $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
+& $Wix build -arch x64 -d "Payload=$msiTree" -d "IconFile=$icon" -d "LinkProductVersion=$version" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
 if ($LASTEXITCODE) { throw 'MSI build failed.' }
-Get-FileHash -LiteralPath $msi -Algorithm SHA256
+if ($VersionedPayload) { Sign-LinkFile $msi }
+Get-FileHash -LiteralPath $msi, $payloadArchive -Algorithm SHA256

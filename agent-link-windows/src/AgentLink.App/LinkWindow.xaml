@@ -252,19 +252,43 @@
                     </StackPanel>
                 </TabItem>
                 <TabItem x:Name="Settings" Header="设置" Visibility="Collapsed" Style="{StaticResource Segment}">
-                    <StackPanel>
-                        <TextBlock Text="设置" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                        <Border Padding="11" Background="{DynamicResource LinkSubtle}" CornerRadius="8">
-                            <CheckBox x:Name="Autostart" Click="Autostart_Click" Content="登录 Windows 后自动启动"
-                                      Style="{StaticResource Switch}"/>
-                        </Border>
-                        <Border Padding="11" Background="{DynamicResource LinkSubtle}" CornerRadius="8" Margin="0,8,0,0">
-                            <CheckBox x:Name="PairingApproval" Click="PairingApproval_Click" IsEnabled="False"
-                                      Content="附近的电脑配对需批准" Style="{StaticResource Switch}"
-                                      ToolTip="扫码配对始终直接通过；此开关只管附近发现的电脑"/>
-                        </Border>
-                        <TextBlock x:Name="StartupNotice" Style="{StaticResource SecondaryText}" Margin="0,8,0,0"/>
-                    </StackPanel>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <TextBlock Text="设置" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <Border Padding="11" Background="{DynamicResource LinkSubtle}" CornerRadius="8">
+                                <CheckBox x:Name="Autostart" Click="Autostart_Click" Content="登录 Windows 后自动启动"
+                                          Style="{StaticResource Switch}"/>
+                            </Border>
+                            <Border Padding="11" Background="{DynamicResource LinkSubtle}" CornerRadius="8" Margin="0,8,0,0">
+                                <CheckBox x:Name="PairingApproval" Click="PairingApproval_Click" IsEnabled="False"
+                                          Content="附近的电脑配对需批准" Style="{StaticResource Switch}"
+                                          ToolTip="扫码配对始终直接通过；此开关只管附近发现的电脑"/>
+                            </Border>
+                            <TextBlock x:Name="StartupNotice" Style="{StaticResource SecondaryText}" Margin="0,8,0,0"/>
+                            <Border x:Name="UpdateSettings" Visibility="Collapsed" Padding="11"
+                                    Background="{DynamicResource LinkSubtle}" CornerRadius="8" Margin="0,8,0,0">
+                                <StackPanel>
+                                    <CheckBox x:Name="AutoUpdate" Content="自动更新 Agent Link" Style="{StaticResource Switch}"/>
+                                    <TextBlock Text="运行时每天检查更新，待任务空闲后安装。"
+                                               Style="{StaticResource SecondaryText}" Margin="0,5,0,8"/>
+                                    <CheckBox x:Name="PauseMetered" Content="按流量计费时暂停更新" Margin="0,0,0,8"/>
+                                    <TextBlock Text="安装时段（24 小时制，留空不限）"
+                                               Style="{StaticResource SecondaryText}" Margin="0,0,0,4"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBox x:Name="UpdateWindowStart" Width="58" MaxLength="5"
+                                                 AutomationProperties.Name="安装时段开始 (HH:mm)"/>
+                                        <TextBlock Text="至" Margin="7,0" VerticalAlignment="Center"/>
+                                        <TextBox x:Name="UpdateWindowEnd" Width="58" MaxLength="5"
+                                                 AutomationProperties.Name="安装时段结束 (HH:mm)"/>
+                                        <Button Content="保存" Click="SaveUpdateSettings_Click"
+                                                MinHeight="26" Padding="9,1" Margin="9,0,0,0"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="UpdateNotice" Style="{StaticResource SecondaryText}" Margin="0,6,0,0"/>
+                                    <TextBlock x:Name="UpdateStatus" Style="{StaticResource SecondaryText}" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
                 </TabItem>
             </TabControl>
             </DockPanel>

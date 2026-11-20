@@ -10,31 +10,84 @@ same `device-gateway` bundle as the macOS/Windows gateways under
 sh agent-link-linux/packaging/build.sh [--out DIR]
 ```
 
-Produces `agent-link-<version>-linux.tar.gz` (version = `device-gateway`
-package version) containing the gateway bundle, the `cli-bridge` agent
+Produces `agent-link-<version>-linux.tar.gz` containing the gateway bundle, the `cli-bridge` agent
 runtime (`AgentWorkersCode/cli-bridge/host.mjs`, override with
-`WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks and
-a `release-manifest.json` with per-file SHA-256.
+`WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks,
+the pinned Linux x86_64 Node runtime and its license, and a
+`release-manifest.json` with per-file SHA-256. The build checks the
+runtime archive against a pinned digest. Set `AGENT_LINK_LINUX_NODE_ARCHIVE`
+to build with a cached copy of that same archive.
+
+Release builds set `AGENT_LINK_PRODUCT_VERSION` and `AGENT_LINK_BUILD_NUMBER`
+from the same release inputs as the Mac package. The archive name uses the
+product version, and the manifest records both values. Development builds
+default to the `device-gateway` package version and build number `1`.
+
+To provision the Linux update channel in the bridge package, pass
+`AGENT_LINK_UPDATE_TUF_ROOT`, `AGENT_LINK_UPDATE_TUF_METADATA_URL`,
+`AGENT_LINK_UPDATE_TUF_TARGET_URL` and `AGENT_LINK_UPDATE_TUF_RECORD_PATH`.
+`AGENT_LINK_UPDATE_TUF_CHANNEL` defaults to `stable`. The installation
+keeps the initial channel settings and the TUF cache across updates.
 
 ## Install / upgrade
 
 ```sh
+mkdir -p agent-link-linux
 tar -xzf agent-link-<version>-linux.tar.gz -C agent-link-linux
 cd agent-link-linux
-sh install.sh                 # or: sh install.sh --prefix /opt/agent-link --bind 0.0.0.0 --project ~/code
+sh install.sh
 ```
 
-- Requires `node >= 24.18` on PATH and a `systemd --user` session. On headless
-  machines run `loginctl enable-linger $USER` once so the service survives
-  logout.
+- Requires Ubuntu 24.04 x86_64 and a `systemd --user` session. The installer
+  and service use the bundled Node. On headless machines run
+  `loginctl enable-linger $USER` once so the service survives logout.
 - First install writes `~/.config/agent-link/env` (mode 600) with generated
   owner tokens and kernel-probed free ports, then enables and starts
   `agent-link.service`.
-- Re-running over an existing install is an upgrade: payload is replaced,
-  env/data are kept; missing LOCAL_CLI profile lines are appended.
+- Run the installer from an unpacked release you trust. It checks the
+  manifest and stages the program in `program/versions/<build>` under the
+  prefix. Existing credentials and state stay in their original directories.
+- A running gateway must confirm that its workers are safe to stop. The
+  installer snapshots state, atomically selects the candidate and waits
+  for its listeners to start before admitting work. A failed startup
+  restores the previous program and its state. Rerunning the installer
+  recovers an interrupted switch before attempting another installation.
 - `DEVICE_GATEWAY_BIND` defaults to `0.0.0.0` so phones on the LAN can reach
   the gateway; use `--bind` to pin an interface. Owner and hooks surfaces stay
   loopback-only.
+
+## Automatic updates
+
+An installation with a configured channel enables `agent-link-update.timer`.
+It checks the channel daily with a randomized delay. When the systemd user manager
+stops at logout, the next logged-in session resumes scheduled checks.
+
+The updater downloads Linux targets for Ubuntu 24.04 x86_64. Its signed
+release record must include `rollout` with `cohortSeed` and `percentage`,
+plus `withdrawnBuilds` containing builds unavailable for installation or
+rollback. Withdrawals already verified are kept locally. A higher signed
+build can repair a withdrawn current build through the same updater. If
+candidate startup fails, the installer restores the original data and keeps
+the withdrawn build stopped. A subsequent check can install a newer repair.
+To request repair immediately on a stopped installation, start
+`agent-link-update.service`. Automatic repairs still respect the installation
+window and the safe stop point when the gateway is running.
+
+Use `systemctl --user disable --now agent-link-update.timer` to disable
+automatic checks. To turn them back on, run
+`systemctl --user enable --now "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-link-update.timer"`.
+Use `systemctl --user start agent-link-update.service`
+for an immediate check. Both paths require the gateway to reach a safe stop point.
+To limit automatic installation to local hours, create
+`${XDG_CONFIG_HOME:-$HOME/.config}/agent-link/update-policy.json` with
+`{"start":"23:30","end":"02:00"}`. Remove that file to allow installation at any time.
+Automatic checks can download outside the window and retain one verified archive
+while waiting for the configured hours or for active work to finish. The updater
+checks fresh signed metadata before reusing the archive and before stopping the gateway.
+See the schedule in `PREFIX/updates/automatic.json` and the logs in
+`journalctl --user -u agent-link-update-scheduled.service -u agent-link-update.service`.
+On older bridge installations, rerun the installer from this verified package
+to upgrade the scheduler. Existing channel trust and timer enablement are preserved.
 
 ## What the phone can do (free LAN tier)
 
@@ -54,8 +107,35 @@ macOS Agent Link app uses:
   observe, message and stop tasks. Bridges are boot-scoped: after a service
   restart the supervisor respawns and re-registers them.
 - **Scope**: paired devices get launch scopes for every project × engine the
-  catalog reports; member/relay pairing and commercial entitlements are not
-  part of this package (that is the hosted/member deployment's job).
+  catalog reports. Member services use separate authorization.
+
+## Member cloud task authorization
+
+From an installed package, run `sh install.sh member login`, open the
+printed verification page on a trusted phone or computer and approve the
+device code. The command waits for confirmation and the user service keeps
+the private session and refreshes its access token. `member status` shows
+the local sign-in state. `member logout` signs out locally and requests
+revocation of this device if the member service is reachable. These commands
+leave the local gateway running.
+
+For a Linux host provisioned externally with an `agent-link` member-device session,
+set `DEVICE_GATEWAY_CLOUD_OWNER_GRANTS=1`, `DEVICE_GATEWAY_CLOUD_ORIGIN` to
+its HTTPS member origin and `DEVICE_GATEWAY_CLOUD_SESSION` to the absolute
+path of its provisioned `PAC_RELAY_*` session file in the user service
+environment. The session file must belong to the service user and be
+private. Keep its credentials out of the package and the gateway env file.
+Restart the service after configuring these inputs.
+
+The authenticated loopback owner API `GET /api/v2/personal-access/cloud-launch-grant`
+lists local native targets and the current revision. `PUT` accepts
+`expectedRevision`, `launchScopes`, `controls`, and `approvals`.
+Each selected scope contains the target's `backendStoreId` (its `backendId`
+from the list), `projectId` and `engineId`. Use an empty `launchScopes`
+array to revoke the grant. Changes take effect without restarting and
+existing task receipts remain recoverable. A local-only installation leaves
+cloud configuration unset and skips member sign-in. Cloud dispatch requires
+a separate owner grant for each project and engine.
 
 ## Owner operations
 

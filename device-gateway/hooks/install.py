@@ -82,7 +82,8 @@ def stage() -> Path:
 
 
 def hook_command(agent: str) -> str:
-    return f'{shlex.quote(sys.executable)} {shlex.quote(str(STAGED))} {agent}'
+    # The interpreter may live inside the signed Agent Link app bundle.
+    return f'{shlex.quote(sys.executable)} -B {shlex.quote(str(STAGED))} {agent}'
 
 
 AGENTS = {

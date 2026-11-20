@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the Agent Link automatic update schedule
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=15s
+Persistent=true
+Unit=agent-link-update-scheduled.service
+
+[Install]
+WantedBy=timers.target

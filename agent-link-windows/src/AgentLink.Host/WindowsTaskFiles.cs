@@ -9,7 +9,7 @@ using System.Text.Encodings.Web;
 
 namespace AgentLink;
 
-internal sealed class WindowsTaskFiles(WindowsLinkFiles files)
+internal sealed class WindowsTaskFiles(WindowsLinkFiles files, UpdateActivity updateActivity)
 {
     private const int MaxFileBytes = 32 * 1024 * 1024;
     private const int MaxFrame = (MaxFileBytes + 2) / 3 * 4 + 4096;
@@ -43,7 +43,10 @@ internal sealed class WindowsTaskFiles(WindowsLinkFiles files)
                     deadline.CancelAfter(TimeSpan.FromSeconds(8));
                     var request = await ReadAsync(pipe, deadline.Token);
                     deadline.CancelAfter(TimeSpan.FromMinutes(7));
-                    var reply = await DispatchAsync(request, deadline.Token);
+                    using var operation = updateActivity.Enter();
+                    var reply = operation is null
+                        ? new JsonObject { ["error"] = "UPDATE_IN_PROGRESS" }
+                        : await DispatchAsync(request, deadline.Token);
                     await WriteAsync(pipe, reply, deadline.Token);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException

@@ -263,6 +263,13 @@ internal sealed class ManagedAgents : IDisposable
 
     internal void GatewayStopped() => gatewayUp = false;
 
+    // A live managed worker which has not registered has no gateway reservation.
+    internal bool HasUnregisteredWorker => children.Values.Any(
+        child => !child.Registered && child.Process is { Process.HasExited: false });
+
+    internal Task StopForUpdateAsync() => Task.WhenAll(children.Values
+        .Select(child => child.Process?.StopForUpdateAsync(requireCleanExit: false) ?? Task.CompletedTask));
+
     internal async Task ReconcileAsync(CancellationToken cancellation)
     {
         if (!gatewayUp) return;

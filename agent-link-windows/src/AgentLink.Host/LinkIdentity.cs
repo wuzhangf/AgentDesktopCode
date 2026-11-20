@@ -8,10 +8,11 @@ namespace AgentLink;
 internal sealed record LinkIdentity(string InstallationId, string OwnerToken, string ClientToken, string StoreKey,
     string Pfx)
 {
-    internal static LinkIdentity Load()
+    internal static LinkIdentity Load(string? root = null, bool requireExisting = false)
     {
-        Directory.CreateDirectory(LinkProtocol.Root);
-        var file = Path.Combine(LinkProtocol.Root, "identity.dpapi");
+        root ??= LinkProtocol.Root;
+        if (!requireExisting) Directory.CreateDirectory(root);
+        var file = Path.Combine(root, "identity.dpapi");
         if (File.Exists(file))
         {
             var data = ProtectedData.Unprotect(File.ReadAllBytes(file), null, DataProtectionScope.CurrentUser);
@@ -22,7 +23,8 @@ internal sealed record LinkIdentity(string InstallationId, string OwnerToken, st
             }
             finally { CryptographicOperations.ZeroMemory(data); }
         }
-        var database = Path.Combine(LinkProtocol.Root, "gateway", "device-gateway.db");
+        if (requireExisting) throw new InvalidDataException("The probe snapshot is missing its installation identity.");
+        var database = Path.Combine(root, "gateway", "device-gateway.db");
         if (File.Exists(database)) throw new InvalidDataException("Existing database has no installation identity.");
         var id = Guid.NewGuid().ToString("N");
         using var rsa = RSA.Create(2048);

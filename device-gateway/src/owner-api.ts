@@ -204,8 +204,13 @@ export async function handleOwnerRoute(
   req: HttpRequest,
   creds: OwnerCredentials,
 ): Promise<HttpResponse> {
+  let finish: (() => void) | undefined;
   try {
     if (!isLoopback(req.clientIp)) fail('LOCAL_OWNER_REQUIRED', 403);
+    const startup = ctx.startupUpdate;
+    if (startup && (req.method !== 'GET' || req.path !== `${ROOT}/update-preparation`)) {
+      fail('UPDATE_IN_PROGRESS', 503);
+    }
     // xagt read RPC — its own reader credential domain, reached by the local
     // MCP stdio adapter without owner auth. Loopback-only by position in the
     // gate (the same route on the phone listener serves peer Links).
@@ -219,6 +224,24 @@ export async function handleOwnerRoute(
 
     const { path, method } = req;
     const parts = javaSplit(path);
+    if (ctx.updatePreparation && path === `${ROOT}/update-preparation` && method === 'GET') {
+      if (startup) {
+        const identity = startup.ready ? await ctx.auth.ownerStatus() : undefined;
+        return { status: 200, body: { state: 'starting', ...startup, bootId: ctx.config.bootId,
+          ...(identity ? { personalHostId: identity.personalHostId, storeId: identity.storeId,
+            deviceCount: (await ctx.auth.devices()).length } : {}),
+        } };
+      }
+      return { status: 200, body: ctx.updatePreparation.status() };
+    }
+    if (ctx.updatePreparation && method === 'POST' &&
+        (path === `${ROOT}/update-preparation` || path === `${ROOT}/update-preparation/release`)) {
+      const operationId = text(jsonBody(req), 'operationId');
+      const body = path.endsWith('/release') ? await ctx.updatePreparation.release(operationId)
+        : await ctx.updatePreparation.prepare(operationId);
+      return { status: 200, body };
+    }
+    if (method !== 'GET') finish = ctx.updatePreparation?.admit();
     if (method === 'GET' && path === `${ROOT}/work-handoffs/signing-key`) {
       if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 200, body: {
@@ -238,6 +261,30 @@ export async function handleOwnerRoute(
       if (method === 'PUT' && ctx.workHandoffs.setRecovery) {
         return { status: 200, body: await ctx.workHandoffs.setRecovery(jsonBody(req)) };
       }
+    }
+
+    if (ctx.linuxMember && (path === `${ROOT}/member-session` ||
+        path === `${ROOT}/member-session/login` || path === `${ROOT}/member-session/poll`)) {
+      const finish = method !== 'GET' ? ctx.updatePreparation?.admit() : undefined;
+      try {
+        if (path === `${ROOT}/member-session`) {
+          if (method === 'GET') return { status: 200, body: ctx.linuxMember.status() };
+          if (method === 'DELETE') return { status: 200, body: await ctx.linuxMember.logout() };
+        }
+        if (method === 'POST' && path.endsWith('/login')) {
+          return { status: 200, body: await ctx.linuxMember.begin(jsonBody(req).origin) };
+        }
+        if (method === 'POST' && path.endsWith('/poll')) {
+          return { status: 200, body: await ctx.linuxMember.poll(jsonBody(req).id) };
+        }
+      } finally { finish?.(); }
+    }
+
+    if (ctx.cloudLaunchGrant && path === `${ROOT}/cloud-launch-grant` && (method === 'GET' || method === 'PUT')) {
+      const finished = method === 'PUT' ? ctx.updatePreparation?.admit() : undefined;
+      try {
+        return { status: 200, body: await ctx.cloudLaunchGrant(method === 'PUT' ? jsonBody(req) : undefined) };
+      } finally { finished?.(); }
     }
 
     if (method === 'GET' && path === `${ROOT}/capabilities`) {
@@ -491,7 +538,7 @@ export async function handleOwnerRoute(
       return { status: 204, body: null };
     }
 
-    fail('NOT_FOUND', 404);
+    return fail('NOT_FOUND', 404);
   } catch (error) {
     if (error instanceof GatewayError) {
       const detail = 'detail' in error && typeof (error as { detail?: unknown }).detail === 'string'
@@ -501,5 +548,7 @@ export async function handleOwnerRoute(
     // Java ownerHandler: unexpected Exception → PERSONAL_ACCESS_FAILURE 503.
     console.error('device-gateway: unexpected owner-api error:', error);
     return { status: 503, body: { code: 'PERSONAL_ACCESS_FAILURE', detail: 'PERSONAL_ACCESS_FAILURE' } };
+  } finally {
+    finish?.();
   }
 }

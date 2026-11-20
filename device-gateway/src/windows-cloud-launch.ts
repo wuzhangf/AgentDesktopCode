@@ -1,8 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { CloudAcs, cloudIdentifier as identifier } from './cloud-acs.js';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
 import type { TaskFileBinding } from './sage-link-files.js';
+import type { UpdatePreparation } from './update-preparation.js';
+import type { CloudMemberIdentity, LinuxMemberEnrollment } from './linux-member.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -10,13 +13,10 @@ const kind = 'link.task.launch.v2';
 const actionKind = 'link.task.action.v2';
 const journal = 'windows-cloud-launch';
 const actions = 'windows-cloud-action';
+const fileGrantSchema = 'windows-cloud-launch-grant/1';
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
 
-interface Session {
-  bearer: string;
-  memberId: string;
-  workspaceId: string;
-  instanceId: string;
+interface Session extends CloudMemberIdentity {
   scope: string;
 }
 
@@ -25,6 +25,17 @@ interface Grant {
   scopes: LaunchScope[];
   controls: boolean;
   approvals: boolean;
+}
+
+const sessionScope = ({ origin, memberId, workspaceId, instanceId }: CloudMemberIdentity): string =>
+  hash(JSON.stringify([origin, memberId, workspaceId, instanceId]));
+
+export function clearCloudOwnerGrant(store: LocalStoreLike, identity: CloudMemberIdentity): void {
+  const scope = sessionScope(identity);
+  const grant = store.get<Grant>('cloud-owner-grants', scope);
+  if (grant?.scopes.length) {
+    store.put('cloud-owner-grants', scope, { revision: grant.revision + 1, scopes: [], controls: false, approvals: false });
+  }
 }
 
 type CloudAction = 'message' | 'stop' | 'approval_response';
@@ -97,6 +108,10 @@ export class WindowsCloudLaunch {
     private readonly sessionFile: string,
     private readonly grantFile: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly recoveryOnly = false,
+    private readonly updatePreparation?: UpdatePreparation,
+    private readonly ownerGrantStorage?: 'store' | 'file',
+    private readonly linuxMember?: LinuxMemberEnrollment,
     private readonly acs?: CloudAcs,
     private readonly taskFiles?: TaskFileBinding,
   ) {}
@@ -109,6 +124,7 @@ export class WindowsCloudLaunch {
   stop(): void {
     this.stopped = true;
     this.abort.abort();
+    this.linuxMember?.stop();
     clearTimeout(this.timer);
   }
 
@@ -124,7 +140,15 @@ export class WindowsCloudLaunch {
   }
 
   private session(): Session | undefined {
+    if (this.linuxMember) {
+      const identity = this.linuxMember.current();
+      return identity && { ...identity, scope: sessionScope(identity) };
+    }
     try {
+      if (this.ownerGrantStorage === 'store') {
+        const file = lstatSync(this.sessionFile);
+        if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0 || file.size > 65536) return;
+      }
       const values = new Map(readFileSync(this.sessionFile, 'utf8').split(/\r?\n/).flatMap(line => {
         const match = /^PAC_RELAY_([A-Z_]+)=(.*)$/.exec(line);
         return match ? [[match[1]!, match[2]!.trim()] as const] : [];
@@ -135,15 +159,16 @@ export class WindowsCloudLaunch {
       const instanceId = values.get('AGENT_INSTANCE_ID');
       if (!bearer || !identifier(memberId) || !identifier(workspaceId) || !identifier(instanceId)
           || values.get('MEMBER_ORIGIN') !== this.origin || values.get('CLIENT_ID') !== 'agent-link') return;
-      return { bearer, memberId, workspaceId, instanceId,
-        scope: hash(JSON.stringify([this.origin, memberId, workspaceId, instanceId])) };
+      const identity = { origin: this.origin, bearer, memberId, workspaceId, instanceId };
+      return { ...identity, scope: sessionScope(identity) };
     } catch { return; }
   }
 
   private grant(session: Session): Grant | undefined {
+    if (this.ownerGrantStorage === 'store') return this.store.get<Grant>('cloud-owner-grants', session.scope) ?? undefined;
     try {
       const value: unknown = JSON.parse(readFileSync(this.grantFile, 'utf8').replace(/^\uFEFF/, ''));
-      if (!isRecord(value) || value.schemaVersion !== 'windows-cloud-launch-grant/1'
+      if (!isRecord(value) || value.schemaVersion !== fileGrantSchema
           || value.memberId !== session.memberId || value.workspaceId !== session.workspaceId
           || value.instanceId !== session.instanceId || typeof value.revision !== 'number'
           || !Number.isSafeInteger(value.revision) || value.revision < 1
@@ -159,9 +184,71 @@ export class WindowsCloudLaunch {
     } catch { return; }
   }
 
+  private saveGrant(session: Session, grant: Grant): void {
+    if (this.ownerGrantStorage === 'store') {
+      this.store.put('cloud-owner-grants', session.scope, grant);
+      return;
+    }
+    // Keep the existing Windows file as the single grant record so older
+    // packaged versions also see permission changes after a rollback.
+    const { memberId, workspaceId, instanceId } = session;
+    const { revision, scopes, controls, approvals } = grant;
+    const temporary = this.grantFile + '.' + randomUUID() + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ schemaVersion: fileGrantSchema,
+        memberId, workspaceId, instanceId, revision, launchScopes: scopes, controls, approvals }),
+      { flag: 'wx', mode: 0o600, flush: true });
+      renameSync(temporary, this.grantFile);
+    } finally { rmSync(temporary, { force: true }); }
+  }
+
+  async ownerGrant(request?: Json): Promise<Json> {
+    if (!this.ownerGrantStorage || this.recoveryOnly) fail('OPERATION_NOT_ALLOWED', 403);
+    const session = this.session();
+    if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+    if (request && (this.ownerGrantStorage === 'file' || request.expectedScope !== undefined)
+        && request.expectedScope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+    const catalog = Array.isArray(request?.launchScopes) && request.launchScopes.length === 0
+      ? [] : await this.targets(session);
+    if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+    let grant = this.grant(session);
+    if (request !== undefined) {
+      const selection = request.launchScopes;
+      if (!Number.isSafeInteger(request.expectedRevision) || !Array.isArray(selection) || selection.length > 100 ||
+          typeof request.controls !== 'boolean' || typeof request.approvals !== 'boolean') {
+        fail('CLOUD_GRANT_INVALID', 400);
+      }
+      if (request.expectedRevision !== (grant?.revision ?? 0)) fail('CLOUD_GRANT_CHANGED', 409);
+      const scopes: LaunchScope[] = [];
+      for (const entry of selection) {
+        if (!isRecord(entry) || !identifier(entry.backendStoreId) || !identifier(entry.projectId) ||
+            !identifier(entry.engineId)) fail('CLOUD_GRANT_INVALID', 400);
+        const scope = { backendStoreId: entry.backendStoreId, projectId: entry.projectId, engineId: entry.engineId };
+        if (!catalog.some(target => this.matches(scope, target)) ||
+            scopes.some(other => other.backendStoreId === scope.backendStoreId &&
+              other.projectId === scope.projectId && other.engineId === scope.engineId)) {
+          fail('CLOUD_TARGET_UNAVAILABLE', 409);
+        }
+        scopes.push(scope);
+      }
+      const next = { revision: (grant?.revision ?? 0) + 1, scopes,
+        controls: scopes.length > 0 && request.controls, approvals: scopes.length > 0 && request.approvals };
+      const previousScopes = grant?.scopes ?? [];
+      const sameScopes = previousScopes.length === scopes.length && scopes.every(scope => previousScopes.some(other =>
+        other.backendStoreId === scope.backendStoreId && other.projectId === scope.projectId && other.engineId === scope.engineId));
+      if (!grant || !sameScopes ||
+          grant.controls !== next.controls || grant.approvals !== next.approvals) {
+        this.saveGrant(session, next);
+        grant = next;
+      }
+    }
+    return { revision: grant?.revision ?? 0, launchScopes: grant?.scopes ?? [],
+      scope: session.scope, controls: grant?.controls ?? false, approvals: grant?.approvals ?? false, targets: catalog };
+  }
+
   private async hosted(session: Session, method: 'GET' | 'POST' | 'PUT', path: string, body?: Json): Promise<Json> {
     if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
-    const response = await this.fetcher(`${this.origin}${root}${path}`, {
+    const response = await this.fetcher(`${session.origin}${root}${path}`, {
       method, redirect: 'error',
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(8000)]),
       headers: { Authorization: `Bearer ${session.bearer}`, 'Content-Type': 'application/json' },
@@ -178,11 +265,19 @@ export class WindowsCloudLaunch {
   private save(row: Delivery): void { this.store.put(journal, row.id, row); }
 
   async tick(): Promise<void> {
+    if (this.updatePreparation?.preparing) return;
+    const finish = this.updatePreparation?.admit();
+    try { await this.deliver(); }
+    finally { finish?.(); }
+  }
+
+  private async deliver(): Promise<void> {
+    try { await this.linuxMember?.refresh(); }
+    catch (error) { if (!this.linuxMember?.current()) throw error; }
     const session = this.session();
     if (!session) return;
     const grant = this.grant(session);
     const prior = this.store.get<{ checkedAt: number; grant: string }>('windows-cloud-directory', session.scope);
-    if (!grant && !prior) return;
     // Existing receipts and observations keep moving when publication or
     // claiming hits a temporary endpoint error.
     for (const row of this.store.list<Delivery>(journal)) {
@@ -193,12 +288,14 @@ export class WindowsCloudLaunch {
       if (action.scope !== session.scope || action.closed) continue;
       try { await this.resumeAction(session, action); } catch { /* keep the original action outbox */ }
     }
-    const grantDigest = hash(JSON.stringify(grant ?? null));
-    if (!prior || prior.grant !== grantDigest || Date.now() - prior.checkedAt > 30_000) {
-      await this.publish(session, grant);
-      this.store.put('windows-cloud-directory', session.scope, { checkedAt: Date.now(), grant: grantDigest });
+    if (this.recoveryOnly || (!grant && !prior)) return;
+    const targets = grant?.scopes.length ? await this.targets(session, grant) : [];
+    const directoryDigest = hash(JSON.stringify([grant ?? null, targets]));
+    if (!prior || prior.grant !== directoryDigest || Date.now() - prior.checkedAt > 30_000) {
+      if (!await this.publish(session, grant, targets)) return;
+      this.store.put('windows-cloud-directory', session.scope, { checkedAt: Date.now(), grant: directoryDigest });
     }
-    if (!grant || grant.scopes.length === 0 || this.abort.signal.aborted) return;
+    if (!grant || targets.length === 0 || this.abort.signal.aborted) return;
     const kinds = grant.controls || grant.approvals ? `${kind},${actionKind}` : kind;
     const batch = await this.hosted(session, 'GET', `/task-claims?limit=4&kinds=${kinds}`);
     for (const command of Array.isArray(batch.commands) ? batch.commands : []) {
@@ -209,33 +306,37 @@ export class WindowsCloudLaunch {
     }
   }
 
-  private async publish(session: Session, grant: Grant | undefined): Promise<void> {
-    const targets = grant?.scopes.length ? await this.targets(session, grant) : [];
-    if (JSON.stringify(this.grant(session) ?? null) !== JSON.stringify(grant ?? null)) return;
+  private async publish(session: Session, grant: Grant | undefined, targets: Json[]): Promise<boolean> {
+    const unchanged = () => JSON.stringify(this.grant(session) ?? null) === JSON.stringify(grant ?? null);
+    if (!unchanged()) return false;
     const path = `/instances/${session.instanceId}/targets`;
     const previous = await this.hosted(session, 'GET', path);
+    if (!unchanged()) return false;
     await this.hosted(session, 'PUT', path, { expectedRevision: previous.revision, targets });
+    return unchanged();
   }
 
-  private async targets(session: Session, grant: Grant): Promise<Json[]> {
-    let targets: Json[] = [];
-    try {
-      if (this.localCatalog) {
-        const entries = this.localCatalog.linkTargets(await this.localCatalog.ownerCatalog()).targets;
-        if (Array.isArray(entries)) targets = entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
-          && grant.scopes.some(scope => this.matches(scope, target)));
-      }
-    }
-    catch (error) {
-      if (!(error instanceof GatewayError) || error.code !== 'LOCAL_SOURCE_UNAVAILABLE') throw error;
-    }
-    const fileDeviceId = targets.some(t => t.engineId === 'sage-pi') ? await this.taskFiles?.deviceId?.() : undefined;
+  private async targets(session: Session, grant?: Grant): Promise<Json[]> {
+    let targets = await this.nativeTargets(grant);
+    const fileDeviceId = grant && targets.some(target => target.engineId === 'sage-pi')
+      ? await this.taskFiles?.deviceId?.() : undefined;
     if (fileDeviceId) {
       targets = targets.map(target => target.engineId === 'sage-pi' ? { ...target, fileDeviceId } : target);
     }
-    for (const scope of grant.scopes.filter(scope => scope.engineId === 'acs' && scope.backendStoreId === this.acs?.backendId)) {
+    const acs = this.acs;
+    if (!acs) return targets;
+    if (!grant) {
+      try {
+        const projects = await acs.catalog(session.scope);
+        targets.push(...projects.map(project => ({ ...project, engineId: 'acs' })));
+      } catch (error) {
+        if (!(error instanceof GatewayError) || error.httpStatus < 500) throw error;
+      }
+      return targets;
+    }
+    for (const scope of grant.scopes.filter(scope => scope.engineId === 'acs' && scope.backendStoreId === acs.backendId)) {
       let revision: string | undefined;
-      try { revision = await this.acs!.preflight(session.scope, scope.projectId); }
+      try { revision = await acs.preflight(session.scope, scope.projectId); }
       catch (error) {
         if (!(error instanceof GatewayError) || error.httpStatus < 500) throw error;
       }
@@ -243,6 +344,20 @@ export class WindowsCloudLaunch {
         projectId: scope.projectId, capabilityRevision: revision });
     }
     return targets;
+  }
+
+  private async nativeTargets(grant?: Grant): Promise<Json[]> {
+    if (!this.localCatalog) return [];
+    let catalog: Json;
+    try { catalog = await this.localCatalog.ownerCatalog(); }
+    catch (error) {
+      if (error instanceof GatewayError && error.code === 'LOCAL_SOURCE_UNAVAILABLE') return [];
+      throw error;
+    }
+    const entries = this.localCatalog.linkTargets(catalog).targets;
+    return Array.isArray(entries) ? entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
+      && (this.ownerGrantStorage !== 'file' || target.engineId !== 'macos')
+      && (!grant || grant.scopes.some(scope => this.matches(scope, target)))) : [];
   }
 
   private matches(scope: LaunchScope, target: Json): boolean {
@@ -282,14 +397,24 @@ export class WindowsCloudLaunch {
       && (acs ? this.acsParameters(payload.parameters, scope.projectId) && attachment === null
         : target.sourceKind === 'NATIVE' && attachment !== undefined && Object.keys(payload.parameters).length === 0);
     const path = `/task-claims/${command.commandId}`;
-    const acsRevision = supported && acs ? await this.acs!.preflight(session.scope, scope.projectId) : undefined;
-    const preflight = supported && !acs ? await this.local(session, row, async access => {
-      const live = await this.targets(session, grant);
-      if (!live.some(entry => this.matches(scope, entry as Json) &&
-          (revision === undefined || revision === (entry as Json).capabilityRevision))) return;
-      return access.remote(row.id, 'POST', `/personal/v1/local-tasks/${scope.backendStoreId}/task-preflights`,
-        { projectId: scope.projectId, engineId: scope.engineId }, null, null);
-    }) : undefined;
+    let acsRevision: string | undefined;
+    let preflight;
+    if (supported) {
+      if (acs) {
+        acsRevision = await this.acs!.preflight(session.scope, scope.projectId);
+        if (!acsRevision) return;
+      } else {
+        const live = (await this.nativeTargets(grant)).find(entry => this.matches(scope, entry));
+        // Let Hosted redeliver the same request when the bridge is ready.
+        if (!live) return;
+        if (revision === undefined || revision === live.capabilityRevision) {
+          preflight = await this.local(session, row, access => access.remote(row.id, 'POST',
+            `/personal/v1/local-tasks/${scope.backendStoreId}/task-preflights`,
+            { projectId: scope.projectId, engineId: scope.engineId }, null, null));
+        }
+      }
+    }
+    if (this.grant(session)?.revision !== grant.revision) return;
     const authorization = await this.hosted(session, 'POST', `${path}/authorize`, { deliveryGeneration: row.generation });
     if (authorization.requestKey !== row.nativeKey) fail('CLOUD_REQUEST_CONFLICT', 409);
     if (authorization.action === 'lookup') {
@@ -310,7 +435,8 @@ export class WindowsCloudLaunch {
       fail('CLOUD_REQUEST_CONFLICT', 409);
     }
     const deadline = time(authorization.dispatchBefore);
-    if (!supported || !(Date.now() < deadline)) {
+    if (!supported || this.session()?.scope !== session.scope || this.grant(session)?.revision !== row.grantRevision
+        || !(Date.now() < deadline)) {
       row.phase = 'receipt';
       row.outcome = 'not_accepted';
     } else if (acs) {
@@ -623,7 +749,7 @@ export class WindowsCloudLaunch {
 
   private supportedActions(session: Session, facts: Json, pins: Json | undefined,
     pending: PendingApproval[]): CloudAction[] {
-    if (!pins) return [];
+    if (this.recoveryOnly || !pins) return [];
     const capabilities = isRecord(facts.capabilities) ? facts.capabilities : {};
     const grant = this.grant(session);
     return [...(grant?.controls && capabilities.followUp === true ? ['message' as const] : []),
@@ -633,7 +759,7 @@ export class WindowsCloudLaunch {
 
   private async pendingApprovals(session: Session, row: Delivery, route: string,
     facts: Json, pins: Json | undefined, epoch: number): Promise<PendingApproval[]> {
-    if (!this.grant(session)?.approvals || !pins?.nativeTurnId || !['pi', 'sage-pi'].includes(String(facts.engineId)) ||
+    if (this.recoveryOnly || !this.grant(session)?.approvals || !pins?.nativeTurnId || !['pi', 'sage-pi'].includes(String(facts.engineId)) ||
         !['RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL'].includes(String(facts.state))) return [];
     const reply = await this.local(session, row, access => access.remote(row.id, 'GET',
       `${route}/input-requests`, null, null, null));
@@ -787,11 +913,20 @@ export class WindowsCloudLaunch {
       return grant;
     };
     const device = (): Device => {
-      const grant = assertCurrent();
-      return { id: principal, revision: grant.revision, state: 'ACTIVE', scopeVersion: 2,
+      // Old receipts need the original local principal. For read/lookup
+      // operations, derive only its already-journaled scope even after
+      // withdrawal. Any new execution still requires the current grant.
+      if (this.abort.signal.aborted || this.session()?.scope !== session.scope) fail('CLOUD_SCOPE_CHANGED', 403);
+      const target = row.target;
+      if (!identifier(target.backendId) || !identifier(target.projectId) || !identifier(target.engineId)) {
+        fail('CLOUD_SCOPE_CHANGED', 403);
+      }
+      const scopes = deadline !== undefined ? assertCurrent().scopes
+        : [{ backendStoreId: target.backendId, projectId: target.projectId, engineId: target.engineId }];
+      return { id: principal, revision: row.grantRevision, state: 'ACTIVE', scopeVersion: 2,
         actions: ['OBSERVE', 'LAUNCH',
           ...(control === 'approval_response' ? ['APPROVE'] : control ? ['INTERACT', 'CONTROL'] : [])],
-        launchScopes: grant.scopes,
+        launchScopes: scopes,
         resources: this.store.get('windows-cloud-resources', principal) ?? [],
         absoluteExpiry: 0, idleExpiry: 0, accessExpiry: 0, recoverUntil: 0, spentRefresh: [] };
     };
