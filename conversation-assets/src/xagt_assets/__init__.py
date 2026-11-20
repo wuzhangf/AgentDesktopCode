@@ -4,6 +4,8 @@ from .api import Actor, build_router
 from .store import AssetStore, Store
 from .attachments import AttachmentService, MAX_ATTACHMENT_BYTES
 from .attachment_client import AttachmentClient, AttachmentError, AttachmentUncertain
+from .read_grants import (GrantError, apply_grant_schema, build_grant_router,
+                          check_grant_schema)
 from .object_store import (InMemoryObjectStore, ObjectConflict, ObjectNotFound,
                            ObjectStoreError, S3ObjectStore)
 from .bundle import BundleError, export_bundle, import_bundle
@@ -22,6 +24,7 @@ from .unlock import UnlockError, unlock_revision
 __all__ = [
     "Actor", "AssetStore", "Store", "build_router", "AttachmentService", "MAX_ATTACHMENT_BYTES",
     "AttachmentClient", "AttachmentError", "AttachmentUncertain",
+    "GrantError", "apply_grant_schema", "check_grant_schema", "build_grant_router",
     "InMemoryObjectStore", "S3ObjectStore", "ObjectConflict", "ObjectNotFound", "ObjectStoreError",
     "BundleError", "export_bundle", "import_bundle",
     "AES_GCM_ALGORITHM", "CryptoError", "UserHeldEnvelopeError", "cloud_decrypt",

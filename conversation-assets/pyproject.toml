@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xagt-conversation-assets"
-version = "0.2.0"
+version = "0.3.0"
 description = "Open conversation asset storage service for xagt.link"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -27,4 +27,4 @@ xagt-assets = "xagt_assets.standalone:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-xagt_assets = ["schema.sql"]
+xagt_assets = ["schema.sql", "grant_schema.sql"]

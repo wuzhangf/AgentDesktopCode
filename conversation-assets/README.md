@@ -15,7 +15,7 @@ Provide these variables through the deployment environment.
 | Variable | Value |
 | --- | --- |
 | `XAGT_ASSETS_DSN` | PostgreSQL DSN for a database dedicated to the service |
-| `XAGT_ASSETS_CLOUD_KEY` | Random 32-byte key encoded as hex. Keep a recoverable copy separately from the database |
+| `XAGT_ASSETS_CLOUD_KEY` | Optional random 32-byte key encoded as hex. Enables private-instance processing. Omit it for a ciphertext-only instance and keep any recovery copy apart from the database |
 | `XAGT_ASSETS_OWNER_TOKEN` | Random bearer credential of at least 32 ASCII characters |
 | `XAGT_ASSETS_COLLECTOR_TOKEN` | Optional distinct collector credential of at least 32 ASCII characters |
 
@@ -80,6 +80,14 @@ python -m xagt_assets.attachment_client attach /path/to/report.pdf \
 
 The service stages metadata, validates size and digest, then commits the revision's attachment. An incomplete upload remains concealed from reads. Private VPS processing encrypts stored attachment bytes with the deployment key. Device-held uploads arrive as ciphertext. Review the returned byte limit in `/capabilities` and schedule `standalone cleanup-attachments` to expire staged uploads and clean up objects after deletion.
 
+## Catalog, search and exact-revision grants
+
+An owner can request `GET /assets/v1/catalog?limit=50`. Use `nextAfter` as the next request's `after` until it is null. Each item contains the asset ID, head revision ID, encryption mode and update time. The official Hosted adapter exposes the authorized `userHeld` catalog only when its member feature is enabled.
+
+On a private standalone instance with a cloud key, start `standalone serve --enable-search` to enable `POST /assets/v1/search`. Send a JSON body such as `{"query":"release notes","candidateLimit":50,"maxResults":20}`. The owner gets bounded snippets from normalized messages in recent cloud-processable heads, plus revision and message references and any search limits that were reached. Keep request and response body capture disabled on the reverse proxy. For a portable archive, run the offline reader with `python -m xagt_assets.local_search` and the selected asset, revision and keyword. It verifies and reads the archive in memory. User-held bundles additionally require the recipient private key and trusted signer public key.
+
+For private standalone exact-revision reads, initialize once with `standalone init --enable-read-grants` and serve with `standalone serve --enable-read-grants`. Both flags work together on `serve`. The owner issues a grant with `POST /assets/v1/grants` and a JSON body containing `assetId`, `revisionId`, `mode`, and `expiresInSec` (1–900). Provide the returned token in the recipient's Authorization header for `GET /assets/v1/grants/{grantId}/conversations/{assetId}/revisions/{revisionId}`. The owner can revoke it with `DELETE /assets/v1/grants/{grantId}`. Treat the response token as a secret. A grant covers one exact revision and expires, is revoked, or stops working when its asset is deleted. In user-held mode the grant returns the original ciphertext and envelope, which the existing trusted device key can open.
+
 ## Export and restore a conversation
 
 Use the owner token as `XAGT_ASSET_BEARER`. Export fixes the head revision and collects its parent chain. The portable bundle contains a manifest with file checksums. `cloudProcessable` bundles contain readable user data, so store the file privately. `userHeld` bundles retain ciphertext and the recipient envelope. Keep the recipient's decryption material separately.
@@ -116,4 +124,4 @@ python -m xagt_assets.unlock /private/conversation.zip \
 
 Install test dependencies with `python -m pip install '.[test]'`. Run `python -m pytest tests`. Supply `XAGT_ASSETS_TEST_POSTGRES` pointing to an isolated test server whose test role can create disposable databases to include database and HTTP verification.
 
-Immutable revision payloads remain in PostgreSQL, with bounded attachments in S3-compatible storage. Automatic capture operates on the user's allowlist. New source discovery, large streamed transfers, content indexing and organization, revocable Agent grants, multi-user self-host administration and Control app screens are subsequent steps. The member capability remains disabled by default in Daily Hosted.
+Immutable revision payloads remain in PostgreSQL, with bounded attachments in S3-compatible storage. Automatic capture operates on the user's allowlist. Subsequent steps include source discovery, large streamed transfers, content indexing and organization, message-level grants and device enrollment, multi-user self-host administration, and Control app screens. The member capability remains disabled by default in Daily Hosted.

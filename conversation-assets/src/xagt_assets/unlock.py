@@ -118,12 +118,12 @@ def _write_new(destination: str | os.PathLike[str], data: bytes) -> None:
         raise UnlockError("unable to write destination") from exc
 
 
-def unlock_revision(bundle_path: str | os.PathLike[str], *, asset_id: str,
-                    revision_id: str, recipient_private_key_path: str | os.PathLike[str] | None,
-                    signer_public_key_path: str | os.PathLike[str] | None,
-                    destination: str | os.PathLike[str],
-                    archive_signer_public_key_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Verify and decrypt one revision from a local portable archive."""
+def read_revision_bytes(bundle_path: str | os.PathLike[str], *, asset_id: str,
+                        revision_id: str, recipient_private_key_path: str | os.PathLike[str] | None,
+                        signer_public_key_path: str | os.PathLike[str] | None,
+                        archive_signer_public_key_path: str | os.PathLike[str] | None = None
+                        ) -> tuple[bytes, dict[str, Any]]:
+    """Verify and open one revision without writing a plaintext file."""
     archive_signer_public = (
         _key_file(archive_signer_public_key_path, label="archive signer public key")
         if archive_signer_public_key_path is not None else None
@@ -158,10 +158,23 @@ def unlock_revision(bundle_path: str | os.PathLike[str], *, asset_id: str,
             plaintext = canonical_json(encrypted)
     except (CryptoError, KeyError, TypeError) as exc:
         raise UnlockError("offline decryption failed") from exc
+    return plaintext, {"assetId": asset_id, "revisionId": revision_id, "mode": mode,
+                       "revisionPath": revision_path, "bytes": len(plaintext)}
+
+
+def unlock_revision(bundle_path: str | os.PathLike[str], *, asset_id: str,
+                    revision_id: str, recipient_private_key_path: str | os.PathLike[str] | None,
+                    signer_public_key_path: str | os.PathLike[str] | None,
+                    destination: str | os.PathLike[str],
+                    archive_signer_public_key_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Verify and decrypt one revision to a new file."""
+    plaintext, summary = read_revision_bytes(
+        bundle_path, asset_id=asset_id, revision_id=revision_id,
+        recipient_private_key_path=recipient_private_key_path,
+        signer_public_key_path=signer_public_key_path,
+        archive_signer_public_key_path=archive_signer_public_key_path)
     _write_new(destination, plaintext)
-    return {"assetId": asset_id, "revisionId": revision_id, "mode": mode,
-            "revisionPath": revision_path, "bytes": len(plaintext),
-            "destination": str(Path(destination).resolve())}
+    return {**summary, "destination": str(Path(destination).resolve())}
 
 
 def _parser() -> argparse.ArgumentParser:

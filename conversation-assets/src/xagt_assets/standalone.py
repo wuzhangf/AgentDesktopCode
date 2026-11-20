@@ -11,8 +11,11 @@ import uvicorn
 
 from .api import Actor, build_router
 from .attachments import AttachmentService
+from .catalog import build_catalog_router
 from .collector import _validate_base_url
 from .object_store import S3ObjectStore
+from .read_grants import apply_grant_schema, build_grant_router, check_grant_schema
+from .search import build_search_router
 from .store import AssetStore
 
 
@@ -29,8 +32,11 @@ def _store() -> AssetStore:
     dsn = os.environ.get("XAGT_ASSETS_DSN", "")
     if not dsn:
         raise ValueError("XAGT_ASSETS_DSN is required")
+    configured_key = os.environ.get("XAGT_ASSETS_CLOUD_KEY")
+    if configured_key is None:
+        return AssetStore(dsn, cloud_key=None, allowed_modes={"userHeld"})
     try:
-        key = bytes.fromhex(os.environ.get("XAGT_ASSETS_CLOUD_KEY", ""))
+        key = bytes.fromhex(configured_key)
     except ValueError as error:
         raise ValueError("XAGT_ASSETS_CLOUD_KEY must be a 32-byte key in hex form") from error
     if len(key) != 32:
@@ -54,9 +60,14 @@ def _attachments(store: AssetStore) -> AttachmentService | None:
 
 
 def build_app(store: AssetStore, *, owner_token: bytes, collector_token: bytes | None = None,
-              attachments: AttachmentService | None = None) -> FastAPI:
+              attachments: AttachmentService | None = None, enable_search: bool = False,
+              enable_read_grants: bool = False) -> FastAPI:
     if collector_token and hmac.compare_digest(owner_token, collector_token):
         raise ValueError("the owner and collector must have different tokens")
+    if enable_search and "cloudProcessable" not in store.allowed_modes:
+        raise ValueError("search requires the private instance cloud key")
+    if enable_read_grants:
+        check_grant_schema(store)
 
     def identify(authorization: str | None = Header(default=None)) -> Actor:
         scheme, _, value = (authorization or "").partition(" ")
@@ -69,7 +80,20 @@ def build_app(store: AssetStore, *, owner_token: bytes, collector_token: bytes |
         raise HTTPException(401, detail={"code": "UNAUTHENTICATED"}, headers={"WWW-Authenticate": "Bearer"})
 
     app = FastAPI(title="xagt.link Conversation Assets")
+
+    @app.middleware("http")
+    async def disable_asset_caching(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/assets/v1/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.include_router(build_router(store, identify, attachments=attachments), prefix="/assets/v1")
+    app.include_router(build_catalog_router(store, identify), prefix="/assets/v1")
+    if enable_search:
+        app.include_router(build_search_router(store, identify), prefix="/assets/v1")
+    if enable_read_grants:
+        app.include_router(build_grant_router(store, identify), prefix="/assets/v1")
     return app
 
 
@@ -77,11 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("init", "serve", "cleanup-attachments"))
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--enable-search", action="store_true", help="serve private keyword search")
+    parser.add_argument("--enable-read-grants", action="store_true", help="initialize or serve exact-revision read grants")
     args = parser.parse_args(argv)
     try:
         store = _store()
         if args.command == "init":
             store.apply_schema()
+            if args.enable_read_grants:
+                apply_grant_schema(store)
             print("Conversation asset schema ready")
             return 0
         store.check_schema()
@@ -94,8 +122,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         owner = _token("XAGT_ASSETS_OWNER_TOKEN", required=True)
         collector = _token("XAGT_ASSETS_COLLECTOR_TOKEN", required=False)
-        app = build_app(store, owner_token=owner, collector_token=collector, attachments=attachments)
-    except ValueError as error:
+        app = build_app(store, owner_token=owner, collector_token=collector, attachments=attachments,
+                        enable_search=args.enable_search, enable_read_grants=args.enable_read_grants)
+    except (ValueError, RuntimeError) as error:
         parser.error(str(error))
     uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False, server_header=False)
     return 0
