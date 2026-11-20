@@ -51,7 +51,7 @@ import { randomBytes, randomUUID, createHmac } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { isIP, type Socket } from 'node:net';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { GatewayContext, GatewayConfig, JsonObject } from './context.js';
 import { createGatewayListener, createHooksListener, createOwnerListener, createRelayListener } from './http.js';
 import { certificateInfo, fingerprintOfCertPem, provisionTlsMaterial, type TlsMaterial } from './tls.js';
@@ -64,6 +64,7 @@ import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
 import { WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { CloudAcs } from './cloud-acs.js';
 import { PersonalInbox, type InboxSourceReader } from './inbox.js';
 import { LocalTransport, type ConnectionRowLite } from './local-transport.js';
 import { createAcsClient } from './acs.js';
@@ -632,14 +633,15 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   // One shared LocalTransport — LocalTaskAccess routes and the xagt read
   // service use the same loopback-pinned, bearer-resolved channel.
   const transport = new LocalTransport(registry, tokenResolver, fetch, opts.workerLocal?.connectionId);
+  const socket = env('SAGE_LINK_FILE_SOCKET');
+  const fileKey = env('SAGE_LINK_FILE_GATEWAY_KEY');
+  const fileMcp = env('SAGE_LINK_FILE_MCP');
+  const fileBinding = socket && fileKey && /^[a-f0-9]{64}$/.test(fileKey) && fileMcp
+    && (socket.startsWith('/') || /^\\\\\.\\pipe\\[a-zA-Z0-9_.-]+$/.test(socket))
+    && isAbsolute(fileMcp) ? taskFileBinding(socket, fileKey, fileMcp) : undefined;
   let localTasks: LocalTaskAccess | undefined;
   if (opts.workerLocal !== undefined || (opts.extraWorkerLocals?.length ?? 0) > 0
       || opts.cliBridge !== undefined || workers !== undefined) {
-    const socket = env('SAGE_LINK_FILE_SOCKET');
-    const key = env('SAGE_LINK_FILE_GATEWAY_KEY');
-    const mcp = env('SAGE_LINK_FILE_MCP');
-    const fileBinding = socket?.startsWith('/') && key && /^[a-f0-9]{64}$/.test(key) && mcp?.startsWith('/')
-      ? taskFileBinding(socket, key, mcp) : undefined;
     localTasks = new LocalTaskAccess(devices, transport, store, fileBinding);
   }
 
@@ -837,9 +839,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
   const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
-  const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
+  const cloudAcs = agentUpstream ? new CloudAcs(config.acsStoreId, agentUpstream) : undefined;
+  if (cloudAcs && process.platform === 'win32') {
+    ctx.ownerCloudAcsTargets = () => cloudAcs.catalog('owner');
+  }
+  const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && (localTasks || cloudAcs)
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
-      join(opts.dataDir, 'windows-cloud-launch.json')) : undefined;
+      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudAcs, fileBinding) : undefined;
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 

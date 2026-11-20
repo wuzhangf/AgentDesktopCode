@@ -15,6 +15,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args is ["--bridge", var pipe, var capability])
+            return WindowsTaskFiles.RunMcpAsync(pipe, capability).GetAwaiter().GetResult();
         if (args is ["--status"] or ["--stop"])
         {
             try
@@ -72,6 +74,8 @@ internal sealed class LinkHost : IDisposable
     private readonly Dictionary<string, WorkerCard> registered = new(StringComparer.Ordinal);
     private readonly ManagedAgents managed;
     private readonly ConnectorSupervisor connector;
+    private readonly WindowsLinkFiles fileService;
+    private readonly WindowsTaskFiles taskFiles;
     private string? descriptorCertificatePem;
 
     internal LinkHost()
@@ -80,6 +84,8 @@ internal sealed class LinkHost : IDisposable
         connector = new ConnectorSupervisor(InstallRoot, MemberOrigin,
             enabled: () => enabled, ports: () => ports,
             ensureDescriptor: EnsureDescriptorAsync, openBrowser: OpenMemberPage);
+        fileService = new WindowsLinkFiles(InstallRoot, MemberOrigin);
+        taskFiles = new WindowsTaskFiles(fileService);
         status = NewStatus("正在启动");
     }
 
@@ -90,7 +96,8 @@ internal sealed class LinkHost : IDisposable
     {
         var local = ServeAsync(stop.Token);
         var relay = connector.RunAsync(stop.Token);
-        var files = new WindowsLinkFiles(InstallRoot, MemberOrigin).RunAsync(stop.Token);
+        var files = fileService.RunAsync(stop.Token);
+        var taskFileBroker = fileService.Installed ? taskFiles.RunAsync(stop.Token) : Task.CompletedTask;
         try
         {
             try
@@ -114,6 +121,7 @@ internal sealed class LinkHost : IDisposable
             await local;
             await relay;
             await files;
+            await taskFileBroker;
             connector.Dispose();
         }
     }
@@ -173,6 +181,12 @@ internal sealed class LinkHost : IDisposable
         using var key = certificate.GetRSAPrivateKey() ?? throw new InvalidDataException("Missing TLS private key.");
         var origin = $"https://{computer}.local:{chosen.Phone}";
         var variables = launch.Environment;
+        if (fileService.Installed && Environment.ProcessPath is { } hostExecutable)
+        {
+            variables["SAGE_LINK_FILE_SOCKET"] = taskFiles.PipePath;
+            variables["SAGE_LINK_FILE_GATEWAY_KEY"] = taskFiles.GatewayKey;
+            variables["SAGE_LINK_FILE_MCP"] = hostExecutable;
+        }
         var acsUrl = Environment.GetEnvironmentVariable("DEVICE_GATEWAY_ACS_URL");
         if (string.IsNullOrWhiteSpace(acsUrl))
         {

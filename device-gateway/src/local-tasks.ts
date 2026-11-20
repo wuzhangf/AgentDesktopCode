@@ -673,6 +673,16 @@ export class LocalTaskAccess {
     return out;
   }
 
+  async taskFileResults(token: string, backend: string, taskId: string, key: string) {
+    const device = await this.auth.authorizeLocal(token, backend, taskId, 'OBSERVE');
+    const launch = this.find(LAUNCH, device.id, key);
+    if (!launch?.sourceKey || launch.taskId !== taskId || launch.backendStoreId !== backend || launch.state !== 'OBSERVED') {
+      fail('LOCAL_BINDING_MISMATCH', 409);
+    }
+    if (!this.taskFileBinding?.results) fail('LINK_FILE_RESULTS_UNAVAILABLE', 503);
+    return this.taskFileBinding.results(launch.sourceKey);
+  }
+
   async validateOwnerResources(resources: Resource[], launches: LaunchScope[]): Promise<void> {
     for (const r of resources) {
       if (r.kind !== 'WORKER_LOCAL') continue;

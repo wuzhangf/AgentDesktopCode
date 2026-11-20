@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { CloudAcs, cloudIdentifier as identifier } from './cloud-acs.js';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
+import type { TaskFileBinding } from './sage-link-files.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -8,8 +10,6 @@ const kind = 'link.task.launch.v2';
 const actionKind = 'link.task.action.v2';
 const journal = 'windows-cloud-launch';
 const actions = 'windows-cloud-action';
-const identifier = (value: unknown): value is string =>
-  typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value);
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
 
 interface Session {
@@ -70,6 +70,16 @@ interface Delivery {
   pendingInputs?: PendingApproval[];
   eventNumber?: number;
   pendingObservation?: Json;
+  hasAttachment?: boolean;
+  pendingFilePublication?: boolean;
+  acs?: {
+    content: string;
+    create: Json;
+    dispatchBefore: number;
+    sessionId?: string;
+    message?: Json;
+    lookupOnly?: boolean;
+  };
 }
 
 export class WindowsCloudLaunch {
@@ -80,13 +90,15 @@ export class WindowsCloudLaunch {
 
   constructor(
     private readonly store: LocalStoreLike,
-    private readonly localCatalog: LocalTaskAccess,
+    private readonly localCatalog: LocalTaskAccess | undefined,
     private readonly transport: LocalTransportLike,
     private readonly hostId: string,
     private readonly origin: string,
     private readonly sessionFile: string,
     private readonly grantFile: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly acs?: CloudAcs,
+    private readonly taskFiles?: TaskFileBinding,
   ) {}
 
   start(): void {
@@ -198,28 +210,44 @@ export class WindowsCloudLaunch {
   }
 
   private async publish(session: Session, grant: Grant | undefined): Promise<void> {
-    const targets = grant?.scopes.length ? await this.targets(grant) : [];
+    const targets = grant?.scopes.length ? await this.targets(session, grant) : [];
     if (JSON.stringify(this.grant(session) ?? null) !== JSON.stringify(grant ?? null)) return;
     const path = `/instances/${session.instanceId}/targets`;
     const previous = await this.hosted(session, 'GET', path);
     await this.hosted(session, 'PUT', path, { expectedRevision: previous.revision, targets });
   }
 
-  private async targets(grant: Grant): Promise<Json[]> {
-    let catalog: Json;
-    try { catalog = await this.localCatalog.ownerCatalog(); }
-    catch (error) {
-      if (error instanceof GatewayError && error.code === 'LOCAL_SOURCE_UNAVAILABLE') return [];
-      throw error;
+  private async targets(session: Session, grant: Grant): Promise<Json[]> {
+    let targets: Json[] = [];
+    try {
+      if (this.localCatalog) {
+        const entries = this.localCatalog.linkTargets(await this.localCatalog.ownerCatalog()).targets;
+        if (Array.isArray(entries)) targets = entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
+          && grant.scopes.some(scope => this.matches(scope, target)));
+      }
     }
-    const entries = this.localCatalog.linkTargets(catalog).targets;
-    return Array.isArray(entries) ? entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
-      && grant.scopes.some(scope => this.matches(scope, target))) : [];
+    catch (error) {
+      if (!(error instanceof GatewayError) || error.code !== 'LOCAL_SOURCE_UNAVAILABLE') throw error;
+    }
+    const fileDeviceId = targets.some(t => t.engineId === 'sage-pi') ? await this.taskFiles?.deviceId?.() : undefined;
+    if (fileDeviceId) {
+      targets = targets.map(target => target.engineId === 'sage-pi' ? { ...target, fileDeviceId } : target);
+    }
+    for (const scope of grant.scopes.filter(scope => scope.engineId === 'acs' && scope.backendStoreId === this.acs?.backendId)) {
+      let revision: string | undefined;
+      try { revision = await this.acs!.preflight(session.scope, scope.projectId); }
+      catch (error) {
+        if (!(error instanceof GatewayError) || error.httpStatus < 500) throw error;
+      }
+      if (revision) targets.push({ sourceKind: 'ACS', backendId: scope.backendStoreId,
+        projectId: scope.projectId, capabilityRevision: revision });
+    }
+    return targets;
   }
 
   private matches(scope: LaunchScope, target: Json): boolean {
     return scope.backendStoreId === target.backendId && scope.projectId === target.projectId
-      && scope.engineId === target.engineId;
+      && scope.engineId === (target.sourceKind === 'ACS' ? 'acs' : target.engineId);
   }
 
   private async consume(session: Session, grant: Grant, command: unknown): Promise<void> {
@@ -246,14 +274,17 @@ export class WindowsCloudLaunch {
     const instruction = isRecord(payload.instruction) ? payload.instruction.text : undefined;
     const scope = grant.scopes.find(entry => this.matches(entry, target));
     const revision = typeof target.capabilityRevision === 'string' ? target.capabilityRevision : undefined;
-    const supported = row.grantRevision === grant.revision && target.sourceKind === 'NATIVE'
-      && scope && typeof instruction === 'string'
+    const acs = target.sourceKind === 'ACS' && target.backendId === this.acs?.backendId;
+    const attachment = this.attachment(payload, target);
+    const supported = row.grantRevision === grant.revision && scope && typeof instruction === 'string'
       && instruction.trim() && instruction.length <= 16_000
-      && Array.isArray(payload.attachments) && payload.attachments.length === 0
-      && isRecord(payload.parameters) && Object.keys(payload.parameters).length === 0;
+      && isRecord(payload.parameters)
+      && (acs ? this.acsParameters(payload.parameters, scope.projectId) && attachment === null
+        : target.sourceKind === 'NATIVE' && attachment !== undefined && Object.keys(payload.parameters).length === 0);
     const path = `/task-claims/${command.commandId}`;
-    const preflight = supported ? await this.local(session, row, async access => {
-      const live = await this.targets(grant);
+    const acsRevision = supported && acs ? await this.acs!.preflight(session.scope, scope.projectId) : undefined;
+    const preflight = supported && !acs ? await this.local(session, row, async access => {
+      const live = await this.targets(session, grant);
       if (!live.some(entry => this.matches(scope, entry as Json) &&
           (revision === undefined || revision === (entry as Json).capabilityRevision))) return;
       return access.remote(row.id, 'POST', `/personal/v1/local-tasks/${scope.backendStoreId}/task-preflights`,
@@ -270,6 +301,7 @@ export class WindowsCloudLaunch {
       } else {
         // The prior gateway's journal may be unavailable. Never replay.
         row.phase = 'submitting';
+        if (acs) row.acs = { content: '', create: {}, dispatchBefore: 0, lookupOnly: true };
       }
       this.save(row);
       return this.resume(session, row);
@@ -278,13 +310,31 @@ export class WindowsCloudLaunch {
       fail('CLOUD_REQUEST_CONFLICT', 409);
     }
     const deadline = time(authorization.dispatchBefore);
-    if (!supported || row.grantRevision !== grant.revision || !preflight || !isRecord(preflight.body)
-        || typeof preflight.body.optionsRevision !== 'string' || !(Date.now() < deadline)) {
+    if (!supported || !(Date.now() < deadline)) {
+      row.phase = 'receipt';
+      row.outcome = 'not_accepted';
+    } else if (acs) {
+      if (!acsRevision || acsRevision !== revision) {
+        row.phase = 'receipt';
+        row.outcome = 'not_accepted';
+      } else {
+        const parameters = payload.parameters as Json;
+        row.acs = { content: instruction, dispatchBefore: deadline,
+          create: { schemaVersion: 'business-session/2.0', workspaceAlias: scope.projectId,
+            intent: 'IMPLEMENT', ...(isRecord(parameters.modelSettings) ? { modelSettings: parameters.modelSettings } : {}) } };
+        row.phase = 'submitting';
+        this.save(row);
+        await this.createAcs(session, row);
+      }
+    } else if (!preflight || !isRecord(preflight.body) || typeof preflight.body.optionsRevision !== 'string' ||
+        (attachment && preflight.body.sageLinkFiles !== true)) {
       row.phase = 'receipt';
       row.outcome = 'not_accepted';
     } else {
       const launch = { requestKey: row.nativeKey, projectId: scope.projectId,
-        engineId: scope.engineId, optionsRevision: preflight.body.optionsRevision, instruction };
+        engineId: scope.engineId, optionsRevision: preflight.body.optionsRevision, instruction,
+        ...(attachment ? { linkFile: attachment } : {}) };
+      row.hasAttachment = attachment != null;
       row.phase = 'submitting';
       this.save(row);
       const result = await this.local(session, row, access => access.remote(row.id, 'POST',
@@ -293,6 +343,110 @@ export class WindowsCloudLaunch {
     }
     this.save(row);
     await this.resume(session, row);
+  }
+
+  private attachment(payload: Json, target: Json): Json | null | undefined {
+    if (!Array.isArray(payload.attachments)) return;
+    if (payload.attachments.length === 0) return null;
+    const file = payload.attachments[0];
+    const expiresAt = isRecord(file) ? time(file.expiresAt) : NaN;
+    if (target.sourceKind !== 'NATIVE' || target.engineId !== 'sage-pi' || payload.attachments.length !== 1 ||
+        !isRecord(file) || !identifier(file.transferID) || file.requestID !== payload.nativeRequestKey ||
+        file.projectID !== target.projectId || typeof file.signature !== 'string' ||
+        !/^[A-Za-z0-9+/]{86}==$/.test(file.signature) || !(Date.now() < expiresAt)) return;
+    return { ...file, expiresAt: Math.floor(expiresAt / 1000) };
+  }
+
+  private acsParameters(parameters: Json, project: string): boolean {
+    return Object.keys(parameters).every(key => ['projectId', 'creationScopeRef', 'modelSettings'].includes(key))
+      && (parameters.projectId === undefined || parameters.projectId === project)
+      && (parameters.creationScopeRef === undefined || parameters.creationScopeRef === project);
+  }
+
+  private assertAcsGrant(session: Session, row: Delivery, deadline?: number): void {
+    const grant = this.grant(session);
+    if (this.abort.signal.aborted || this.session()?.scope !== session.scope ||
+        grant?.revision !== row.grantRevision || row.target.backendId !== this.acs?.backendId ||
+        !grant.scopes.some(scope => this.matches(scope, row.target))) fail('CLOUD_SCOPE_CHANGED', 403);
+    if (deadline !== undefined && !(Date.now() < deadline)) fail('CLOUD_DISPATCH_EXPIRED', 409);
+  }
+
+  private async createAcs(session: Session, row: Delivery): Promise<void> {
+    const intent = row.acs!;
+    const key = `cloud-create-${row.id}`;
+    const result = await this.acs!.call(session.scope, 'POST', '/api/v2/sessions', intent.create, key,
+      () => this.assertAcsGrant(session, row, intent.dispatchBefore));
+    if (result.status >= 200 && result.status < 300 && isRecord(result.body) && identifier(result.body.sessionId)) {
+      intent.sessionId = result.body.sessionId;
+    } else if ([400, 403, 422, 428].includes(result.status)) {
+      row.outcome = 'not_accepted';
+      row.phase = 'receipt';
+    }
+    this.save(row);
+  }
+
+  private async resumeAcs(session: Session, row: Delivery): Promise<void> {
+    const intent = row.acs;
+    if (!intent || !this.acs) return;
+    this.assertAcsGrant(session, row);
+    if (!intent.sessionId) {
+      const key = `cloud-create-${row.id}`;
+      const receipt = await this.acs.call(session.scope, 'POST', '/api/v2/operations/lookup-created-session',
+        { idempotencyKey: key }, key);
+      if (receipt.status !== 200 || !isRecord(receipt.body) || receipt.body.operation !== 'session.create' ||
+          !identifier(receipt.body.resourceId)) return;
+      intent.sessionId = receipt.body.resourceId;
+      this.save(row);
+    }
+    const sid = intent.sessionId;
+    const key = `cloud-message-${row.id}`;
+    if (intent.message || intent.lookupOnly) {
+      const receipt = await this.acs.call(session.scope, 'POST', '/api/v2/operations/lookup',
+        { operation: 'session.message', resourceId: sid, idempotencyKey: key }, key);
+      if (receipt.status === 200 && isRecord(receipt.body) && receipt.body.operation === 'session.message' &&
+          receipt.body.resourceId === sid && isRecord(receipt.body.result)) {
+        this.acceptAcsMessage(row, receipt.body.result);
+        return;
+      }
+      if (receipt.status !== 404) return;
+    }
+    if (!(Date.now() < intent.dispatchBefore)) {
+      if (!intent.message && !intent.lookupOnly) {
+        row.outcome = 'not_accepted';
+        row.phase = 'receipt';
+        this.save(row);
+      }
+      return;
+    }
+    if (!intent.message) {
+      const summary = await this.acs.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`);
+      if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid ||
+          !Number.isSafeInteger(summary.body.sessionVersion)) return;
+      intent.message = { clientMessageId: key, content: intent.content, expectedSessionVersion: summary.body.sessionVersion };
+      this.save(row);
+    }
+    const result = await this.acs.call(session.scope, 'POST', `/api/v2/sessions/${sid}/messages`,
+      intent.message, key, () => this.assertAcsGrant(session, row, intent.dispatchBefore));
+    if (result.status >= 200 && result.status < 300 && isRecord(result.body)) {
+      this.acceptAcsMessage(row, result.body);
+    } else if ([400, 403, 408, 409, 422, 428].includes(result.status)) {
+      // The synthetic session is private to this dispatch. An ambiguous
+      // response stays in the original receipt lookup path.
+      if (result.status !== 409 && result.status !== 408) {
+        row.outcome = 'not_accepted';
+        row.phase = 'receipt';
+        this.save(row);
+      }
+    }
+  }
+
+  private acceptAcsMessage(row: Delivery, message: Json): void {
+    if (!row.acs?.sessionId) return;
+    row.taskId = row.acs.sessionId;
+    if (identifier(message.runId)) row.activeRunId = message.runId;
+    row.outcome = 'accepted';
+    row.phase = 'receipt';
+    this.save(row);
   }
 
   private adopt(row: Delivery, view: unknown): void {
@@ -311,7 +465,9 @@ export class WindowsCloudLaunch {
     const backend = row.target.backendId;
     if (!identifier(backend)) return;
     const rootPath = `/personal/v1/local-tasks/${backend}`;
-    if (row.phase === 'submitting') {
+    if (row.phase === 'submitting' && row.target.sourceKind === 'ACS') {
+      await this.resumeAcs(session, row);
+    } else if (row.phase === 'submitting') {
       const reply = await this.local(session, row, access => access.remote(row.id, 'GET',
         `${rootPath}/task-requests/${row.nativeKey}`, null, null, null));
       this.adopt(row, reply.body);
@@ -324,7 +480,9 @@ export class WindowsCloudLaunch {
       const command = dispatch.commandId;
       if (!identifier(command) || !row.outcome || dispatch.deliveryGeneration !== row.generation) return;
       const body = { deliveryGeneration: row.generation, outcome: row.outcome,
-        ...(row.taskId ? { nativeTaskId: row.taskId } : {}) };
+        ...(row.taskId ? { nativeTaskId: row.taskId } : {}),
+        ...(row.target.sourceKind === 'ACS' && row.taskId ? { sessionId: row.taskId,
+          ...(row.activeRunId ? { activeRunId: row.activeRunId } : {}) } : {}) };
       try { await this.hosted(session, 'POST', `/task-claims/${command}/receipt`, body); }
       catch (error) {
         if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
@@ -333,17 +491,79 @@ export class WindowsCloudLaunch {
       row.phase = row.taskId ? 'tracking' : 'closed';
       this.save(row);
     }
-    if (row.phase === 'tracking' && row.taskId) await this.observe(session, row, rootPath, row.taskId);
+    if (row.phase === 'tracking' && row.taskId) {
+      if (row.target.sourceKind === 'ACS') await this.observeAcs(session, row, row.taskId);
+      else await this.observe(session, row, rootPath, row.taskId);
+    }
     if (row.phase === 'result' && row.taskId) {
       await this.hosted(session, 'PUT', `/tasks/${row.workId}/results/primary`, {
         operationId: `win-result-${row.id}`, expectedVersion: 1,
-        refs: [{ ref: `native://${backend}/tasks/${row.taskId}`, mediaType: 'application/json' }],
+        refs: [{ ref: row.target.sourceKind === 'ACS'
+          ? `acs://${backend}/sessions/${row.taskId}` : `native://${backend}/tasks/${row.taskId}`,
+        mediaType: 'application/json' }],
         availability: 'available',
         observedAt: row.resultObservedAt,
       });
+      if (row.hasAttachment && this.taskFiles?.results) {
+        const publication = await this.local(session, row, access =>
+          access.taskFileResults(row.id, backend, row.taskId!, row.nativeKey));
+        for (const artifact of publication.files) {
+          const { transferId, sizeBytes, sha256 } = artifact;
+          if (!identifier(transferId) || !Number.isSafeInteger(sizeBytes) ||
+              typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) {
+            fail('LINK_FILE_RESULTS_UNAVAILABLE', 503);
+          }
+          await this.hosted(session, 'PUT', `/tasks/${row.workId}/results/file-${transferId}`, {
+            operationId: `win-file-${transferId}`, expectedVersion: 1,
+            refs: [{ ref: `link-file://${transferId}`, sizeBytes, sha256,
+              mediaType: 'application/octet-stream' }],
+            availability: 'available', observedAt: row.resultObservedAt,
+            ...(row.activeRunId ? { sourceRevision: row.activeRunId } : {}),
+          });
+        }
+        if (publication.pending > 0 || row.pendingFilePublication) {
+          await this.hosted(session, 'PUT', `/tasks/${row.workId}/results/encrypted-publication`, {
+            operationId: `win-publish-${row.id}`, expectedVersion: 1, refs: [],
+            availability: publication.pending > 0 ? 'pending' : 'available',
+            observedAt: row.resultObservedAt,
+          });
+          if (publication.pending > 0) {
+            row.pendingFilePublication = true;
+            this.save(row);
+            return;
+          }
+        }
+      }
       row.phase = 'closed';
       this.save(row);
     }
+  }
+
+  private async observeAcs(session: Session, row: Delivery, sid: string): Promise<void> {
+    if (!row.pendingObservation) {
+      this.assertAcsGrant(session, row);
+      const summary = await this.acs!.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`);
+      if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid) return;
+      const run = identifier(summary.body.activeRunId) ? summary.body.activeRunId : row.activeRunId;
+      if (!run) return;
+      const detail = await this.acs!.call(session.scope, 'GET', `/api/v2/runs/${run}`);
+      if (detail.status !== 200 || !isRecord(detail.body) || detail.body.sessionId !== sid ||
+          typeof detail.body.state !== 'string') return;
+      const sourceState = detail.body.state;
+      const state = ({
+        QUEUED: 'queued', RUNNING: 'running', VALIDATING: 'running', PAUSE_REQUESTED: 'running',
+        CANCEL_REQUESTED: 'running', PAUSED: 'waiting_input', WAITING_APPROVAL: 'waiting_approval',
+        COMPLETED: 'succeeded', FAILED: 'failed', CANCELLED: 'cancelled', NEEDS_ATTENTION: 'waiting_input',
+      } as Record<string, string>)[sourceState];
+      if (!state || (state === row.observedState && run === row.activeRunId)) return;
+      row.eventNumber = (row.eventNumber ?? 0) + 1;
+      row.pendingObservation = { state, sourceState, nativeTaskId: sid, sessionId: sid, activeRunId: run,
+        eventId: `win-${row.id}-${row.eventNumber}`, observedAt: new Date().toISOString(),
+        executionEpoch: (row.executionEpoch ?? 1) + (row.activeRunId && row.activeRunId !== run ? 1 : 0),
+        supportedActions: [] };
+      this.save(row);
+    }
+    await this.flushObservation(session, row);
   }
 
   private async observe(session: Session, row: Delivery, rootPath: string, taskId: string): Promise<void> {
@@ -374,6 +594,11 @@ export class WindowsCloudLaunch {
         executionEpoch: epoch, activeRunId: run, supportedActions: supported, pendingInputs };
       this.save(row);
     }
+    await this.flushObservation(session, row);
+  }
+
+  private async flushObservation(session: Session, row: Delivery): Promise<void> {
+    if (!row.pendingObservation) return;
     await this.hosted(session, 'POST', `/tasks/${row.workId}/observations`, row.pendingObservation);
     row.observedState = row.pendingObservation.state as string;
     row.activeRunId = row.pendingObservation.activeRunId as string | undefined;
@@ -605,7 +830,7 @@ export class WindowsCloudLaunch {
         }
       },
     };
-    return operation(new LocalTaskAccess(auth, this.transport, this.store, undefined,
+    return operation(new LocalTaskAccess(auth, this.transport, this.store, this.taskFiles,
       deadline === undefined ? undefined : () => { assertCurrent(); return deadline; }));
   }
 }

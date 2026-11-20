@@ -449,6 +449,7 @@ export interface GatewayXagt {
 }
 
 export interface GatewayContext {
+  ownerCloudAcsTargets?: () => Promise<JsonObject[]>;
   commercial?: import('./commercial.js').CommercialAccess;
   auth: GatewayAuth;
   /** Undefined → worker registration routes fail OPERATION_NOT_ALLOWED. */

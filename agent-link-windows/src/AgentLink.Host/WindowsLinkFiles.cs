@@ -10,6 +10,8 @@ namespace AgentLink;
 internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
 {
     private readonly string worker = Path.Combine(installRoot, "components", "files", "agent-link-files.exe");
+    private readonly SemaphoreSlim transfers = new(1, 1);
+    internal bool Installed => File.Exists(worker);
 
     internal async Task RunAsync(CancellationToken cancellation)
     {
@@ -27,7 +29,12 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
                     var request = await LinkProtocol.ReadAsync<LinkRequest>(channel, framing.Token);
                     framing.CancelAfter(TimeSpan.FromMinutes(29));
                     LinkReply reply;
-                    try { reply = await ExecuteAsync(request, framing.Token); }
+                    try
+                    {
+                        reply = request.Operation is "overview" or "send" or "receive" or "resume" or "retain"
+                            or "removeRetention" or "grantAccess" or "receiveGrant" or "revokeGrant"
+                            ? await ExecuteAsync(request, framing.Token) : new(false, "文件操作不可用。");
+                    }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException
                         or InvalidOperationException or CryptographicException or System.ComponentModel.Win32Exception)
                     {
@@ -41,12 +48,16 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
     }
 
-    private async Task<LinkReply> ExecuteAsync(LinkRequest request, CancellationToken cancellation)
+    internal async Task<LinkReply> ExecuteAsync(LinkRequest request, CancellationToken cancellation)
     {
-        if (!File.Exists(worker)) return new(false, "此安装不包含文件传输组件。");
-        if (request.Operation is not ("overview" or "send" or "receive" or "resume" or "retain" or "removeRetention"
-            or "grantAccess" or "receiveGrant" or "revokeGrant"))
-            return new(false, "文件操作不可用。");
+        await transfers.WaitAsync(cancellation);
+        try { return await ExecuteWorkerAsync(request, cancellation); }
+        finally { transfers.Release(); }
+    }
+
+    private async Task<LinkReply> ExecuteWorkerAsync(LinkRequest request, CancellationToken cancellation)
+    {
+        if (!Installed) return new(false, "此安装不包含文件传输组件。");
         var session = MemberCredentials.FileSession();
         if (session is null) return new(false, "请先在 Agent Link 登录会员。");
 
@@ -64,11 +75,13 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
         };
         if (request.Args is JsonObject args)
         {
-            foreach (var name in new[] { "source", "destination", "recipientId", "requestKey", "transferId", "granteeId", "grantId" })
+            foreach (var name in new[] { "source", "destination", "recipientId", "requestKey", "transferId", "granteeId", "grantId", "name" })
             {
                 if (args[name] is JsonValue value && value.TryGetValue<string>(out var text))
                     input[name] = text;
             }
+            if (request.Operation == "taskAuthorize" && args["attachment"] is JsonObject attachment)
+                input["attachment"] = attachment.DeepClone();
         }
         var info = new ProcessStartInfo(worker)
         {

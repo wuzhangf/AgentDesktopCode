@@ -264,12 +264,6 @@ export async function handleOwnerRoute(
           // One catalog read feeds both views — a second ownerCatalog() call
           // could observe a different backend set mid-flap.
           const linkTargets = ctx.localTasks.linkTargets(catalog);
-          if (ctx.acs !== undefined && Array.isArray(linkTargets.targets)) {
-            linkTargets.targets.push({
-              sourceKind: 'ACS', backendId: ctx.config.acsStoreId,
-              capabilityRevision: 'agent-sessions/1',
-            });
-          }
           out.linkTargets = linkTargets;
         } catch (unavailable) {
           const reasonCode = unavailable instanceof GatewayError
@@ -277,6 +271,16 @@ export async function handleOwnerRoute(
           out.localSource = { available: false, reasonCode };
           out.linkTargets = { schemaVersion: 'link-targets/2', targets: [], reasonCode };
         }
+      }
+      if (ctx.acs !== undefined) {
+        const catalog = isRecord(out.linkTargets) ? out.linkTargets : {};
+        const native = Array.isArray(catalog.targets) ? catalog.targets : [];
+        let projects: JsonObject[] = [];
+        try { projects = await ctx.ownerCloudAcsTargets?.() ?? []; } catch { /* keep native targets available */ }
+        out.linkTargets = { schemaVersion: 'link-targets/2', targets: [
+          ...native, ...projects,
+          { sourceKind: 'ACS', backendId: ctx.config.acsStoreId, capabilityRevision: 'agent-sessions/1' },
+        ] };
       }
       return { status: 200, body: out };
     }

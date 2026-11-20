@@ -58,7 +58,7 @@ internal static class CloudLaunchGrant
             {
                 ["backendStoreId"] = target["backendId"]?.DeepClone(),
                 ["projectId"] = target["projectId"]?.DeepClone(),
-                ["engineId"] = target["engineId"]?.DeepClone(),
+                ["engineId"] = JsonValue.Create(Engine(target)),
             });
         }
         var existing = current?["launchScopes"] as JsonArray ?? [];
@@ -93,9 +93,13 @@ internal static class CloudLaunchGrant
 
     private static JsonObject[] Targets(JsonNode? capabilities) =>
         (capabilities?["linkTargets"]?["targets"] as JsonArray ?? []).OfType<JsonObject>()
-            .Where(target => target["sourceKind"]?.GetValue<string>() == "NATIVE")
+            .Where(target => target["sourceKind"]?.GetValue<string>() == "NATIVE"
+                || target["sourceKind"]?.GetValue<string>() == "ACS" && target["projectId"] is not null)
             .DistinctBy(target => Key(target, "backendId")).ToArray();
 
     private static string Key(JsonObject target, string backend) =>
-        $"{target[backend]}|{target["projectId"]}|{target["engineId"]}";
+        $"{target[backend]}|{target["projectId"]}|{Engine(target)}";
+
+    private static string? Engine(JsonObject target) =>
+        target["sourceKind"]?.GetValue<string>() == "ACS" ? "acs" : target["engineId"]?.GetValue<string>();
 }
