@@ -1,6 +1,7 @@
 """Exercise publication recovery against a fresh loopback S3 test service."""
 from datetime import UTC, datetime, timedelta
 import hashlib
+import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from threading import Thread
 import time
@@ -111,7 +113,13 @@ class PromotionTest(unittest.TestCase):
         entry = {"release": release}
         if not withdrawn:
             archive = self.directory / f"test-{build}.tar.gz"
-            archive.write_bytes(f"synthetic HTTP archive {build}".encode())
+            body = json.dumps({"schemaVersion": 1, "product": "Agent Link",
+                               "version": release["displayVersion"], "buildNumber": build,
+                               "platform": "linux", "arch": "x64"}).encode()
+            manifest_info = tarfile.TarInfo("./release-manifest.json")
+            manifest_info.size = len(body)
+            with tarfile.open(archive, "w:gz") as package:
+                package.addfile(manifest_info, io.BytesIO(body))
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             entry.update(archive=str(archive), download={
                 "qualifiedInstallerSha256": digest, "qualifiedUpdateSha256": digest,

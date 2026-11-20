@@ -149,6 +149,12 @@ The publisher compares both approved digests to the staged bytes, signs the
 catalog as the `publication/catalog.json` target, and writes the same bytes
 at `/catalog.json` for EnterprisePortal. Releases with no download approval
 stay out of the public catalog. Existing rows retain their publication date.
+For a new Linux or Windows download approval, the manifest inside the
+qualified update archive must agree with the release record's display
+version and build number. Linux also checks the manifest's platform and
+architecture. Windows checks the packaged PE file version recorded in the
+manifest. Platform signing and installation qualification still apply to
+the final installer.
 The catalog retains superseded and withdrawn entries for version history.
 A zero-percent rollout pauses links for its current build. Portal offers
 links only for rows with `availability: published`.

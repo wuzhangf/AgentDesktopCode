@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tarfile
+import zipfile
 
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from securesystemslib.signer import CryptoSigner
@@ -25,6 +27,8 @@ RECORD_PATH = re.compile(r"channels/(stable|preview)/(macos-arm64|windows-x86_64
 ROOT_NAME = re.compile(r"([1-9][0-9]*)\.root\.json")
 BUILD_INDEX = "publication/builds.json"
 PUBLIC_CATALOG = "publication/catalog.json"
+PACKAGE_MANIFEST = "release-manifest.json"
+PACKAGE_MANIFEST_LIMIT = 2 * 1024 * 1024
 RELEASE_FIELDS = {
     "releaseId", "displayVersion", "platform", "arch", "channel", "buildNumber",
     "availability", "minOS", "compatibility", "rollout", "withdrawnBuilds",
@@ -216,6 +220,43 @@ def load_records(previous):
     return records
 
 
+def check_public_package(archive, release):
+    platform = release["platform"]
+    try:
+        if platform == "linux":
+            data = None
+            with tarfile.open(archive, "r|gz") as package:
+                for count, member in enumerate(package, 1):
+                    if count > 128 or member.offset_data + member.size > 256 * 1024 * 1024:
+                        raise ValueError("Linux archive exceeds the updater's package limits")
+                    if member.name not in (PACKAGE_MANIFEST, "./" + PACKAGE_MANIFEST):
+                        continue
+                    if data is not None or not member.isreg() or not 0 < member.size <= PACKAGE_MANIFEST_LIMIT:
+                        raise ValueError("Invalid or duplicate Linux package manifest")
+                    with package.extractfile(member) as stream:
+                        data = stream.read()
+        else:
+            with zipfile.ZipFile(archive) as package:
+                entries = [entry for entry in package.infolist()
+                           if entry.filename.casefold() == PACKAGE_MANIFEST]
+                if len(entries) != 1 or not 0 < entries[0].file_size <= PACKAGE_MANIFEST_LIMIT:
+                    raise ValueError("Missing, invalid or duplicate Windows package manifest")
+                data = package.read(entries[0])
+        if data is None:
+            raise ValueError("Missing Linux package manifest")
+        package_info = json.loads(data.decode("utf-8-sig"))
+    except (tarfile.TarError, zipfile.BadZipFile, EOFError, RuntimeError, ValueError) as error:
+        raise ValueError(f"Cannot read the public {platform} package manifest: {error}") from error
+    version = release["displayVersion"]
+    if (not isinstance(package_info, dict) or type(package_info.get("schemaVersion")) is not int
+            or package_info["schemaVersion"] != 1 or package_info.get("product") != "Agent Link"
+            or not positive(package_info.get("buildNumber")) or package_info["buildNumber"] != release["buildNumber"]
+            or package_info.get("version") != version
+            or (platform == "linux" and (package_info.get("platform"), package_info.get("arch")) != ("linux", "x64"))
+            or (platform == "windows" and package_info.get("fileVersion") != "1." + version)):
+        raise ValueError(f"Public {platform} package manifest differs from the release version, build or platform")
+
+
 def public_download(details, release, artifact, manifest, files):
     fields = {"qualifiedInstallerSha256", "qualifiedUpdateSha256", "publishedAt", "releaseNotes", "installation"}
     platform = release["platform"]
@@ -247,6 +288,8 @@ def public_download(details, release, artifact, manifest, files):
         files[path] = Target(info, source)
     if installer["sha256"] != details["qualifiedInstallerSha256"]:
         raise ValueError("Public installer bytes differ from the qualified digest")
+    if platform in ("linux", "windows"):
+        check_public_package(files[artifact["path"]].content, release)
     return {**{key: release[key] for key in ("releaseId", "displayVersion", "platform", "arch", "channel",
                                             "buildNumber", "minOS")},
             "artifact": installer, "publishedAt": published_at,

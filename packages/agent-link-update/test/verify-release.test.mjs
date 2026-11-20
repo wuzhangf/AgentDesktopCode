@@ -192,14 +192,39 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
         stateWriteVersion: 1, contractsRevision: 'release-test' },
       rollout: { cohortSeed: 'link-42', percentage: 100 }, withdrawnBuilds: [] },
   }));
-  for (const { archive: name } of entries) await writeFile(join(directory, name), name);
+  const archives = new Map();
+  async function writeArchive({ archive: name, release }) {
+    const path = join(directory, name);
+    if (release.platform === 'macos') {
+      await writeFile(path, name);
+    } else {
+      await promisify(execFile)(process.env.AGENT_LINK_PUBLISH_PYTHON, ['-c', `
+import io, json, sys, tarfile, zipfile
+path, platform, version, build = sys.argv[1:]
+manifest = {"schemaVersion": 1, "product": "Agent Link", "version": version, "buildNumber": int(build)}
+if platform == "linux":
+    data = json.dumps({**manifest, "platform": "linux", "arch": "x64"}).encode()
+    info = tarfile.TarInfo("./release-manifest.json")
+    info.size = len(data)
+    with tarfile.open(path, "w:gz") as archive:
+        archive.addfile(info, io.BytesIO(data))
+else:
+    data = json.dumps({**manifest, "fileVersion": "1." + version}).encode("utf-8-sig")
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("release-manifest.json", data)
+`, path, release.platform, release.displayVersion, String(release.buildNumber)]);
+    }
+    archives.set(name, await readFile(path));
+  }
+  for (const entry of entries.slice(0, 3)) await writeArchive(entry);
   const windowsInstaller = 'agent-link-0.2.1-windows.msi';
   const macInstaller = 'Agent-Link-macOS-arm64.dmg';
   await writeFile(join(directory, windowsInstaller), windowsInstaller);
   await writeFile(join(directory, macInstaller), macInstaller);
   function approval(update, installer = update) {
     return {
-      qualifiedInstallerSha256: digest(installer), qualifiedUpdateSha256: digest(update),
+      qualifiedInstallerSha256: digest(archives.get(installer) ?? installer),
+      qualifiedUpdateSha256: digest(archives.get(update)),
       publishedAt: '2026-11-21T00:00:00Z', releaseNotes: 'Qualified release notes', installation: 'Installer instructions',
       ...(installer !== update ? { installer } : {}),
     };
@@ -224,13 +249,26 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   await assert.rejects(publish('unqualified', initial, { entries: [{
     ...entries[1], download: { ...entries[1].download, qualifiedInstallerSha256: digest('different MSI') },
   }] }), { stderr: /Public installer bytes differ from the qualified digest/ });
+  const wrongWindows = { ...entries[1].release, displayVersion: '0.2.2' };
+  await assert.rejects(publish('wrong-windows-version', initial, { entries: [{
+    ...entries[1], release: wrongWindows,
+  }] }), { stderr: /Public windows package manifest differs/ });
+  const wrongLinux = { ...entries[2].release, buildNumber: 43 };
+  await assert.rejects(publish('wrong-linux-build', initial, { entries: [{
+    ...entries[2], release: wrongLinux,
+  }] }), { stderr: /Public linux package manifest differs/ });
+  await writeFile(join(directory, 'example.tar.gz'), 'example archive');
+  archives.set('example.tar.gz', Buffer.from('example archive'));
+  await assert.rejects(publish('example-linux-package', initial, { entries: [{
+    ...entries[2], archive: 'example.tar.gz', download: approval('example.tar.gz'),
+  }] }), { stderr: /Cannot read the public linux package manifest/ });
   const first = await publish('first', initial, { entries });
   await serve(first);
   for (const entry of entries) {
     const candidate = await read(entry.release);
     assert.equal(candidate.release.buildNumber, 42);
     assert.equal(candidate.release.channel, entry.release.channel);
-    assert.equal(await readFile(candidate.archivePath, 'utf8'), entry.archive);
+    assert.deepEqual(await readFile(candidate.archivePath), archives.get(entry.archive));
   }
   const available = await catalog(first);
   assert.equal(available.length, 3);
@@ -269,7 +307,9 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   await assert.rejects(publish('renew-old-root', initial, { previous: withdrawn }),
     { stderr: /Stage new targets after root rotation/ });
   const repair = { ...linux, releaseId: 'link-43', buildNumber: 43, displayVersion: '0.2.2' };
-  const next = [{ archive: 'different.tar.gz', release: repair, download: approval('different archive') }];
+  const next = [{ archive: 'repair.tar.gz', release: repair }];
+  await writeArchive(next[0]);
+  next[0].download = approval(next[0].archive);
   await assert.rejects(publish('stale-keys', initial, { previous: withdrawn, entries: next }),
     { stderr: /Supply valid keys assigned to the targets role/ });
   const repaired = await publish('repair', rotated, { previous: withdrawn, entries: next });
@@ -279,7 +319,7 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   assert.deepEqual(candidate.release.withdrawnBuilds, [42]);
   assert.deepEqual(repo.requests.filter(path => /[23]\.root\.json$/.test(path)).slice(-2),
     ['/metadata/2.root.json', '/metadata/3.root.json']);
-  assert.equal(await readFile(candidate.archivePath, 'utf8'), 'different archive');
+  assert.deepEqual(await readFile(candidate.archivePath), archives.get(next[0].archive));
   assert.deepEqual((await catalog(repaired)).filter(row => row.platform === 'linux')
     .map(row => [row.buildNumber, row.availability]), [[42, 'withdrawn'], [43, 'published']]);
   await assert.rejects(publish('cross-channel-collision', rotated, { previous: repaired, entries: [{
