@@ -185,6 +185,12 @@ export class HandoffActionService {
     this.deps.store.put(ACTION_KIND, actionId, { ...action, state: 'REVOKED' });
   }
 
+  async peerAudience(actionId: string): Promise<{ hostRef: string; deviceId: string }> {
+    const action = await this.authorized(actionId, false, false);
+    if (!action.targetPreflight) fail('HANDOFF_TARGET_PREFLIGHT_REQUIRED', 409);
+    return { hostRef: text(action.targetAgentRef, 'hostKey'), deviceId: text(action.targetPreflight, 'targetDeviceId') };
+  }
+
   private action(actionId: string): Action | undefined {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(actionId)) fail('INVALID_REQUEST', 400);
     return this.deps.store.get<Action>(ACTION_KIND, actionId);

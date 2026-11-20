@@ -68,6 +68,8 @@ class Fixture {
   workspaceUploads: Record<string, { status: number; body: unknown }> = {};
   /** When true the next request's socket is destroyed (IOException analogue). */
   destroyNext = false;
+  /** Drop the response after recording one POST at this task-relative path. */
+  dropReplyPath: string | undefined;
   /** Hook run inside the handler per recorded request (mid-flight mutation). */
   requestHook: ((req: Req) => void) | undefined;
   requests: Req[] = [];
@@ -93,6 +95,7 @@ class Fixture {
     this.taskErrors = {};
     this.workspaceUploads = {};
     this.destroyNext = false;
+    this.dropReplyPath = undefined;
     this.requestHook = undefined;
     this.requests = [];
   }
@@ -289,6 +292,11 @@ class Fixture {
       if (req.method === 'POST') {
         readBody((body) => {
           record(body);
+          if (this.dropReplyPath === rest) {
+            this.dropReplyPath = undefined;
+            req.socket.destroy();
+            return;
+          }
           if (rest === '/commands') { send(200, { state: 'ACCEPTED' }); return; }
           if (rest === '/messages') { send(200, { state: 'SENT' }); return; }
           if (rest === '/questions') { send(200, { state: 'ACCEPTED' }); return; }
@@ -1033,6 +1041,34 @@ describe('LocalTaskAccess inputs', () => {
       inputBody({ requestKey: 'c-1', intent: 'STOP' }), 'c-1');
     expect(replay.body).toEqual(first.body);
     expect(fx.posts('/local/v1/tasks/native-t1/commands').length).toBe(posts);
+  });
+
+  it.each([
+    { operation: 'STOP', tail: '/commands', fields: { intent: 'STOP' } },
+    { operation: 'INPUT_RESPONSE', tail: '/input-requests/original-question/responses', fields: { response: { confirmed: true } } },
+  ])('reconciles $operation by the original key after the native round changes', async ({ operation, tail, fields }) => {
+    const { access } = harness();
+    const taskPath = `${ROOT}/${STORE}/tasks/native-t1`;
+    const requestKey = 'lost-original-round';
+    const body = inputBody({ requestKey, ...fields });
+    fx.pendingInputs['native-t1'] = [{ inputRequestId: 'original-question', kind: 'confirm', state: 'PENDING' }];
+    fx.dropReplyPath = tail;
+    const first = await remote(access, 'POST', taskPath + tail, body, requestKey);
+    expect(first.body).toMatchObject({ operation, state: 'UNKNOWN' });
+    const posted = fx.posts(`/local/v1/tasks/native-t1${tail}`)[0]!;
+    const sourceKey = (posted.body as Record<string, unknown>).requestKey as string;
+    expect(sourceKey).toMatch(/^mobile-[a-f0-9]{64}$/);
+    const receipt = { requestKey: sourceKey, taskId: 'native-t1', generation: 'g1', state: 'APPLIED' };
+    fx.recoveryReplies[sourceKey] = { status: 200, body: receipt };
+    Object.assign(fx.tasks['native-t1']!, { generation: 'g2', nativeTurnId: 'new-turn', currentCommandId: 'new-command' });
+    fx.pendingInputs['native-t1'] = [{ inputRequestId: 'new-question', kind: 'confirm', state: 'PENDING' }];
+
+    const recovered = await remote(access, 'GET', `${taskPath}/requests/${requestKey}`);
+    expect(recovered.body).toMatchObject({ operation, state: 'OBSERVED' });
+    const replay = await remote(access, 'POST', taskPath + tail, body, requestKey);
+    expect(replay.body).toEqual(recovered.body);
+    expect(fx.gets(`/local/v1/tasks/native-t1/interaction-requests/${sourceKey}`).length).toBeGreaterThanOrEqual(1);
+    expect(fx.requests.filter(row => row.method === 'POST').map(row => row.url)).toEqual([`/local/v1/tasks/native-t1${tail}`]);
   });
 
   it('forwards model/effort on follow-up messages and keys drift on them', async () => {

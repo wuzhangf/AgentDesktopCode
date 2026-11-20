@@ -78,6 +78,14 @@ function payload(reply: LocalTaskResult): JsonObject {
   return reply.body;
 }
 
+function peerOrigin(value: string): string {
+  let origin: URL;
+  try { origin = new URL(value); } catch { return fail('INVALID_REQUEST', 400); }
+  if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.username || origin.password
+    || origin.search || origin.hash) fail('INVALID_REQUEST', 400);
+  return origin.origin;
+}
+
 export class HandoffMcp {
   private readonly actions: HandoffActionService;
   private readonly active = new Set<string>();
@@ -106,9 +114,10 @@ export class HandoffMcp {
     const source = exact(body.sourceRef, ['kind', 'storeId', 'taskId', 'engineId']);
     if (source.kind !== 'WORKER_LOCAL') fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
     const targetAgent = exact(body.targetAgentRef, ['hostKey', 'kind', 'storeId', 'engineId', 'projectRef', 'policyPresetId']);
-    if (targetAgent.kind !== 'WORKER_LOCAL' || !['pi', 'sage-pi'].includes(String(targetAgent.engineId))) {
-      fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
-    }
+    const nativePi = targetAgent.kind === 'WORKER_LOCAL' && ['pi', 'sage-pi'].includes(String(targetAgent.engineId));
+    const remoteAcs = targetAgent.kind === 'ACS' && targetAgent.hostKey !== 'local'
+      && targetAgent.engineId == null && targetAgent.policyPresetId == null;
+    if (!nativePi && !remoteAcs) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
     const memberIdentity = this.deps.member.delegationIdentity();
     const sourceToken = text(body, 'sourceDeviceToken');
     const device = await this.deps.auth.authorizeLocal(sourceToken, text(source, 'storeId'), text(source, 'taskId'), 'OBSERVE');
@@ -121,13 +130,10 @@ export class HandoffMcp {
         fail('HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
       }
       const connection = exact(body.targetConnection, ['origin', 'certSha256', 'deviceToken']);
-      let origin: URL;
-      try { origin = new URL(text(connection, 'origin')); } catch { return fail('INVALID_REQUEST', 400); }
-      if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.username || origin.password
-        || origin.search || origin.hash) fail('INVALID_REQUEST', 400);
+      const origin = peerOrigin(text(connection, 'origin'));
       const certSha256 = text(connection, 'certSha256').replace(/:/g, '').toLowerCase();
       if (!/^[a-f0-9]{64}$/.test(certSha256)) fail('INVALID_REQUEST', 400);
-      target = { origin: origin.origin, certSha256, deviceEnvelope: seal(text(connection, 'deviceToken'), this.deps.storeKey(), PURPOSE) };
+      target = { origin, certSha256, deviceEnvelope: seal(text(connection, 'deviceToken'), this.deps.storeKey(), PURPOSE) };
     } else if (body.targetConnection !== undefined) fail('INVALID_REQUEST', 400);
     const successor = body.sourceDelegation === undefined ? undefined
       : this.bindDelegation(body.sourceDelegation, source, targetAgent, memberIdentity);
@@ -175,6 +181,43 @@ export class HandoffMcp {
     this.deps.store.put(ACTOR, ref, { ...actor, revoked: true });
   }
 
+  async renew(ref: string, input: unknown): Promise<JsonObject> {
+    const args = exact(input, ['sourceDeviceToken', 'targetDeviceToken', 'targetOrigin']);
+    if (args.sourceDeviceToken === undefined && args.targetDeviceToken === undefined
+      || args.targetOrigin !== undefined && args.targetDeviceToken === undefined) fail('INVALID_REQUEST', 400);
+    const actor = this.deps.store.get<Actor>(ACTOR, ref);
+    if (!actor?.actionId) fail('NOT_FOUND', 404);
+    if (this.active.has(ref)) fail('BUSY', 409);
+    this.active.add(ref);
+    try {
+      this.check(actor, true);
+      const replacement = { ...actor };
+      if (args.sourceDeviceToken !== undefined) {
+        const token = text(args, 'sourceDeviceToken');
+        this.verifySourceDevice(actor, await this.deps.auth.authenticate(token));
+        replacement.sourceEnvelope = seal(token, this.deps.storeKey(), PURPOSE);
+      }
+      if (args.targetDeviceToken !== undefined) {
+        if (!actor.target) fail('HANDOFF_TARGET_PREFLIGHT_REQUIRED', 409);
+        const audience = await this.actions.peerAudience(actor.actionId);
+        const token = text(args, 'targetDeviceToken');
+        const peer = { ...actor.target, ...(args.targetOrigin === undefined ? {} : { origin: peerOrigin(text(args, 'targetOrigin')) }) };
+        const host = payload(await pinnedCall(peer, token, 'GET', ['host'], undefined, undefined, () => this.check(actor, true)));
+        if (host.personalHostId !== audience.hostRef || host.deviceGrantId !== audience.deviceId
+          || !Array.isArray(host.actions) || !host.actions.includes('HANDOFF')) fail('GRANT_REVISION_CONFLICT', 409);
+        replacement.target = { ...peer, deviceEnvelope: seal(token, this.deps.storeKey(), PURPOSE) };
+      }
+      this.check(actor, true);
+      if (args.sourceDeviceToken !== undefined) {
+        this.verifySourceDevice(actor, await this.deps.auth.authenticate(text(args, 'sourceDeviceToken')));
+        this.check(actor, true);
+      }
+      this.deps.store.put(ACTOR, ref, replacement);
+      return { credentialRef: ref, requestKey: actor.sourceRequestKey, sourceRenewed: args.sourceDeviceToken !== undefined,
+        targetRenewed: args.targetDeviceToken !== undefined };
+    } finally { this.active.delete(ref); }
+  }
+
   private check(actor: Actor, write: boolean): void {
     const current = this.deps.store.get<Actor>(ACTOR, actor.ref);
     if (!current || current.revoked) fail('SCOPE_DENIED', 403);
@@ -187,11 +230,14 @@ export class HandoffMcp {
     if (!actor) fail('NOT_FOUND', 404);
     this.check(actor, write);
     const token = unseal(actor.sourceEnvelope, this.deps.storeKey(), PURPOSE);
-    const device = await this.deps.auth.authenticate(token);
-    if (device.id !== actor.sourceDeviceId || device.revision !== actor.sourceDeviceRevision
-      || !device.actions?.includes('HANDOFF')) fail('GRANT_REVISION_CONFLICT', 409);
+    this.verifySourceDevice(actor, await this.deps.auth.authenticate(token));
     this.check(actor, write);
     return { actor, token };
+  }
+
+  private verifySourceDevice(actor: Actor, device: Awaited<ReturnType<GatewayAuth['authenticate']>>): void {
+    if (device.id !== actor.sourceDeviceId || device.revision !== actor.sourceDeviceRevision
+      || !device.actions?.includes('HANDOFF')) fail('GRANT_REVISION_CONFLICT', 409);
   }
 
   async rpc(token: string | undefined, input: unknown): Promise<JsonObject> {
@@ -273,12 +319,14 @@ export class HandoffMcp {
 
 function pinnedCall(peer: TargetPeer, token: string, method: 'GET' | 'POST', tail: string[], body: unknown,
   key: string | undefined, guard: () => void): Promise<LocalTaskResult> {
-  if (!tail.every(part => identifier.test(part)) || tail[0] !== 'imports') fail('INVALID_REQUEST', 400);
+  const hostProbe = method === 'GET' && tail.length === 1 && tail[0] === 'host';
+  if (!hostProbe && (!tail.every(part => identifier.test(part)) || tail[0] !== 'imports')) fail('INVALID_REQUEST', 400);
   return new Promise((resolve, reject) => {
     const origin = new URL(peer.origin);
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     const req = request({ protocol: 'https:', hostname: origin.hostname.replace(/^\[|\]$/g, ''),
-      port: origin.port || 443, path: `${PATH}/${tail.join('/')}`, method, agent: false, rejectUnauthorized: false,
+      port: origin.port || 443, path: hostProbe ? '/personal/v1/host' : `${PATH}/${tail.join('/')}`,
+      method, agent: false, rejectUnauthorized: false,
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json',
         ...(key === undefined ? {} : { 'Idempotency-Key': key }),
         ...(payload === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': payload.length }) },

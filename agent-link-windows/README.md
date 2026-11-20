@@ -38,6 +38,12 @@ Build the file worker from the `AgentMobileCode` Control Android package with `d
 
 The output directory contains the MSI, the full payload ZIP, and a manifest of the packaged files. The ZIP and MSI use the same payload tree. The build prints both SHA-256 values. The supplied build script produces an unsigned internal preview. The MSI installs the application and its runtimes in the current user's Programs folder. For a preview upgrade or uninstall, exit through the tray first. Removing the package preserves the user's local state.
 
+### Member coordination MCP
+
+Run `runtime/gateway-node.exe components/gateway/xagt-mcp.mjs` from the installed Agent Link directory. Configure `XAGT_GATEWAY_URL` with the local owner listener's loopback origin and `XAGT_READER_FILE` with an owner-issued scoped reader credential. Enable an individual write lane only with its separate owner-approved credential. The MCP process does not need the local owner API token.
+
+For an approved cross-host handoff, use `XAGT_HANDOFF_FILE` and `XAGT_HANDOFF_URL`. If a paired Device access token expires during work, refresh it using that Device's normal session flow and submit the replacement through the local owner API `PUT /api/v2/personal-access/mcp-handoff-actions/{credentialRef}/credentials`. Supply `sourceDeviceToken`, `targetDeviceToken`, or both. A changed target address can be supplied as `targetOrigin` with a replacement target token. Agent Link checks the original signed target, Device identity, certificate pin and source grant revision before keeping the same handoff action and request key.
+
 The brand vector master is `src/AgentLink.App/Assets/Brand.xaml`. After editing it, run `powershell.exe -NoProfile -STA -File agent-link-windows/packaging/export-icon.ps1` from the repository root and commit the exported ICO. Its nine native sizes (16–256 px) are shared by the tray, executable, Start shortcut and installed-app entry. Normal builds consume the checked-in ICO and require no image tools.
 
 Release builds read `AGENT_LINK_PRODUCT_VERSION` and `AGENT_LINK_BUILD_NUMBER`. The product version has three numeric fields and is shared by the MSI and the managed projects. When unset, the product version comes from `Directory.Build.props` and the build number is 1. The build number is recorded in the release manifest. Change the three-part product version for each MSI upgrade. PE file versions use `1.<product version>` because the first preview shipped `1.0.0.0`. The packaging script verifies the tray and Host file versions before assembling the MSI.

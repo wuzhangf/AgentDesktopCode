@@ -287,6 +287,11 @@ export async function handleOwnerRoute(
       if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 201, body: await ctx.xagtHandoff.issue(jsonBody(req)) };
     }
+    if (method === 'PUT' && parts.length === 7 && parts[4] === 'mcp-handoff-actions' && parts[6] === 'credentials') {
+      if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      return { status: 200, body: await ctx.xagtHandoff.renew(parts[5], jsonBody(req)) };
+    }
     if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-handoff-actions') {
       if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
       id(parts[5]);

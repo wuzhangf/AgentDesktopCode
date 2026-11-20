@@ -4341,7 +4341,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (imp.retirementProof != null || ['CANCELLED', 'CANCELLING', 'RETIRING'].includes(imp.phase)) {
       fail('HANDOFF_IMPORT_CANCELLED', 409);
     }
-    if (!['STARTING', 'STARTED'].includes(imp.phase) || imp.targetKind !== 'WORKER_LOCAL' ||
+    if (!['STARTING', 'STARTED'].includes(imp.phase) || !['WORKER_LOCAL', 'ACS'].includes(imp.targetKind) ||
         imp.targetStoreId !== targetStoreId || imp.targetTaskRef !== targetTaskId ||
         (targetDeviceId != null && imp.deviceId !== targetDeviceId)) {
       fail('HANDOFF_TARGET_MISMATCH', 403);
@@ -4404,11 +4404,12 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     this.ensureSigningKey();
     const pair = this.signingKeyPair!;
     const targetProof = manifest.targetPreflight;
-    const expectedTarget: JsonObject = {
-      hostKey: this.namespace, kind: 'WORKER_LOCAL', storeId: imp.targetStoreId,
-      engineId: imp.targetEngineId, projectRef: imp.targetProjectRef,
-      ...(imp.targetPolicyPresetId == null ? {} : { policyPresetId: imp.targetPolicyPresetId }),
-    };
+    const expectedTarget: JsonObject = { hostKey: this.namespace, kind: imp.targetKind, projectRef: imp.targetProjectRef };
+    if (imp.targetKind === 'WORKER_LOCAL') {
+      expectedTarget.storeId = imp.targetStoreId;
+      expectedTarget.engineId = imp.targetEngineId;
+      if (imp.targetPolicyPresetId != null) expectedTarget.policyPresetId = imp.targetPolicyPresetId;
+    } else if (target.storeId !== undefined) expectedTarget.storeId = imp.targetStoreId;
     const signedRevision = asLong(at(targetProof, 'grantRevision'), -1);
     const admittedRevision = imp.admittedGrantRevision ?? imp.grantRevision;
     const appendedLegacyScope = imp.admittedGrantRevision == null && imp.targetLaunchTaskRef === targetTaskId &&
@@ -4433,13 +4434,6 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         imp.createdAt < issued - 10_000 || imp.createdAt > expires + 10_000) {
       fail('HANDOFF_TARGET_PREFLIGHT_EXPIRED', 409);
     }
-    if (asText(target.kind) !== 'WORKER_LOCAL' || asText(target.hostKey) !== this.namespace ||
-        asText(target.storeId) !== imp.targetStoreId || asText(target.engineId) !== imp.targetEngineId ||
-        asText(target.projectRef) !== imp.targetProjectRef ||
-        (asText(target.policyPresetId) ?? undefined) !== (imp.targetPolicyPresetId ?? undefined)) {
-      fail('HANDOFF_TARGET_MISMATCH', 403);
-    }
-
     let items: Item[];
     try { items = this.manifestItems(manifest); } catch (e) {
       if (e instanceof GatewayError) throw e;

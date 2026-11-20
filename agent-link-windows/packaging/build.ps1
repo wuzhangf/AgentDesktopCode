@@ -98,6 +98,7 @@ if ((Get-FileHash -LiteralPath $runtimeNode -Algorithm SHA256).Hash -ne $nodeSha
 Copy-Item -LiteralPath $license -Destination (Join-Path $runtime 'NODE-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $product 'runtime/await-parent.mjs') -Destination $runtime
 Copy-Item -LiteralPath (Join-Path $gateway 'dist/device-gateway.mjs') -Destination $gatewayOutput
+Copy-Item -LiteralPath (Join-Path $gateway 'dist/xagt-mcp.mjs') -Destination $gatewayOutput
 
 # Managed cli-bridge: the Host spawns gateway-node.exe components/cli-bridge/
 # cli-bridge.mjs per registered workspace. Source is the Windows-specific
