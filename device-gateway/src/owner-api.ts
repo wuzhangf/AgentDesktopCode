@@ -225,7 +225,13 @@ export async function handleOwnerRoute(
     const { path, method } = req;
     const parts = javaSplit(path);
     if (ctx.updatePreparation && path === `${ROOT}/update-preparation` && method === 'GET') {
-      if (startup) return { status: 200, body: { state: 'starting', ...startup, bootId: ctx.config.bootId } };
+      if (startup) {
+        const identity = startup.ready ? await ctx.auth.ownerStatus() : undefined;
+        return { status: 200, body: { state: 'starting', ...startup, bootId: ctx.config.bootId,
+          ...(identity ? { personalHostId: identity.personalHostId, storeId: identity.storeId,
+            deviceCount: (await ctx.auth.devices()).length } : {}),
+        } };
+      }
       return { status: 200, body: ctx.updatePreparation.status() };
     }
     if (ctx.updatePreparation && method === 'POST' &&

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { canonicalize } from '@tufjs/canonical-json';
 import { stageVerifiedRelease } from '../src/verify-release.mjs';
-import { startSparkleSession } from '../src/sparkle-session.mjs';
+import { confirmSparkleCandidate, startSparkleSession } from '../src/sparkle-session.mjs';
 
 const recordPath = 'channels/stable.json';
 const artifactPath = 'agent-link/releases/link-42/Agent-Link.zip';
@@ -182,7 +182,7 @@ test('Sparkle receives only the archive and EdDSA signature from the verified TU
     sparkleEdPublicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
   const artifact = { path: artifactPath, length: archive.length, sha256: digest(archive) };
   const edSignature = sign(null, archive, privateKey).toString('base64');
-  const release = { platform: 'macos', minOS: 'macos-15.0',
+  const release = { platform: 'macos', minOS: 'macos-15.0', withdrawnBuilds: [],
     artifact: { ...artifact, sparkleEdSignature: edSignature } };
   repo.publish({ release });
   const staged = await startSparkleSession(options);
@@ -190,6 +190,9 @@ test('Sparkle receives only the archive and EdDSA signature from the verified TU
     const { candidate } = staged;
     assert.equal(candidate.buildNumber, 42);
     assert.equal(candidate.sha256, digest(archive));
+    const approval = await confirmSparkleCandidate(options);
+    assert.equal(approval.sha256, candidate.sha256);
+    assert.equal(approval.sparkleEdSignature, candidate.sparkleEdSignature);
     const feed = await (await fetch(candidate.feedURL)).text();
     assert.ok(feed.includes('sparkle:edSignature="' + edSignature + '"'));
     assert.ok(feed.includes('url="' + candidate.fileURL + '"'));
@@ -201,7 +204,9 @@ test('Sparkle receives only the archive and EdDSA signature from the verified TU
   } finally { await staged.close(); }
   assert.deepEqual(await readdir(repo.stagingParent), []);
 
-  repo.publish({ version: 2, release: { ...release, artifact: {
+  repo.publish({ version: 2, release: { ...release, withdrawnBuilds: [repo.installed.buildNumber] } });
+  await assert.rejects(confirmSparkleCandidate(options), /trusted version for recovery/);
+  repo.publish({ version: 3, release: { ...release, artifact: {
     ...artifact, sparkleEdSignature: sign(null, Buffer.from('different archive'), privateKey).toString('base64'),
   } } });
   await assert.rejects(startSparkleSession(options), /signature does not match/);

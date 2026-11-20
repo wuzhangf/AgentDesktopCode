@@ -1,8 +1,12 @@
 import { readFile } from 'node:fs/promises';
-import { startSparkleSession } from './sparkle-session.mjs';
+import { confirmSparkleCandidate, startSparkleSession } from './sparkle-session.mjs';
 
 async function main() {
   const options = JSON.parse(await readFile(process.argv[2], 'utf8'));
+  if (process.argv[3] === '--confirm') {
+    process.stdout.write(JSON.stringify(await confirmSparkleCandidate(options)) + '\n');
+    return;
+  }
   const session = await startSparkleSession(options);
   let closing = false;
   async function stop() {

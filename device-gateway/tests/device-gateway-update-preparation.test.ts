@@ -111,7 +111,9 @@ it('reserves idle workers and gates owner, phone, relay and hook intake', async 
       status: 200, body: { state: 'starting', operationId: operation.operationId, ready: false },
     });
     gateway.ctx.startupUpdate.ready = true;
-    expect((await control(root)).body.ready).toBe(true);
+    expect((await control(root)).body).toMatchObject({
+      ready: true, storeId: gateway.ctx.config.storeId, personalHostId: expect.any(String), deviceCount: 1,
+    });
     expect((await control(root + '/release', operation)).status).toBe(503);
     expect((await control('/api/v2/personal-access/link-state')).status).toBe(503);
     expect((await local(hooks, '/hooks/v1/enabled', 'fixture-hooks')).status).toBe(503);
