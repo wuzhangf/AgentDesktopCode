@@ -21,5 +21,12 @@ The result contains the verified record, the staged archive path and its
 staging directory. Platform signatures, OS compatibility, rollout eligibility
 and the installation safety point are coordinator responsibilities.
 
+The Mac adapter in `src/sparkle-cli.mjs` takes the path to a JSON options
+file. In addition to the shared inputs, it receives the packaged
+`sparkleEdPublicKey`. The signed release record includes `minOS` and the
+archive's `artifact.sparkleEdSignature`. The process returns its candidate as
+one JSON line and serves that archive and a generated appcast on loopback.
+Closing its stdin shuts down the feed and removes the staged data.
+
 Run `npm ci` and `npm test` for a loopback repository with ephemeral signing
 keys and synthetic archives.

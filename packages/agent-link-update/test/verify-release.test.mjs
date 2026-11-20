@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { canonicalize } from '@tufjs/canonical-json';
 import { stageVerifiedRelease } from '../src/verify-release.mjs';
+import { startSparkleSession } from '../src/sparkle-session.mjs';
 
 const recordPath = 'channels/stable.json';
 const artifactPath = 'agent-link/releases/link-42/Agent-Link.zip';
@@ -79,8 +80,12 @@ async function repository(t) {
     compatibility: { bootstrapMinVersion: 1, stateReadVersions: [1], stateWriteVersion: 1 },
     artifact: { path: artifactPath, length: archive.length, sha256: digest(archive) },
   };
+  const options = (current = installed) => ({
+    metadataDir, metadataBaseUrl: origin + '/metadata/', targetBaseUrl: origin + '/targets/',
+    releaseRecordPath: recordPath, installed: current, stagingParent,
+  });
   return {
-    files, installed, requests, stagingParent,
+    files, installed, requests, stagingParent, options,
     publish({ version = 1, release = {}, expired = false, rotate = false } = {}) {
       const key = rotate ? rotated : initial;
       if (rotate) files.set('/metadata/2.root.json', root(2, rotated, [initial, rotated]));
@@ -102,10 +107,7 @@ async function repository(t) {
       files.set('/targets/' + artifactPath, archive);
     },
     stage(current = installed) {
-      return stageVerifiedRelease({
-        metadataDir, metadataBaseUrl: origin + '/metadata/', targetBaseUrl: origin + '/targets/',
-        releaseRecordPath: recordPath, installed: current, stagingParent,
-      });
+      return stageVerifiedRelease(options(current));
     },
   };
 }
@@ -157,5 +159,38 @@ test('removes staging data when the archive differs from its verified metadata',
   repo.publish();
   repo.files.set('/targets/' + artifactPath, Buffer.alloc(archive.length, 8));
   await assert.rejects(repo.stage());
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+});
+
+test('Sparkle receives only the archive and EdDSA signature from the verified TUF record', async t => {
+  const repo = await repository(t);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const options = { ...repo.options({ ...repo.installed, platform: 'macos' }),
+    sparkleEdPublicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
+  const artifact = { path: artifactPath, length: archive.length, sha256: digest(archive) };
+  const edSignature = sign(null, archive, privateKey).toString('base64');
+  const release = { platform: 'macos', minOS: 'macos-15.0',
+    artifact: { ...artifact, sparkleEdSignature: edSignature } };
+  repo.publish({ release });
+  const staged = await startSparkleSession(options);
+  try {
+    const { candidate } = staged;
+    assert.equal(candidate.buildNumber, 42);
+    assert.equal(candidate.sha256, digest(archive));
+    const feed = await (await fetch(candidate.feedURL)).text();
+    assert.ok(feed.includes('sparkle:edSignature="' + edSignature + '"'));
+    assert.ok(feed.includes('url="' + candidate.fileURL + '"'));
+    assert.ok(feed.includes('<sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>'));
+    const file = await fetch(candidate.fileURL);
+    assert.equal(file.headers.get('content-length'), String(archive.length));
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), archive);
+    assert.equal((await fetch(new URL('/another.zip', candidate.feedURL))).status, 404);
+  } finally { await staged.close(); }
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+
+  repo.publish({ version: 2, release: { ...release, artifact: {
+    ...artifact, sparkleEdSignature: sign(null, Buffer.from('different archive'), privateKey).toString('base64'),
+  } } });
+  await assert.rejects(startSparkleSession(options), /signature does not match/);
   assert.deepEqual(await readdir(repo.stagingParent), []);
 });
