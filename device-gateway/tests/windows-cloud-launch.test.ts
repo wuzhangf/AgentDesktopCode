@@ -9,6 +9,7 @@ import { GatewayStore } from '../src/store';
 import { LocalTaskAccess, type LocalAuthLike, type LocalTransportLike } from '../src/local-tasks';
 import { LocalTransportError } from '../src/local-transport';
 import { WindowsCloudLaunch } from '../src/windows-cloud-launch';
+import { hash } from '../src/protocol';
 import { UpdatePreparation } from '../src/update-preparation';
 
 it('uses the Windows grant file through the local owner route and fences a stale member view', async () => {
@@ -543,6 +544,77 @@ it('keeps an ambiguous lookup pending when the authorization belongs to another 
     expect(posted).toEqual(['/task-claims/original/authorize', '/task-claims/original/authorize']);
     expect(raw.mock.calls.every(([, method, tail]) => method !== 'POST' || tail === '/task-preflights')).toBe(true);
     expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'submitting' }]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('recovers an accepted native receipt after its claim owner changes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'link-accepted-recovery-'));
+  const origin = 'https://hosted.test';
+  const session = join(dir, 'member.env');
+  writeFileSync(session, [
+    `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+    'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+    'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+  ].join('\n'));
+  const transport = {} as LocalTransportLike;
+  let store = new GatewayStore(dir);
+  const attempt = 'first-authorization';
+  const stored = { id: 'entry', commandId: 'command', phase: 'receipt', authorizationAttemptId: attempt,
+    workId: 'work', nativeKey: 'original', digest: 'digest', generation: 1, taskId: 'native-existing',
+    scope: hash(JSON.stringify([origin, 'member', 'workspace', 'instance'])),
+    target: { backendId: 'store', sourceKind: 'NATIVE' }, outcome: 'accepted', grantRevision: 1 };
+  store.put('windows-cloud-launch', stored.id, stored);
+  let claimState = 'acknowledged';
+  let result: unknown = { outcome: 'accepted', nativeTaskId: 'different-native-task' };
+  let cloudGeneration = 2;
+  const writes: string[] = [];
+  const hosted: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace('/api/daily/v1/member/link/v2', '');
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+    if (init?.method === 'POST') writes.push(path);
+    switch (`${init?.method} ${path}`) {
+      case 'GET /tasks/work/agent': return Response.json({ nativeRequestKey: 'original', payloadDigest: 'digest',
+        dispatch: { commandId: 'command', deliveryGeneration: cloudGeneration } });
+      case 'GET /task-claims/command': return Response.json({ state: claimState, workId: 'work',
+        kind: 'link.task.launch.v2', deliveryGeneration: cloudGeneration, result,
+        payload: { nativeRequestKey: 'original', payloadDigest: 'digest' } });
+      case 'POST /task-claims/command/recover':
+        expect(body).toEqual({ authorizationAttemptId: attempt });
+        return Response.json({ deliveryGeneration: ++cloudGeneration });
+      case 'POST /task-claims/command/reconcile':
+        expect(url.searchParams.get('authorizationAttemptId')).toBe(attempt);
+        expect(body).toMatchObject({ outcome: 'accepted', nativeTaskId: 'native-existing' });
+        if (body.deliveryGeneration === 2) {
+          return Response.json({ code: 'STALE_COMMAND_CLAIM' }, { status: 409 });
+        }
+        expect(body.deliveryGeneration).toBe(3);
+        claimState = 'acknowledged';
+        result = { outcome: 'accepted', nativeTaskId: 'native-existing' };
+        throw Error('reconciliation committed but response was lost');
+      default: throw Error(`Unexpected Hosted call ${path}`);
+    }
+  };
+  const boot = () => new WindowsCloudLaunch(store, undefined, transport, 'host', origin, session, '', hosted, true);
+  try {
+    await boot().tick();
+    expect(writes).toEqual([]);
+    expect(store.get('windows-cloud-launch', stored.id)).toMatchObject({ phase: 'receipt' });
+    claimState = 'claimed';
+    result = { dispatch: 'authorized', authorizationAttemptId: attempt };
+    await boot().tick();
+    expect(writes).toEqual(['/task-claims/command/reconcile', '/task-claims/command/recover',
+      '/task-claims/command/reconcile']);
+    store.close();
+    store = new GatewayStore(dir);
+    await boot().tick();
+    expect(writes).toHaveLength(3);
+    expect(store.get('windows-cloud-launch', stored.id)).toMatchObject({
+      phase: 'tracking', taskId: 'native-existing', generation: 3,
+    });
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

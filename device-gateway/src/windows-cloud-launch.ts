@@ -493,37 +493,47 @@ export class WindowsCloudLaunch {
   }
 
   private async recoverUnstarted(session: Session, row: Delivery): Promise<void> {
-    const { commandId, authorizationAttemptId: attempt } = row;
-    if (row.phase !== 'claimed' || !identifier(commandId) || !identifier(attempt)) return;
+    if (row.phase !== 'claimed' || !identifier(row.commandId)) return;
+    const generation = await this.reconcileLaunchReceipt(session, row, row.commandId, {
+      outcome: 'not_accepted', detail: 'authorization_response_lost_before_submit',
+    });
+    if (generation === undefined) return;
+    row.outcome = 'not_accepted';
+    row.generation = generation;
+    row.phase = 'closed';
+    this.save(row);
+  }
+
+  private async reconcileLaunchReceipt(session: Session, row: Delivery, commandId: string, fact: Json): Promise<number | undefined> {
+    const attempt = row.authorizationAttemptId;
+    if (!identifier(attempt)) return;
     const path = `/task-claims/${commandId}`;
     const claim = await this.hosted(session, 'GET', path);
     const { payload, result } = claim;
     if (claim.kind !== kind || claim.workId !== row.workId ||
         !isRecord(payload) || payload.nativeRequestKey !== row.nativeKey || payload.payloadDigest !== row.digest ||
-        !isRecord(result) || result.dispatch !== 'authorized' || result.authorizationAttemptId !== attempt ||
+        !isRecord(result) ||
         typeof claim.deliveryGeneration !== 'number' || !Number.isSafeInteger(claim.deliveryGeneration)) return;
 
     let generation = claim.deliveryGeneration;
+    const sameAttempt = result.dispatch === 'authorized' && result.authorizationAttemptId === attempt;
     if (claim.state === 'acknowledged') {
-      if (result.outcome !== 'not_accepted') return;
-    } else {
-      const reconcile = (value: number) => this.hosted(session, 'POST',
-        `${path}/reconcile?authorizationAttemptId=${attempt}`, {
-          deliveryGeneration: value, outcome: 'not_accepted', detail: 'authorization_response_lost_before_submit',
-        });
-      try { await reconcile(generation); }
-      catch (error) {
-        if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
-        const renewed = await this.hosted(session, 'POST', `${path}/recover`, { authorizationAttemptId: attempt });
-        if (typeof renewed.deliveryGeneration !== 'number' || !Number.isSafeInteger(renewed.deliveryGeneration)) return;
-        generation = renewed.deliveryGeneration;
-        await reconcile(generation);
-      }
+      if (row.phase === 'claimed' && !sameAttempt) return;
+      const matches = ['outcome', 'nativeTaskId', 'sessionId', 'activeRunId'].every(key => result[key] === fact[key]);
+      return matches ? generation : undefined;
     }
-    row.outcome = 'not_accepted';
-    row.generation = generation;
-    row.phase = 'closed';
-    this.save(row);
+    if (!sameAttempt) return;
+    const reconcile = (value: number) => this.hosted(session, 'POST',
+      `${path}/reconcile?authorizationAttemptId=${attempt}`, { ...fact, deliveryGeneration: value });
+    try { await reconcile(generation); }
+    catch (error) {
+      if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
+      const renewed = await this.hosted(session, 'POST', `${path}/recover`, { authorizationAttemptId: attempt });
+      if (typeof renewed.deliveryGeneration !== 'number' || !Number.isSafeInteger(renewed.deliveryGeneration)) return;
+      generation = renewed.deliveryGeneration;
+      await reconcile(generation);
+    }
+    return generation;
   }
 
   private attachment(payload: Json, target: Json): Json | null | undefined {
@@ -659,16 +669,27 @@ export class WindowsCloudLaunch {
       const dispatch = view.dispatch;
       if (!isRecord(dispatch) || view.nativeRequestKey !== row.nativeKey || view.payloadDigest !== row.digest) return;
       const command = dispatch.commandId;
-      if (!identifier(command) || !row.outcome || dispatch.deliveryGeneration !== row.generation) return;
+      if (!identifier(command) || (row.commandId && row.commandId !== command) || !row.outcome) return;
       const body = { deliveryGeneration: row.generation, outcome: row.outcome,
         ...(row.taskId ? { nativeTaskId: row.taskId } : {}),
         ...(row.target.sourceKind === 'ACS' && row.taskId ? { sessionId: row.taskId,
           ...(row.activeRunId ? { activeRunId: row.activeRunId } : {}) } : {}) };
-      try { await this.hosted(session, 'POST', `/task-claims/${command}/receipt`, body); }
-      catch (error) {
-        if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
-        await this.hosted(session, 'POST', `/task-claims/${command}/reconcile`, body);
+      let generation: number | undefined = row.generation;
+      if (dispatch.deliveryGeneration === row.generation) {
+        try { await this.hosted(session, 'POST', `/task-claims/${command}/receipt`, body); }
+        catch (error) {
+          if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
+          if (identifier(row.authorizationAttemptId)) {
+            generation = await this.reconcileLaunchReceipt(session, row, command, body);
+          } else {
+            await this.hosted(session, 'POST', `/task-claims/${command}/reconcile`, body);
+          }
+        }
+      } else {
+        generation = await this.reconcileLaunchReceipt(session, row, command, body);
       }
+      if (generation === undefined) return;
+      row.generation = generation;
       row.phase = row.taskId ? 'tracking' : 'closed';
       this.save(row);
     }
