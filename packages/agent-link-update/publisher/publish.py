@@ -45,6 +45,7 @@ class Repository:
     snapshot: Metadata[Snapshot]
     snapshot_data: bytes
     timestamp: Metadata[Timestamp]
+    timestamp_data: bytes
     files: dict[str, Target]
 
 
@@ -138,7 +139,7 @@ def previous_repository(previous, roots):
         verify(root, metadata)
         return metadata, data
 
-    timestamp, _ = read("timestamp.json", Timestamp)
+    timestamp, timestamp_data = read("timestamp.json", Timestamp)
     snapshot_info = timestamp.signed.snapshot_meta
     snapshot, snapshot_data = read(f"{snapshot_info.version}.snapshot.json", Snapshot, snapshot_info)
     targets_info = snapshot.signed.meta["targets.json"]
@@ -154,7 +155,7 @@ def previous_repository(previous, roots):
         file = previous / "targets" / info.get_prefixed_paths()[0]
         check_file(info, file)
         files[target_path] = Target(info, file)
-    return Repository(root.version, targets, targets_data, snapshot, snapshot_data, timestamp, files)
+    return Repository(root.version, targets, targets_data, snapshot, snapshot_data, timestamp, timestamp_data, files)
 
 
 def record_path(release):
@@ -249,7 +250,7 @@ def public_download(details, release, artifact, manifest, files):
             "releaseNotes": details["releaseNotes"], "installation": details["installation"]}
 
 
-def apply_releases(manifest, previous):
+def apply_releases(manifest, previous, revision):
     records = load_records(previous)
     files = dict(previous.files) if previous else {}
     builds = json.loads(files[BUILD_INDEX].content.read_bytes()) if previous else {}
@@ -370,7 +371,8 @@ def apply_releases(manifest, previous):
             if target.info.length != installer["length"] or target.info.hashes["sha256"] != installer["sha256"]:
                 raise ValueError("Public download differs from its qualified installer")
             active[target.info.path] = target
-    public_data = json.dumps({"schemaVersion": "link-download-catalog/1", "releases": list(public.values())},
+    public_data = json.dumps({"schemaVersion": "link-download-catalog/1", "revision": revision,
+                              "releases": list(public.values())},
                              ensure_ascii=False, sort_keys=True).encode()
     active[PUBLIC_CATALOG] = Target(TargetFile.from_data(PUBLIC_CATALOG, public_data, SHA), public_data)
     return active
@@ -412,8 +414,8 @@ def run(args):
     root = roots[-1][0]
     previous = previous_repository(args.previous, roots) if args.previous else None
     if args.command == "stage":
-        files = apply_releases(args.manifest, previous)
         meta_version = previous.targets.signed.version + 1 if previous else 1
+        files = apply_releases(args.manifest, previous, meta_version)
         targets = sign(root, Metadata(Targets(
             version=meta_version, expires=min(root.expires, now + timedelta(days=30)),
             targets={path: target.info for path, target in files.items()})))

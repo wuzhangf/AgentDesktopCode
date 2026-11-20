@@ -167,3 +167,60 @@ for archives. Use content-based ETags on the final CDN or distinct modification
 times for atomic replacements of mutable files on the reference origin.
 Verify GET, HEAD, Range, size, SHA-256, conditional GET and missing-object 404s
 on the public host before activation. [nginx static file and ETag documentation](https://nginx.org/en/docs/http/ngx_http_core_module.html)
+
+## Promote and recover a publication
+
+Use a release bucket served at the download origin and a separate private
+publication state bucket. Install the publisher and S3 client with
+`pip install -r publisher/requirements-promotion.txt`. Supply the S3 identity
+through the SDK credential chain. Set the S3-compatible endpoint and region
+through `AWS_ENDPOINT_URL` and `AWS_DEFAULT_REGION` when applicable. The
+promotion process needs no TUF signing keys.
+
+Qualify the chosen provider's conditional create and ETag-based writes before
+connecting the CDN. Give the publisher read and conditional write access to
+these two buckets. The credentials must be able to distinguish a missing
+object from a denied read. Serve only release keys through the public origin.
+The catalog needs anonymous CORS for the Portal origin. Keep the expected
+content types, cache headers, ETags and byte ranges available through the
+CDN. [S3 conditional write behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)
+
+```sh
+python publisher/promote.py promote --candidate /path/to/staged-generation \
+  --root-dir /path/to/public-roots --public-origin https://downloads.steercrew.com \
+  --release-bucket agent-link-releases --state-bucket agent-link-publication-private \
+  --operation-id link-release-100 --expected-revision 0
+
+python publisher/promote.py status \
+  --release-bucket agent-link-releases --state-bucket agent-link-publication-private \
+  --operation-id link-release-100
+```
+
+Start an empty release origin at revision 0. Use the revision in a completed
+receipt as the next operation's expected revision. Keep the signed staging
+directory for the operation. The private state object reserves one active
+operation and stores completion receipts. The publisher verifies the locally
+staged signatures, uses create-only writes for immutable objects, and verifies
+their bytes and ranges from the public origin before changing pointers.
+Ordinary releases promote the update timestamp before the download catalog.
+Withdrawals and pauses remove the public download recommendation first.
+
+If an upload or a CDN verification fails, query the status and rerun the
+original command with the same operation ID, revision and staged bytes.
+Already-written objects and pointers are reconciled before proceeding. A new
+operation waits for the active one to finish. An expired unfinished operation
+can continue under the same ID and revision with `--recover-expired` and a
+new signed generation staged from that unfinished generation. Use
+`refresh-timestamp` while its snapshot and targets remain valid. When they
+have expired, stage new metadata from the unfinished generation with the
+same approved release content and current signing roles. Recovery verifies
+that release records, installer bytes and public catalog content agree with
+the active operation before advancing the metadata versions.
+
+Run the integration test against a disposable loopback S3 endpoint after
+`npm ci`. Supply test credentials and a region through the SDK environment.
+
+```sh
+AGENT_LINK_TEST_S3=1 AWS_ENDPOINT_URL=http://127.0.0.1:9000 \
+  python publisher/test_promotion_s3.py -v
+```
