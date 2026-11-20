@@ -107,8 +107,27 @@ macOS Agent Link app uses:
   observe, message and stop tasks. Bridges are boot-scoped: after a service
   restart the supervisor respawns and re-registers them.
 - **Scope**: paired devices get launch scopes for every project × engine the
-  catalog reports; member/relay pairing and commercial entitlements are not
-  part of this package (that is the hosted/member deployment's job).
+  catalog reports. Member services use separate authorization.
+
+## Member cloud task authorization
+
+For a Linux host provisioned with an `agent-link` member-device session,
+set `DEVICE_GATEWAY_CLOUD_OWNER_GRANTS=1`, `DEVICE_GATEWAY_CLOUD_ORIGIN` to
+its HTTPS member origin and `DEVICE_GATEWAY_CLOUD_SESSION` to the absolute
+path of its provisioned `PAC_RELAY_*` session file in the user service
+environment. The session file must belong to the service user and be
+private. Keep its credentials out of the package and the gateway env file.
+Restart the service after configuring these inputs.
+
+The authenticated loopback owner API `GET /api/v2/personal-access/cloud-launch-grant`
+lists local native targets and the current revision. `PUT` accepts
+`expectedRevision`, `launchScopes`, `controls`, and `approvals`.
+Each selected scope contains the target's `backendStoreId` (its `backendId`
+from the list), `projectId` and `engineId`. Use an empty `launchScopes`
+array to revoke the grant. Changes take effect without restarting and
+existing task receipts remain recoverable. A local-only installation
+leaves the cloud variables unset. This setup uses an already enrolled device
+session. Linux does not provide interactive member enrollment.
 
 ## Owner operations
 

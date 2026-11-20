@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
 import type { UpdatePreparation } from './update-preparation.js';
@@ -90,6 +90,7 @@ export class WindowsCloudLaunch {
     private readonly fetcher: typeof fetch = fetch,
     private readonly recoveryOnly = false,
     private readonly updatePreparation?: UpdatePreparation,
+    private readonly ownerManaged = false,
   ) {}
 
   start(): void {
@@ -116,6 +117,10 @@ export class WindowsCloudLaunch {
 
   private session(): Session | undefined {
     try {
+      if (this.ownerManaged) {
+        const file = lstatSync(this.sessionFile);
+        if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0 || file.size > 65536) return;
+      }
       const values = new Map(readFileSync(this.sessionFile, 'utf8').split(/\r?\n/).flatMap(line => {
         const match = /^PAC_RELAY_([A-Z_]+)=(.*)$/.exec(line);
         return match ? [[match[1]!, match[2]!.trim()] as const] : [];
@@ -132,6 +137,7 @@ export class WindowsCloudLaunch {
   }
 
   private grant(session: Session): Grant | undefined {
+    if (this.ownerManaged) return this.store.get<Grant>('cloud-owner-grants', session.scope) ?? undefined;
     try {
       const value: unknown = JSON.parse(readFileSync(this.grantFile, 'utf8').replace(/^\uFEFF/, ''));
       if (!isRecord(value) || value.schemaVersion !== 'windows-cloud-launch-grant/1'
@@ -148,6 +154,44 @@ export class WindowsCloudLaunch {
       return { revision: value.revision, scopes, controls: value.controls === true,
         approvals: value.approvals === true };
     } catch { return; }
+  }
+
+  async ownerGrant(request?: Json): Promise<Json> {
+    if (!this.ownerManaged || this.recoveryOnly) fail('OPERATION_NOT_ALLOWED', 403);
+    const session = this.session();
+    if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+    const catalog = Array.isArray(request?.launchScopes) && request.launchScopes.length === 0 ? [] : await this.targets();
+    if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+    let grant = this.grant(session);
+    if (request !== undefined) {
+      const selection = request.launchScopes;
+      if (!Number.isSafeInteger(request.expectedRevision) || !Array.isArray(selection) || selection.length > 100 ||
+          typeof request.controls !== 'boolean' || typeof request.approvals !== 'boolean') {
+        fail('CLOUD_GRANT_INVALID', 400);
+      }
+      if (request.expectedRevision !== (grant?.revision ?? 0)) fail('CLOUD_GRANT_CHANGED', 409);
+      const scopes: LaunchScope[] = [];
+      for (const entry of selection) {
+        if (!isRecord(entry) || !identifier(entry.backendStoreId) || !identifier(entry.projectId) ||
+            !identifier(entry.engineId)) fail('CLOUD_GRANT_INVALID', 400);
+        const scope = { backendStoreId: entry.backendStoreId, projectId: entry.projectId, engineId: entry.engineId };
+        if (!catalog.some(target => this.matches(scope, target)) ||
+            scopes.some(other => other.backendStoreId === scope.backendStoreId &&
+              other.projectId === scope.projectId && other.engineId === scope.engineId)) {
+          fail('CLOUD_TARGET_UNAVAILABLE', 409);
+        }
+        scopes.push(scope);
+      }
+      const next = { revision: (grant?.revision ?? 0) + 1, scopes,
+        controls: scopes.length > 0 && request.controls, approvals: scopes.length > 0 && request.approvals };
+      if (!grant || JSON.stringify(grant.scopes) !== JSON.stringify(next.scopes) ||
+          grant.controls !== next.controls || grant.approvals !== next.approvals) {
+        this.store.put('cloud-owner-grants', session.scope, next);
+        grant = next;
+      }
+    }
+    return { revision: grant?.revision ?? 0, launchScopes: grant?.scopes ?? [],
+      controls: grant?.controls ?? false, approvals: grant?.approvals ?? false, targets: catalog };
   }
 
   private async hosted(session: Session, method: 'GET' | 'POST' | 'PUT', path: string, body?: Json): Promise<Json> {
@@ -180,7 +224,6 @@ export class WindowsCloudLaunch {
     if (!session) return;
     const grant = this.grant(session);
     const prior = this.store.get<{ checkedAt: number; grant: string }>('windows-cloud-directory', session.scope);
-    if (!this.recoveryOnly && !grant && !prior) return;
     // Existing receipts and observations keep moving when publication or
     // claiming hits a temporary endpoint error.
     for (const row of this.store.list<Delivery>(journal)) {
@@ -191,13 +234,14 @@ export class WindowsCloudLaunch {
       if (action.scope !== session.scope || action.closed) continue;
       try { await this.resumeAction(session, action); } catch { /* keep the original action outbox */ }
     }
-    if (this.recoveryOnly) return;
-    const grantDigest = hash(JSON.stringify(grant ?? null));
-    if (!prior || prior.grant !== grantDigest || Date.now() - prior.checkedAt > 30_000) {
-      await this.publish(session, grant);
-      this.store.put('windows-cloud-directory', session.scope, { checkedAt: Date.now(), grant: grantDigest });
+    if (this.recoveryOnly || (!grant && !prior)) return;
+    const targets = grant?.scopes.length ? await this.targets(grant) : [];
+    const directoryDigest = hash(JSON.stringify([grant ?? null, targets]));
+    if (!prior || prior.grant !== directoryDigest || Date.now() - prior.checkedAt > 30_000) {
+      if (!await this.publish(session, grant, targets)) return;
+      this.store.put('windows-cloud-directory', session.scope, { checkedAt: Date.now(), grant: directoryDigest });
     }
-    if (!grant || grant.scopes.length === 0 || this.abort.signal.aborted) return;
+    if (!grant || targets.length === 0 || this.abort.signal.aborted) return;
     const kinds = grant.controls || grant.approvals ? `${kind},${actionKind}` : kind;
     const batch = await this.hosted(session, 'GET', `/task-claims?limit=4&kinds=${kinds}`);
     for (const command of Array.isArray(batch.commands) ? batch.commands : []) {
@@ -208,15 +252,17 @@ export class WindowsCloudLaunch {
     }
   }
 
-  private async publish(session: Session, grant: Grant | undefined): Promise<void> {
-    const targets = grant?.scopes.length ? await this.targets(grant) : [];
-    if (JSON.stringify(this.grant(session) ?? null) !== JSON.stringify(grant ?? null)) return;
+  private async publish(session: Session, grant: Grant | undefined, targets: Json[]): Promise<boolean> {
+    const unchanged = () => JSON.stringify(this.grant(session) ?? null) === JSON.stringify(grant ?? null);
+    if (!unchanged()) return false;
     const path = `/instances/${session.instanceId}/targets`;
     const previous = await this.hosted(session, 'GET', path);
+    if (!unchanged()) return false;
     await this.hosted(session, 'PUT', path, { expectedRevision: previous.revision, targets });
+    return unchanged();
   }
 
-  private async targets(grant: Grant): Promise<Json[]> {
+  private async targets(grant?: Grant): Promise<Json[]> {
     let catalog: Json;
     try { catalog = await this.localCatalog.ownerCatalog(); }
     catch (error) {
@@ -225,7 +271,7 @@ export class WindowsCloudLaunch {
     }
     const entries = this.localCatalog.linkTargets(catalog).targets;
     return Array.isArray(entries) ? entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
-      && grant.scopes.some(scope => this.matches(scope, target))) : [];
+      && (!grant || grant.scopes.some(scope => this.matches(scope, target)))) : [];
   }
 
   private matches(scope: LaunchScope, target: Json): boolean {
@@ -263,13 +309,19 @@ export class WindowsCloudLaunch {
       && Array.isArray(payload.attachments) && payload.attachments.length === 0
       && isRecord(payload.parameters) && Object.keys(payload.parameters).length === 0;
     const path = `/task-claims/${command.commandId}`;
-    const preflight = supported ? await this.local(session, row, async access => {
-      const live = await this.targets(grant);
-      if (!live.some(entry => this.matches(scope, entry as Json) &&
-          (revision === undefined || revision === (entry as Json).capabilityRevision))) return;
-      return access.remote(row.id, 'POST', `/personal/v1/local-tasks/${scope.backendStoreId}/task-preflights`,
-        { projectId: scope.projectId, engineId: scope.engineId }, null, null);
-    }) : undefined;
+    let preflight;
+    if (supported) {
+      const live = (await this.targets(grant)).find(entry => this.matches(scope, entry));
+      // A bridge may be starting or restarting. Let the un-authorized lease
+      // expire so Hosted can deliver the same request when the target is ready.
+      if (!live) return;
+      if (revision === undefined || revision === live.capabilityRevision) {
+        preflight = await this.local(session, row, access => access.remote(row.id, 'POST',
+          `/personal/v1/local-tasks/${scope.backendStoreId}/task-preflights`,
+          { projectId: scope.projectId, engineId: scope.engineId }, null, null));
+      }
+    }
+    if (this.grant(session)?.revision !== grant.revision) return;
     const authorization = await this.hosted(session, 'POST', `${path}/authorize`, { deliveryGeneration: row.generation });
     if (authorization.requestKey !== row.nativeKey) fail('CLOUD_REQUEST_CONFLICT', 409);
     if (authorization.action === 'lookup') {

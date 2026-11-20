@@ -263,6 +263,13 @@ export async function handleOwnerRoute(
       }
     }
 
+    if (ctx.cloudLaunchGrant && path === `${ROOT}/cloud-launch-grant` && (method === 'GET' || method === 'PUT')) {
+      const finished = method === 'PUT' ? ctx.updatePreparation?.admit() : undefined;
+      try {
+        return { status: 200, body: await ctx.cloudLaunchGrant(method === 'PUT' ? jsonBody(req) : undefined) };
+      } finally { finished?.(); }
+    }
+
     if (method === 'GET' && path === `${ROOT}/capabilities`) {
       const out: JsonObject = { ...(await ctx.auth.ownerStatus()) };
       out.acsSessionCreate = ctx.agentSessions !== undefined;

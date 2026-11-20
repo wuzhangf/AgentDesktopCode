@@ -843,10 +843,16 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
   const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
+  const ownerManagedCloud = process.platform === 'linux' && opts.localCliOnly &&
+    env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1';
+  const cloudRecoveryOnly = env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1';
   const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
-      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1',
-      ctx.updatePreparation) : undefined;
+      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudRecoveryOnly,
+      ctx.updatePreparation, ownerManagedCloud) : undefined;
+  if (ownerManagedCloud && cloudLaunch && !cloudRecoveryOnly) {
+    ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
+  }
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 

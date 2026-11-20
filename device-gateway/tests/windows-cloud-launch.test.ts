@@ -8,6 +8,56 @@ import { LocalTransportError } from '../src/local-transport';
 import { WindowsCloudLaunch } from '../src/windows-cloud-launch';
 import { UpdatePreparation } from '../src/update-preparation';
 
+it.skipIf(typeof process.getuid !== 'function')('waits for a live target and avoids publication after concurrent revocation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'link-owner-cloud-'));
+  const session = join(dir, 'member-session.env');
+  const origin = 'https://hosted.test';
+  writeFileSync(session, [
+    `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+    'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+    'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+  ].join('\n'), { mode: 0o600 });
+  const store = new GatewayStore(dir);
+  const transport = {} as LocalTransportLike;
+  const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
+  const readCatalog = vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
+    projects: [{ projectId: 'project' }], engines: [{ engineId: 'pi' }] });
+  const published: unknown[] = [];
+  let revokeDuringLookup = false;
+  const launch = new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, '',
+    async (input, init) => {
+      if (init?.method === 'GET' && new URL(String(input)).pathname.endsWith('/targets')) {
+        if (revokeDuringLookup) {
+          revokeDuringLookup = false;
+          await launch.ownerGrant({ expectedRevision: 1, launchScopes: [], controls: false, approvals: false });
+        }
+        return Response.json({ revision: 0 });
+      }
+      if (init?.method === 'PUT' && typeof init.body === 'string') {
+        published.push(JSON.parse(init.body).targets);
+        return Response.json({});
+      }
+      throw Error('Unexpected Hosted request');
+    }, false, undefined, true);
+  try {
+    const grant = { expectedRevision: 0, launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }],
+      controls: false, approvals: false };
+    expect(await launch.ownerGrant(grant)).toMatchObject({ revision: 1 });
+    readCatalog.mockResolvedValueOnce({});
+    await launch.tick();
+    expect(published).toEqual([[]]);
+    revokeDuringLookup = true;
+    await launch.tick();
+    expect(published).toEqual([[]]);
+    await launch.tick();
+    expect(published).toEqual([[], []]);
+    expect(await launch.ownerGrant()).toMatchObject({ revision: 2, launchScopes: [] });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it('publishes only owner-approved targets and recovers both replies across restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'windows-cloud-test-'));
   const session = join(dir, 'connector.env');
