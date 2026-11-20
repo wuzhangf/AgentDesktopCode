@@ -111,7 +111,15 @@ macOS Agent Link app uses:
 
 ## Member cloud task authorization
 
-For a Linux host provisioned with an `agent-link` member-device session,
+From an installed package, run `sh install.sh member login`, open the
+printed verification page on a trusted phone or computer and approve the
+device code. The command waits for confirmation and the user service keeps
+the private session and refreshes its access token. `member status` shows
+the local sign-in state. `member logout` signs out locally and requests
+revocation of this device if the member service is reachable. These commands
+leave the local gateway running.
+
+For a Linux host provisioned externally with an `agent-link` member-device session,
 set `DEVICE_GATEWAY_CLOUD_OWNER_GRANTS=1`, `DEVICE_GATEWAY_CLOUD_ORIGIN` to
 its HTTPS member origin and `DEVICE_GATEWAY_CLOUD_SESSION` to the absolute
 path of its provisioned `PAC_RELAY_*` session file in the user service
@@ -125,9 +133,9 @@ lists local native targets and the current revision. `PUT` accepts
 Each selected scope contains the target's `backendStoreId` (its `backendId`
 from the list), `projectId` and `engineId`. Use an empty `launchScopes`
 array to revoke the grant. Changes take effect without restarting and
-existing task receipts remain recoverable. A local-only installation
-leaves the cloud variables unset. This setup uses an already enrolled device
-session. Linux does not provide interactive member enrollment.
+existing task receipts remain recoverable. A local-only installation leaves
+cloud configuration unset and skips member sign-in. Cloud dispatch requires
+a separate owner grant for each project and engine.
 
 ## Owner operations
 

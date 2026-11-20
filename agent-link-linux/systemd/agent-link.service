@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=@ENV_FILE@
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=@START@
+ExecStart=@START@ @CONFIG@
 Restart=on-failure
 RestartSec=3
 RestartPreventExitStatus=78

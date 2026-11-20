@@ -127,9 +127,12 @@ function unitFor(source, launcher, prefix, project, data, config, envFile) {
   const values = {
     '@START@': `${execPath(launcher)} ${execPath(prefix)} ${execPath(project)}`,
     '@DATA@': unitPath(data), '@CONFIG@': unitPath(config), '@PROJECT@': unitPath(project),
+    '@CONFIG_ARG@': execPath(config),
     '@ENV_FILE@': envFile.replaceAll('%', '%%'),
   };
   return readFileSync(join(source, 'systemd/agent-link.service'), 'utf8')
+    // Older updaters know @CONFIG@. Current ones also escape ExecStart's dollar syntax.
+    .replace('ExecStart=@START@ @CONFIG@', 'ExecStart=@START@ @CONFIG_ARG@')
     .replace(/@[A-Z_]+@/g, name => values[name]);
 }
 

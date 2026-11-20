@@ -2,6 +2,9 @@
 set -eu
 prefix=$1
 project=$2
+if [ -n "${3:-}" ]; then
+    export DEVICE_GATEWAY_LINUX_MEMBER_SESSION="$3/member-session.json"
+fi
 slot=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
 withdrawals="$prefix/updates/withdrawn-builds.json"
 if [ -e "$withdrawals" ] || [ -L "$withdrawals" ]; then

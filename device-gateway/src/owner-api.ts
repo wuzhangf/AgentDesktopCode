@@ -263,6 +263,23 @@ export async function handleOwnerRoute(
       }
     }
 
+    if (ctx.linuxMember && (path === `${ROOT}/member-session` ||
+        path === `${ROOT}/member-session/login` || path === `${ROOT}/member-session/poll`)) {
+      const finish = method !== 'GET' ? ctx.updatePreparation?.admit() : undefined;
+      try {
+        if (path === `${ROOT}/member-session`) {
+          if (method === 'GET') return { status: 200, body: ctx.linuxMember.status() };
+          if (method === 'DELETE') return { status: 200, body: await ctx.linuxMember.logout() };
+        }
+        if (method === 'POST' && path.endsWith('/login')) {
+          return { status: 200, body: await ctx.linuxMember.begin(jsonBody(req).origin) };
+        }
+        if (method === 'POST' && path.endsWith('/poll')) {
+          return { status: 200, body: await ctx.linuxMember.poll(jsonBody(req).id) };
+        }
+      } finally { finish?.(); }
+    }
+
     if (ctx.cloudLaunchGrant && path === `${ROOT}/cloud-launch-grant` && (method === 'GET' || method === 'PUT')) {
       const finished = method === 'PUT' ? ctx.updatePreparation?.admit() : undefined;
       try {

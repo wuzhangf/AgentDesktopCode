@@ -63,7 +63,8 @@ import { GatewayStore } from './store.js';
 import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
-import { WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { clearCloudOwnerGrant, WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { LinuxMemberEnrollment } from './linux-member.js';
 import { UpdatePreparation } from './update-preparation.js';
 import { PersonalInbox, type InboxSourceReader } from './inbox.js';
 import { LocalTransport, type ConnectionRowLite } from './local-transport.js';
@@ -843,16 +844,22 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
   const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
-  const ownerManagedCloud = process.platform === 'linux' && opts.localCliOnly &&
-    env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1';
   const cloudRecoveryOnly = env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1';
-  const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
-    ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
+  const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
+  const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly
+    ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;
+  const linuxMember = memberSession ? new LinuxMemberEnrollment(memberSession, host.id,
+    session => clearCloudOwnerGrant(store, session)) : undefined;
+  const ownerManagedCloud = Boolean(linuxMember || (linuxProfile && env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1'));
+  const hasCloudSession = linuxMember || (cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession);
+  const cloudLaunch = hasCloudSession && localTasks
+    ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin ?? '', cloudSession ?? '',
       join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudRecoveryOnly,
-      ctx.updatePreparation, ownerManagedCloud) : undefined;
+      ctx.updatePreparation, ownerManagedCloud, linuxMember) : undefined;
   if (ownerManagedCloud && cloudLaunch && !cloudRecoveryOnly) {
     ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
   }
+  if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 

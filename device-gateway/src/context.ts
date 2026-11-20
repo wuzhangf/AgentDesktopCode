@@ -453,6 +453,7 @@ export interface GatewayContext {
   updatePreparation?: import('./update-preparation.js').UpdatePreparation;
   startupUpdate?: { operationId: string; ready: boolean };
   cloudLaunchGrant?: (request?: JsonObject) => Promise<JsonObject>;
+  linuxMember?: import('./linux-member.js').LinuxMemberEnrollment;
   auth: GatewayAuth;
   /** Undefined → worker registration routes fail OPERATION_NOT_ALLOWED. */
   workers?: GatewayWorkers;

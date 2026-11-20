@@ -2,6 +2,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
 import type { UpdatePreparation } from './update-preparation.js';
+import type { CloudMemberIdentity, LinuxMemberEnrollment } from './linux-member.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -13,11 +14,7 @@ const identifier = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value);
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
 
-interface Session {
-  bearer: string;
-  memberId: string;
-  workspaceId: string;
-  instanceId: string;
+interface Session extends CloudMemberIdentity {
   scope: string;
 }
 
@@ -26,6 +23,17 @@ interface Grant {
   scopes: LaunchScope[];
   controls: boolean;
   approvals: boolean;
+}
+
+const sessionScope = ({ origin, memberId, workspaceId, instanceId }: CloudMemberIdentity): string =>
+  hash(JSON.stringify([origin, memberId, workspaceId, instanceId]));
+
+export function clearCloudOwnerGrant(store: LocalStoreLike, identity: CloudMemberIdentity): void {
+  const scope = sessionScope(identity);
+  const grant = store.get<Grant>('cloud-owner-grants', scope);
+  if (grant?.scopes.length) {
+    store.put('cloud-owner-grants', scope, { revision: grant.revision + 1, scopes: [], controls: false, approvals: false });
+  }
 }
 
 type CloudAction = 'message' | 'stop' | 'approval_response';
@@ -91,6 +99,7 @@ export class WindowsCloudLaunch {
     private readonly recoveryOnly = false,
     private readonly updatePreparation?: UpdatePreparation,
     private readonly ownerManaged = false,
+    private readonly linuxMember?: LinuxMemberEnrollment,
   ) {}
 
   start(): void {
@@ -101,6 +110,7 @@ export class WindowsCloudLaunch {
   stop(): void {
     this.stopped = true;
     this.abort.abort();
+    this.linuxMember?.stop();
     clearTimeout(this.timer);
   }
 
@@ -116,6 +126,10 @@ export class WindowsCloudLaunch {
   }
 
   private session(): Session | undefined {
+    if (this.linuxMember) {
+      const identity = this.linuxMember.current();
+      return identity && { ...identity, scope: sessionScope(identity) };
+    }
     try {
       if (this.ownerManaged) {
         const file = lstatSync(this.sessionFile);
@@ -131,8 +145,8 @@ export class WindowsCloudLaunch {
       const instanceId = values.get('AGENT_INSTANCE_ID');
       if (!bearer || !identifier(memberId) || !identifier(workspaceId) || !identifier(instanceId)
           || values.get('MEMBER_ORIGIN') !== this.origin || values.get('CLIENT_ID') !== 'agent-link') return;
-      return { bearer, memberId, workspaceId, instanceId,
-        scope: hash(JSON.stringify([this.origin, memberId, workspaceId, instanceId])) };
+      const identity = { origin: this.origin, bearer, memberId, workspaceId, instanceId };
+      return { ...identity, scope: sessionScope(identity) };
     } catch { return; }
   }
 
@@ -196,7 +210,7 @@ export class WindowsCloudLaunch {
 
   private async hosted(session: Session, method: 'GET' | 'POST' | 'PUT', path: string, body?: Json): Promise<Json> {
     if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
-    const response = await this.fetcher(`${this.origin}${root}${path}`, {
+    const response = await this.fetcher(`${session.origin}${root}${path}`, {
       method, redirect: 'error',
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(8000)]),
       headers: { Authorization: `Bearer ${session.bearer}`, 'Content-Type': 'application/json' },
@@ -220,6 +234,8 @@ export class WindowsCloudLaunch {
   }
 
   private async deliver(): Promise<void> {
+    try { await this.linuxMember?.refresh(); }
+    catch (error) { if (!this.linuxMember?.current()) throw error; }
     const session = this.session();
     if (!session) return;
     const grant = this.grant(session);
