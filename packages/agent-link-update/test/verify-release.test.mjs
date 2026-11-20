@@ -193,12 +193,35 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
       rollout: { cohortSeed: 'link-42', percentage: 100 }, withdrawnBuilds: [] },
   }));
   for (const { archive: name } of entries) await writeFile(join(directory, name), name);
+  const windowsInstaller = 'agent-link-0.2.1-windows.msi';
+  await writeFile(join(directory, windowsInstaller), windowsInstaller);
+  function approval(update, installer = update) {
+    return {
+      qualifiedInstallerSha256: digest(installer), qualifiedUpdateSha256: digest(update),
+      publishedAt: '2026-11-21T00:00:00Z', releaseNotes: 'Qualified release notes', installation: 'Installer instructions',
+      ...(installer !== update ? { installer } : {}),
+    };
+  }
+  entries[0].download = approval(entries[0].archive);
+  entries[1].download = approval(entries[1].archive, windowsInstaller);
+  entries[2].download = approval(entries[2].archive);
+  async function catalog(output) {
+    const raw = await readFile(join(output, 'catalog.json'));
+    const signedTarget = join(output, 'targets', 'publication', digest(raw) + '.catalog.json');
+    assert.deepEqual(await readFile(signedTarget), raw);
+    const value = JSON.parse(raw);
+    assert.equal(value.schemaVersion, 'link-download-catalog/1');
+    return value.releases;
+  }
   const read = ({ platform, arch, channel }, observeRecord) => stageVerifiedRelease({
     ...options, installed: { ...repo.installed, platform, arch, channel },
     releaseRecordPath: 'channels/' + channel + '/' + platform + '-' + arch + '.json', observeRecord,
   });
   await assert.rejects(publish('wrong-role', { ...initial, targets: initial.timestamp }, { entries }),
     { stderr: /Supply valid keys assigned to the targets role/ });
+  await assert.rejects(publish('unqualified', initial, { entries: [{
+    ...entries[1], download: { ...entries[1].download, qualifiedInstallerSha256: digest('different MSI') },
+  }] }), { stderr: /Public installer bytes differ from the qualified digest/ });
   const first = await publish('first', initial, { entries });
   await serve(first);
   for (const entry of entries) {
@@ -207,6 +230,14 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
     assert.equal(candidate.release.channel, entry.release.channel);
     assert.equal(await readFile(candidate.archivePath, 'utf8'), entry.archive);
   }
+  const available = await catalog(first);
+  assert.equal(available.length, 3);
+  assert(available.every(row => row.channel === 'stable' && row.availability === 'published'));
+  const publicWindows = available.find(row => row.platform === 'windows');
+  assert.equal(publicWindows.artifact.sha256, digest(windowsInstaller));
+  assert(publicWindows.artifact.path.endsWith('.msi'));
+  assert.equal(repo.files.get('/targets/' + publicWindows.artifact.path.replace(windowsInstaller,
+    publicWindows.artifact.sha256 + '.' + windowsInstaller)).toString(), windowsInstaller);
 
   const linux = entries[2].release;
   const withdrawn = await publish('withdraw', initial, { previous: first,
@@ -214,6 +245,7 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   await serve(withdrawn);
   const observed = [];
   await assert.rejects(read(linux, record => observed.push(record.withdrawnBuilds)), /unavailable/);
+  assert.equal((await catalog(withdrawn)).find(row => row.platform === 'linux').availability, 'withdrawn');
   assert.deepEqual(observed, [[42]]);
   assert.equal((await read(entries[3].release)).release.buildNumber, 42);
   await assert.rejects(publish('republish', initial, { previous: withdrawn, entries: [{ release: linux }] }),
@@ -230,7 +262,7 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   await assert.rejects(publish('renew-old-root', initial, { previous: withdrawn }),
     { stderr: /Stage new targets after root rotation/ });
   const repair = { ...linux, releaseId: 'link-43', buildNumber: 43, displayVersion: '0.2.2' };
-  const next = [{ archive: 'different.tar.gz', release: repair }];
+  const next = [{ archive: 'different.tar.gz', release: repair, download: approval('different archive') }];
   await assert.rejects(publish('stale-keys', initial, { previous: withdrawn, entries: next }),
     { stderr: /Supply valid keys assigned to the targets role/ });
   const repaired = await publish('repair', rotated, { previous: withdrawn, entries: next });
@@ -241,17 +273,24 @@ test('publisher stages platform releases, withdraws a build and rotates signing 
   assert.deepEqual(repo.requests.filter(path => /[23]\.root\.json$/.test(path)).slice(-2),
     ['/metadata/2.root.json', '/metadata/3.root.json']);
   assert.equal(await readFile(candidate.archivePath, 'utf8'), 'different archive');
+  assert.deepEqual((await catalog(repaired)).filter(row => row.platform === 'linux')
+    .map(row => [row.buildNumber, row.availability]), [[42, 'withdrawn'], [43, 'published']]);
   await assert.rejects(publish('cross-channel-collision', rotated, { previous: repaired, entries: [{
     archive: entries[2].archive, release: { ...repair, channel: 'preview' },
   }] }), { stderr: /published build number or archive path already identifies another release/ });
   await assert.rejects(publish('changed-seed', rotated, { previous: repaired, entries: [{
     release: { ...repair, rollout: { cohortSeed: 'changed', percentage: 25 } },
   }] }), { stderr: /must keep its rollout seed/ });
+  const paused = await publish('pause', rotated, { previous: repaired, entries: [{
+    release: { ...repair, rollout: { ...repair.rollout, percentage: 0 } },
+  }] });
+  assert.equal((await catalog(paused)).find(row => row.buildNumber === 43).availability, 'paused');
 
   const renewed = await publish('renew', { timestamp: rotated.timestamp }, { previous: repaired });
   for (const name of ['3.targets.json', '3.snapshot.json']) {
     assert.deepEqual(await readFile(join(renewed, 'metadata', name)), await readFile(join(repaired, 'metadata', name)));
   }
+  assert.deepEqual(await catalog(renewed), await catalog(repaired));
   await serve(renewed);
   const timestamp = JSON.parse(repo.files.get('/metadata/timestamp.json')).signed;
   assert.equal(timestamp.version, 4);

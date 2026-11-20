@@ -24,6 +24,7 @@ SAFE_NAME = re.compile(r"[a-zA-Z0-9_-][a-zA-Z0-9._+-]*")
 RECORD_PATH = re.compile(r"channels/(stable|preview)/(macos-arm64|windows-x86_64|linux-x86_64)\.json")
 ROOT_NAME = re.compile(r"([1-9][0-9]*)\.root\.json")
 BUILD_INDEX = "publication/builds.json"
+PUBLIC_CATALOG = "publication/catalog.json"
 RELEASE_FIELDS = {
     "releaseId", "displayVersion", "platform", "arch", "channel", "buildNumber",
     "availability", "minOS", "compatibility", "rollout", "withdrawnBuilds",
@@ -214,17 +215,57 @@ def load_records(previous):
     return records
 
 
+def public_download(details, release, artifact, manifest, files):
+    fields = {"qualifiedInstallerSha256", "qualifiedUpdateSha256", "publishedAt", "releaseNotes", "installation"}
+    windows = release["platform"] == "windows"
+    if (not isinstance(details, dict) or set(details) != (fields | {"installer"} if windows else fields)
+            or release["availability"] != "published"
+            or artifact["sha256"] != details["qualifiedUpdateSha256"]):
+        raise ValueError("Public download must identify the qualified update archive")
+    published_at = details["publishedAt"]
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", published_at):
+        raise ValueError("Public download requires a UTC publication date")
+    datetime.fromisoformat(published_at)
+    for field in ("releaseNotes", "installation"):
+        if not isinstance(details[field], str) or not details[field].strip() or len(details[field]) > 2048:
+            raise ValueError(f"Public download requires {field}")
+    installer = {key: artifact[key] for key in ("path", "length", "sha256")}
+    if windows:
+        source = manifest.parent / details["installer"]
+        if not SAFE_NAME.fullmatch(source.name) or source.suffix.lower() != ".msi":
+            raise ValueError("Public Windows download requires the qualified MSI")
+        parent = artifact["path"].rsplit("/", 1)[0]
+        path = f"{parent}/{source.name}"
+        info = TargetFile.from_file(path, str(source), SHA)
+        if not positive(info.length):
+            raise ValueError("Public Windows installer is empty or oversized")
+        installer = {"path": path, "length": info.length, "sha256": info.hashes["sha256"]}
+        files[path] = Target(info, source)
+    if installer["sha256"] != details["qualifiedInstallerSha256"]:
+        raise ValueError("Public installer bytes differ from the qualified digest")
+    return {**{key: release[key] for key in ("releaseId", "displayVersion", "platform", "arch", "channel",
+                                            "buildNumber", "minOS")},
+            "artifact": installer, "publishedAt": published_at,
+            "releaseNotes": details["releaseNotes"], "installation": details["installation"]}
+
+
 def apply_releases(manifest, previous):
     records = load_records(previous)
     files = dict(previous.files) if previous else {}
     builds = json.loads(files[BUILD_INDEX].content.read_bytes()) if previous else {}
     published_paths = {artifact["path"]: key for key, artifact in builds.items()}
+    public = {}
+    if PUBLIC_CATALOG in files:
+        catalog = json.loads(files[PUBLIC_CATALOG].content.read_bytes())
+        public = {(record_path(row), row["buildNumber"]): row for row in catalog["releases"]}
+    installers = {(row["platform"], row["arch"], row["buildNumber"]): row["artifact"] for row in public.values()}
+    installer_paths = {artifact["path"]: key for key, artifact in installers.items()}
     entries = json.loads(manifest.read_bytes())
     if not isinstance(entries, list) or not entries:
         raise ValueError("Publication input must contain at least one release")
     edited = set()
     for entry in entries:
-        if not isinstance(entry, dict) or set(entry) - {"release", "archive", "sparkleEdSignature"}:
+        if not isinstance(entry, dict) or set(entry) - {"release", "archive", "sparkleEdSignature", "download"}:
             raise ValueError("Unknown publication input field")
         release = entry["release"]
         validate_release(release)
@@ -286,6 +327,19 @@ def apply_releases(manifest, previous):
             raise ValueError(f"A published build number or archive path already identifies another release for {path}")
         builds[build_key] = artifact
         published_paths[artifact["path"]] = build_key
+        if "download" in entry:
+            row = public_download(entry["download"], release, artifact, manifest, files)
+            installer_key = (row["platform"], row["arch"], build)
+            installer = row["artifact"]
+            if (installers.get(installer_key, installer) != installer
+                    or installer_paths.get(installer["path"], installer_key) != installer_key):
+                raise ValueError("A qualified platform build already has a different installer")
+            prior = public.get((path, build))
+            if prior:
+                row["publishedAt"] = prior["publishedAt"]
+            public[path, build] = row
+            installers[installer_key] = installer
+            installer_paths[installer["path"]] = installer_key
 
     active = {}
     for path, release in records.items():
@@ -300,6 +354,25 @@ def apply_releases(manifest, previous):
         active[archive.info.path] = archive
     build_data = json.dumps(builds, sort_keys=True).encode()
     active[BUILD_INDEX] = Target(TargetFile.from_data(BUILD_INDEX, build_data, SHA), build_data)
+    for (path, build), row in public.items():
+        current = records[path]
+        if build in current["withdrawnBuilds"]:
+            row["availability"] = "withdrawn"
+        elif build < current["buildNumber"]:
+            row["availability"] = "superseded"
+        elif current["rollout"]["percentage"] == 0:
+            row["availability"] = "paused"
+        else:
+            row["availability"] = "published"
+        if row["availability"] in ("published", "paused"):
+            installer = row["artifact"]
+            target = files[installer["path"]]
+            if target.info.length != installer["length"] or target.info.hashes["sha256"] != installer["sha256"]:
+                raise ValueError("Public download differs from its qualified installer")
+            active[target.info.path] = target
+    public_data = json.dumps({"schemaVersion": "link-download-catalog/1", "releases": list(public.values())},
+                             ensure_ascii=False, sort_keys=True).encode()
+    active[PUBLIC_CATALOG] = Target(TargetFile.from_data(PUBLIC_CATALOG, public_data, SHA), public_data)
     return active
 
 
@@ -320,6 +393,13 @@ def write_repository(output, roots, metadata_files, timestamp, files):
             else:
                 destination.write_bytes(target.content)
             check_file(target.info, destination)
+        if PUBLIC_CATALOG in files:
+            catalog = files[PUBLIC_CATALOG].content
+            if isinstance(catalog, Path):
+                shutil.copyfile(catalog, output / "catalog.json")
+            else:
+                (output / "catalog.json").write_bytes(catalog)
+            check_file(files[PUBLIC_CATALOG].info, output / "catalog.json")
         (metadata / "timestamp.json").write_bytes(timestamp.to_bytes())
     except BaseException:
         shutil.rmtree(output)

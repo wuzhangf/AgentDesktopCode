@@ -129,3 +129,41 @@ Set `AGENT_LINK_PUBLISH_PYTHON` to the virtual environment's Python executable
 when running `npm test` to include a publisher-to-client test covering both
 channels, all desktop platforms, withdrawals, repair, root rotation and
 timestamp renewal. [The Update Framework repository specification](https://theupdateframework.github.io/specification/latest/)
+
+## Include a release in the public download catalog
+
+Add a `download` object alongside `release` and `archive` after platform
+signing and qualification of the final bytes. The approval records the
+following fields.
+
+- `qualifiedUpdateSha256` is the SHA-256 recorded by the archive qualification.
+- `qualifiedInstallerSha256` is the SHA-256 recorded by the installer
+  qualification. On Mac and Linux this matches the update archive.
+- `installer` is the path to the qualified MSI on Windows only. The desktop
+  updater continues to use the ZIP archive.
+- `publishedAt` is a UTC date and time in `YYYY-MM-DDTHH:mm:ssZ` format.
+- `releaseNotes` and `installation` are public plain text.
+
+The publisher compares both approved digests to the staged bytes, signs the
+catalog as the `publication/catalog.json` target, and writes the same bytes
+at `/catalog.json` for EnterprisePortal. Releases with no download approval
+stay out of the public catalog. Existing rows retain their publication date.
+The catalog retains superseded and withdrawn entries for version history.
+A zero-percent rollout pauses links for its current build. Portal offers
+links only for rows with `availability: published`.
+
+Use the staged catalog and targets together. The installer URL is
+`/targets/<directory>/<sha256>.<filename>` using the directory and filename
+from the catalog's installer path. Publish and verify the immutable objects
+before promoting the short-cache catalog. On withdrawal, publish the updated
+catalog when stopping new download recommendations. Use conditional or atomic
+writes when changing the catalog and timestamp and supply validators that
+change with the bytes.
+
+The reference [nginx origin configuration](publisher/download-origin.nginx.conf)
+serves the staged tree behind an HTTPS front end. It enables anonymous CORS for
+the catalog, short caching for the mutable JSON files, and native file ranges
+for archives. Use content-based ETags on the final CDN or distinct modification
+times for atomic replacements of mutable files on the reference origin.
+Verify GET, HEAD, Range, size, SHA-256, conditional GET and missing-object 404s
+on the public host before activation. [nginx static file and ETag documentation](https://nginx.org/en/docs/http/ngx_http_core_module.html)
