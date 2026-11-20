@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs, parseEnv } from 'node:util';
 import { install, installationPaths } from './install-transaction.mjs';
 import { configureUpdater } from './configure-update.mjs';
+import { collectDiagnostics, writeDiagnostics } from './diagnostics.mjs';
 
 const source = dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +67,20 @@ async function member() {
 
 async function main() {
   if (process.argv[2] === 'member') return member();
+  if (process.argv[2] === 'diagnostics') {
+    const { values } = parseArgs({ args: process.argv.slice(3),
+      options: { prefix: { type: 'string' }, output: { type: 'string' } } });
+    const report = collectDiagnostics(source, values.prefix);
+    if (values.output === undefined) console.log(JSON.stringify(report, null, 2));
+    else {
+      try { writeDiagnostics(values.output, report); }
+      catch (error) {
+        throw new Error(error.code === 'EEXIST' ? 'The output file already exists' : 'Could not write the diagnostic report');
+      }
+      console.log('Saved the Agent Link diagnostic report.');
+    }
+    return;
+  }
   const { values: args } = parseArgs({
     options: Object.fromEntries(['prefix', 'project', 'bind', 'port'].map(name => [name, { type: 'string' }])),
   });
@@ -78,7 +93,7 @@ async function main() {
 }
 
 main().catch(error => {
-  const command = process.argv[2] === 'member' ? 'member' : 'install';
+  const command = ['member', 'diagnostics'].includes(process.argv[2]) ? process.argv[2] : 'install';
   console.error(`agent-link ${command}: ${error.message}`);
   process.exitCode = 1;
 });

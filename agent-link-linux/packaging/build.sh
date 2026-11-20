@@ -75,8 +75,10 @@ if [ -d "$(dirname "$WORKER_BRIDGE")/adapters" ]; then
 fi
 cp "$GATEWAY/hooks/agent_pre_tool.py" "$GATEWAY/hooks/install.py" "$OUT/payload/hooks/"
 cp "$PRODUCT/install.sh" "$PRODUCT/uninstall.sh" "$OUT/payload/"
-cp "$PRODUCT/install.mjs" "$PRODUCT/install-transaction.mjs" "$PRODUCT/configure-update.mjs" \
+cp "$PRODUCT/install-transaction.mjs" "$PRODUCT/configure-update.mjs" \
     "$PRODUCT/launch.sh" "$PRODUCT/slots.mjs" "$OUT/payload/"
+"$GATEWAY/node_modules/.bin/esbuild" "$PRODUCT/install.mjs" \
+    --bundle --platform=node --format=esm --target=node24 --outfile="$OUT/payload/install.mjs"
 cp "$PRODUCT/systemd/agent-link.service" "$PRODUCT/systemd/agent-link-update.service" \
     "$PRODUCT/systemd/agent-link-update.timer" "$OUT/payload/systemd/"
 cp "$PRODUCT/README.md" "$OUT/payload/README.md" 2>/dev/null || true

@@ -13,6 +13,7 @@ die() { echo "agent-link install: $*" >&2; exit 1; }
 "$RUNTIME" -e 'const [a,b]=process.versions.node.split(".").map(Number);
 require("node:sqlite"); if (a<24 || (a===24 && b<18)) process.exit(1)' \
     || die "bundled Node could not start; check the system libraries and execution permissions"
+[ "${1:-}" != diagnostics ] || exec "$RUNTIME" "$HERE/install.mjs" "$@"
 command -v flock >/dev/null 2>&1 || die "flock is required"
 command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 systemctl --user show-environment >/dev/null 2>&1 \

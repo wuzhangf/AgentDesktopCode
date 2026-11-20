@@ -41,6 +41,18 @@ const quote = value => '"' + String(value).replaceAll('\\', '\\\\').replaceAll('
 const unitPath = value => quote(value.replaceAll('%', '%%'));
 const execPath = value => unitPath(value.replaceAll('$', '$$'));
 
+export function unitUsesPrefix(unit, prefix) {
+  return [unitPath(prefix), execPath(prefix)].some(value => unit.includes(value.slice(1, -1) + '/'));
+}
+
+function rememberInstallation(program, operationId, candidate, outcome) {
+  try {
+    writeAtomic(join(program, 'install-result.json'), JSON.stringify({ operationId, candidate, outcome }));
+  } catch {
+    // The diagnostic summary is optional. The transaction journal governs recovery.
+  }
+}
+
 async function probePort(host) {
   const server = createServer();
   await new Promise((done, reject) => server.once('error', reject).listen(0, host, done));
@@ -230,7 +242,7 @@ export async function install({ source, args, release, confirmCandidate, authori
   if (!['inactive', 'failed', 'active'].includes(serviceState)) throw new Error('The user service is changing state');
   const active = serviceState === 'active';
   if ((installedUnit && canonical(installedUnit) !== unit) || (active && !prior) ||
-      (oldUnit && !oldUnit.toString().includes(unitPath(prefix).slice(1, -1) + '/'))) {
+      (oldUnit && !unitUsesPrefix(oldUnit.toString(), prefix))) {
     throw new Error('The user service belongs to a different installation');
   }
   mkdirSync(program, { recursive: true, mode: 0o700 });
@@ -250,6 +262,9 @@ export async function install({ source, args, release, confirmCandidate, authori
       writeAtomic(lastFailure, priorChange.candidate + '\n');
     }
     if (interrupted || priorChange.restored) pruneVersions(program, [priorChange.current, priorChange.previous]);
+    if (interrupted || priorChange.restored) {
+      rememberInstallation(program, priorChange.operationId, priorChange.candidate, 'restored');
+    }
     if (existsSync(priorChange.recovery)) {
       rmSync(recoveryDirectory(priorChange.recovery, data), { recursive: true });
     }
@@ -340,6 +355,7 @@ export async function install({ source, args, release, confirmCandidate, authori
     rmSync(marker);
     committed = true;
     syncPath(program);
+    rememberInstallation(program, operationId, candidate, 'installed');
     pruneVersions(program, [candidate, trustedFallback]);
     if (optionalFile(lastFailure)?.toString().trim() === candidate) rmSync(lastFailure);
     console.log(`agent-link.service: active (build ${candidate.split('/')[1]})`);
@@ -350,6 +366,7 @@ export async function install({ source, args, release, confirmCandidate, authori
       if (change) {
         restore(transaction, change);
         writeAtomic(lastFailure, candidate + '\n');
+        rememberInstallation(program, operationId, candidate, 'restored');
       }
       else {
         rmSync(marker, { force: true });
@@ -358,6 +375,7 @@ export async function install({ source, args, release, confirmCandidate, authori
       }
       recoverable = true;
     } catch (recoveryError) {
+      if (change) rememberInstallation(program, operationId, candidate, 'recovery-required');
       throw new Error(`${error.message}. Recovery failed: ${recoveryError.message}. Preserved state at ${recovery}`, { cause: error });
     }
     throw error;
