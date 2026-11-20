@@ -128,6 +128,137 @@ test('rotates trusted root and stages verified archive for each desktop platform
   }
 });
 
+test('publisher stages platform releases, withdraws a build and rotates signing roles', {
+  skip: !process.env.AGENT_LINK_PUBLISH_PYTHON && 'Set AGENT_LINK_PUBLISH_PYTHON to test the publisher',
+}, async t => {
+  const repo = await repository(t);
+  const options = repo.options();
+  const directory = join(options.stagingParent, 'publisher');
+  const rootsDir = join(directory, 'roots');
+  await mkdir(rootsDir, { recursive: true });
+  const roles = () => ({ root: [keyPair(), keyPair()], targets: [keyPair()],
+    snapshot: [keyPair()], timestamp: [keyPair()] });
+  const provision = async (version, keys, previousRoot = []) => {
+    const root = signed('root', version, {
+      consistent_snapshot: true,
+      keys: Object.fromEntries(Object.values(keys).flat().map(({ id, model }) => [id, model])),
+      roles: Object.fromEntries(Object.entries(keys).map(([role, pairs]) =>
+        [role, { keyids: pairs.map(({ id }) => id), threshold: pairs.length }])),
+    }, [...previousRoot, ...keys.root]);
+    await writeFile(join(rootsDir, version + '.root.json'), root);
+    return root;
+  };
+  const initial = roles();
+  await writeFile(join(options.metadataDir, 'root.json'), await provision(1, initial));
+  const credentials = ({ targets, snapshot, timestamp }) => Object.fromEntries(
+    Object.entries({ targets, snapshot, timestamp }).filter(([, pairs]) => pairs).map(([role, pairs]) =>
+      ['AGENT_LINK_TUF_' + role.toUpperCase() + '_KEYS', JSON.stringify(pairs.map(({ privateKey }) =>
+        privateKey.export({ type: 'pkcs8', format: 'pem' })))]),
+  );
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('AGENT_LINK_TUF_')));
+  const manifest = join(directory, 'manifest.json');
+  async function publish(name, keys, { entries, previous } = {}) {
+    const output = join(directory, name);
+    if (entries) await writeFile(manifest, JSON.stringify(entries));
+    await promisify(execFile)(process.env.AGENT_LINK_PUBLISH_PYTHON, [
+      fileURLToPath(new URL('../publisher/publish.py', import.meta.url)),
+      entries ? 'stage' : 'refresh-timestamp',
+      '--root-dir', rootsDir, '--output', output,
+      ...(previous ? ['--previous', previous] : ['--initial']),
+      ...(entries ? ['--manifest', manifest] : []),
+    ], { env: { ...env, ...credentials(keys) }, timeout: 10_000 });
+    return output;
+  }
+  async function serve(output) {
+    // Overlay immutable objects, then promote the mutable timestamp.
+    const timestamp = 'metadata/timestamp.json';
+    const names = await readdir(output, { recursive: true, withFileTypes: true });
+    for (const file of names.filter(file => file.isFile())) {
+      const path = join(file.parentPath, file.name).slice(output.length + 1);
+      if (path !== timestamp) repo.files.set('/' + path, await readFile(join(output, path)));
+    }
+    repo.files.set('/' + timestamp, await readFile(join(output, timestamp)));
+  }
+  const entries = [
+    ['macos', 'arm64', '15.0', '.zip', 'stable'],
+    ['windows', 'x86_64', 'windows-11', '.zip', 'stable'],
+    ['linux', 'x86_64', 'ubuntu-24.04', '.tar.gz', 'stable'],
+    ['linux', 'x86_64', 'ubuntu-24.04', '.tar.gz', 'preview'],
+  ].map(([platform, arch, minOS, extension, channel]) => ({
+    archive: 'link-42-' + platform + extension,
+    ...(platform === 'macos' ? { sparkleEdSignature: Buffer.alloc(64, 7).toString('base64') } : {}),
+    release: { releaseId: 'link-42', displayVersion: '0.2.1', buildNumber: 42, availability: 'published',
+      platform, arch, channel, minOS, compatibility: { bootstrapMinVersion: 1, stateReadVersions: [1],
+        stateWriteVersion: 1, contractsRevision: 'release-test' },
+      rollout: { cohortSeed: 'link-42', percentage: 100 }, withdrawnBuilds: [] },
+  }));
+  for (const { archive: name } of entries) await writeFile(join(directory, name), name);
+  const read = ({ platform, arch, channel }, observeRecord) => stageVerifiedRelease({
+    ...options, installed: { ...repo.installed, platform, arch, channel },
+    releaseRecordPath: 'channels/' + channel + '/' + platform + '-' + arch + '.json', observeRecord,
+  });
+  await assert.rejects(publish('wrong-role', { ...initial, targets: initial.timestamp }, { entries }),
+    { stderr: /Supply valid keys assigned to the targets role/ });
+  const first = await publish('first', initial, { entries });
+  await serve(first);
+  for (const entry of entries) {
+    const candidate = await read(entry.release);
+    assert.equal(candidate.release.buildNumber, 42);
+    assert.equal(candidate.release.channel, entry.release.channel);
+    assert.equal(await readFile(candidate.archivePath, 'utf8'), entry.archive);
+  }
+
+  const linux = entries[2].release;
+  const withdrawn = await publish('withdraw', initial, { previous: first,
+    entries: [{ release: { ...linux, availability: 'withdrawn' } }] });
+  await serve(withdrawn);
+  const observed = [];
+  await assert.rejects(read(linux, record => observed.push(record.withdrawnBuilds)), /unavailable/);
+  assert.deepEqual(observed, [[42]]);
+  assert.equal((await read(entries[3].release)).release.buildNumber, 42);
+  await assert.rejects(publish('republish', initial, { previous: withdrawn, entries: [{ release: linux }] }),
+    { stderr: /withdrawn build needs a higher repair build/ });
+  await writeFile(join(directory, 'different.tar.gz'), 'different archive');
+  await assert.rejects(publish('collide', initial, { previous: withdrawn, entries: [{
+    archive: 'different.tar.gz', release: { ...linux, channel: 'preview', releaseId: 'different' },
+  }] }), { stderr: /build number already identifies another release/ });
+
+  const middle = roles();
+  const rotated = roles();
+  await provision(2, middle, initial.root);
+  await provision(3, rotated, middle.root);
+  await assert.rejects(publish('renew-old-root', initial, { previous: withdrawn }),
+    { stderr: /Stage new targets after root rotation/ });
+  const repair = { ...linux, releaseId: 'link-43', buildNumber: 43, displayVersion: '0.2.2' };
+  const next = [{ archive: 'different.tar.gz', release: repair }];
+  await assert.rejects(publish('stale-keys', initial, { previous: withdrawn, entries: next }),
+    { stderr: /Supply valid keys assigned to the targets role/ });
+  const repaired = await publish('repair', rotated, { previous: withdrawn, entries: next });
+  await serve(repaired);
+  const candidate = await read(linux);
+  assert.equal(candidate.release.buildNumber, 43);
+  assert.deepEqual(candidate.release.withdrawnBuilds, [42]);
+  assert.deepEqual(repo.requests.filter(path => /[23]\.root\.json$/.test(path)).slice(-2),
+    ['/metadata/2.root.json', '/metadata/3.root.json']);
+  assert.equal(await readFile(candidate.archivePath, 'utf8'), 'different archive');
+  await assert.rejects(publish('cross-channel-collision', rotated, { previous: repaired, entries: [{
+    archive: entries[2].archive, release: { ...repair, channel: 'preview' },
+  }] }), { stderr: /published build number or archive path already identifies another release/ });
+  await assert.rejects(publish('changed-seed', rotated, { previous: repaired, entries: [{
+    release: { ...repair, rollout: { cohortSeed: 'changed', percentage: 25 } },
+  }] }), { stderr: /must keep its rollout seed/ });
+
+  const renewed = await publish('renew', { timestamp: rotated.timestamp }, { previous: repaired });
+  for (const name of ['3.targets.json', '3.snapshot.json']) {
+    assert.deepEqual(await readFile(join(renewed, 'metadata', name)), await readFile(join(repaired, 'metadata', name)));
+  }
+  await serve(renewed);
+  const timestamp = JSON.parse(repo.files.get('/metadata/timestamp.json')).signed;
+  assert.equal(timestamp.version, 4);
+  assert.equal(timestamp.meta['snapshot.json'].version, 3);
+  assert.equal((await read(linux)).release.buildNumber, 43);
+});
+
 test('Windows verifier stages signed archives, checks rollout and rechecks withdrawal before commitment', async t => {
   const repo = await repository(t);
   const options = { ...repo.options({ ...repo.installed, platform: 'windows' }), cohort: '12'.repeat(16) };

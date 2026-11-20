@@ -1,0 +1,6 @@
+cffi==2.1.1
+cryptography==50.0.2
+pycparser==3.12
+securesystemslib==1.6.0
+tuf==7.0.1
+urllib3==2.8.0
