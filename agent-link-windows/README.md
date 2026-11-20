@@ -36,7 +36,7 @@ Install gateway build dependencies with `npm --prefix device-gateway ci` at the 
 
 Build the file worker from the `AgentMobileCode` Control Android package with `dart compile exe tool/link_files.dart -o agent-link-files.exe`. Pass that executable to `-LinkFilesWorker` together with the member connector. The Windows Host and the worker exchange requests over process pipes, and the tray uses the current-user-only file pipe.
 
-The output directory contains the MSI and a manifest of the packaged files. The supplied build script produces an unsigned internal preview. The MSI installs the application and its runtimes in the current user's Programs folder. For a preview upgrade or uninstall, exit through the tray first. Removing the package preserves the user's local state.
+The output directory contains the MSI, the full payload ZIP, and a manifest of the packaged files. The ZIP and MSI use the same payload tree. The build prints both SHA-256 values. The supplied build script produces an unsigned internal preview. The MSI installs the application and its runtimes in the current user's Programs folder. For a preview upgrade or uninstall, exit through the tray first. Removing the package preserves the user's local state.
 
 The brand vector master is `src/AgentLink.App/Assets/Brand.xaml`. After editing it, run `powershell.exe -NoProfile -STA -File agent-link-windows/packaging/export-icon.ps1` from the repository root and commit the exported ICO. Its nine native sizes (16–256 px) are shared by the tray, executable, Start shortcut and installed-app entry. Normal builds consume the checked-in ICO and require no image tools.
 
@@ -53,5 +53,7 @@ foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines
 ```
 
 The contract cases cover the connector's `pac-relay/1` route and approval lines, the invite relay-injection guard (host/store/certificate match), and availability-filtered launch-scope expansion.
+
+The versioned payload contract runs separately with `dotnet run --project agent-link-windows/tests/AgentLink.Payload.Smoke`. It exercises archive and manifest verification, busy deferral, version selection after the health callback, and recovery after termination of the selecting process. The launcher will supply TUF-authorized release descriptors, the Host stop reservation and the isolated health probe.
 
 The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

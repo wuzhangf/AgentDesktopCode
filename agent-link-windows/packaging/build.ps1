@@ -124,7 +124,7 @@ $manifest = [ordered]@{
     worker = 'external-registration-card + managed-cli-bridge'
     cliBridgeRevision = $cliBridgeSha
     connector = $connectorIncluded
-    files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
+    files = @(Get-ChildItem -LiteralPath $payload -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($payload.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }
     })
 }
@@ -133,4 +133,7 @@ $msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
 $icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
 & $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" -d "LinkProductVersion=$version" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
 if ($LASTEXITCODE) { throw 'MSI build failed.' }
-Get-FileHash -LiteralPath $msi -Algorithm SHA256
+$payloadArchive = Join-Path $out "Agent-Link-$version-build-$buildNumber-win-x64.zip"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory($payload, $payloadArchive)
+Get-FileHash -LiteralPath $msi, $payloadArchive -Algorithm SHA256
