@@ -1,5 +1,5 @@
 /**
- * XagtReadService — the seven read-only tool implementations shared by the
+ * XagtReadService — the eight read-only tool implementations shared by the
  * stdio MCP adapter and the fixed peer RPC (design §3/§7). Everything here is
  * read-only by construction:
  *
@@ -23,7 +23,7 @@ import {
   type Coverage, type Envelope, type XagtTool,
 } from './common.js';
 import {
-  canSeeBackend, canSeeMaterial, canSeeTask, canSeeVendorSession, canUsePeer,
+  canSeeBackend, canSeeClusterInstance, canSeeMaterial, canSeeTask, canSeeVendorSession, canUsePeer,
   type ReaderGrant,
 } from './reader-access.js';
 import type { MaterialSessionBinding, MaterialStore } from './materials.js';
@@ -33,6 +33,7 @@ import {
   bindingKey, cursorBind, issueRef, openCursor, resolveRef, sealCursor,
   type CursorPayload,
 } from './refs.js';
+import type { MemberCluster } from '../member-cluster.js';
 
 type Json = Record<string, unknown>;
 
@@ -45,6 +46,7 @@ export interface XagtReadDeps {
   cursorSecret: Uint8Array;
   deviceName?: string;
   now?: () => number;
+  cluster?: MemberCluster;
 }
 
 const PAGE_CAP = 20; // vendor transcript route serves ≤20 messages per call.
@@ -82,6 +84,7 @@ const TOOL_ARGS: Record<XagtTool, ReadonlySet<string>> = {
   xagt_search_history: new Set(['sessionRef', 'query', 'cursor', 'limit']),
   xagt_list_materials: new Set(['sessionRef', 'prefix', 'cursor', 'limit']),
   xagt_read_material: new Set(['materialRef', 'expectedSha256', 'cursor', 'maxBytes']),
+  xagt_list_cluster: new Set(),
 };
 
 export class XagtReadService {
@@ -120,6 +123,7 @@ export class XagtReadService {
           case 'xagt_search_history': return this.searchHistory(reader, args);
           case 'xagt_list_materials': return this.listMaterials(reader, args);
           case 'xagt_read_material': return this.readMaterial(reader, args);
+          case 'xagt_list_cluster': return this.listCluster(reader);
         }
       })();
       return envelope;
@@ -138,6 +142,59 @@ export class XagtReadService {
         ref, code: outcome, bytes,
       })}`);
     }
+  }
+
+  private async listCluster(reader: ReaderGrant): Promise<Envelope> {
+    const cluster = this.deps.cluster;
+    if (!cluster) xfail('UNSUPPORTED');
+    const value = await cluster.directory();
+    if (value.schemaVersion !== 'member-cluster/1' || !Array.isArray(value.computers)) {
+      xfail('UNSUPPORTED', '此 Hosted 版本不支持会员集群目录。');
+    }
+    const computers = Array.isArray(value.computers) ? value.computers.filter(isRecord).map(computer => {
+      const instanceId = typeof computer.instanceId === 'string' ? computer.instanceId : undefined;
+      if (instanceId === undefined || !canSeeClusterInstance(reader, instanceId)) return undefined;
+      const agents = Array.isArray(computer.agents) ? computer.agents.filter(isRecord).map(agent => {
+        const targets = Array.isArray(agent.targets) ? agent.targets.filter(isRecord).filter(target =>
+          typeof target.backendId === 'string' && canSeeBackend(reader, target.backendId)
+          && (reader.projects.length === 0 || typeof target.projectId === 'string' && reader.projects.includes(target.projectId)))
+          .map(target => ({ backendId: target.backendId, projectId: target.projectId })) : [];
+        if (targets.length === 0 || typeof agent.agentId !== 'string' || typeof agent.displayName !== 'string'
+          || typeof agent.reportedName !== 'string' || typeof agent.engineId !== 'string') return undefined;
+        return {
+          agentId: agent.agentId, displayName: agent.displayName,
+          reportedName: agent.reportedName, engineId: agent.engineId,
+          ...(typeof agent.avatarRef === 'string' ? { avatarRef: agent.avatarRef } : {}),
+          ...(typeof agent.profileRevision === 'number' ? { profileRevision: agent.profileRevision } : {}),
+          ...(agent.status === 'available' || agent.status === 'unknown' ? { status: agent.status } : {}),
+          targets,
+        };
+      }).filter(agent => agent !== undefined) : [];
+      if (agents.length === 0) return undefined;
+      return {
+        instanceId,
+        ...(typeof computer.deviceId === 'string' ? { deviceId: computer.deviceId } : {}),
+        ...(typeof computer.displayName === 'string' ? { displayName: computer.displayName } : {}),
+        ...(typeof computer.avatarRef === 'string' ? { avatarRef: computer.avatarRef } : {}),
+        ...(typeof computer.profileRevision === 'number' ? { profileRevision: computer.profileRevision } : {}),
+        ...(computer.status === 'online' || computer.status === 'offline' ? { status: computer.status } : {}),
+        ...(typeof computer.lastSeenAt === 'string' ? { lastSeenAt: computer.lastSeenAt } : {}),
+        agents,
+      };
+    }).filter(computer => computer !== undefined) : [];
+    return this.envelope(
+      { deviceName: 'Agent Link', agentName: 'xagt-link', adapter: 'member-cluster', access: 'local', ref: '' },
+      { level: 'FULL', basis: 'SOURCE_FACTS', limitations: [] },
+      {
+        schemaVersion: 'member-cluster/1',
+        counts: {
+          computers: computers.length,
+          onlineComputers: computers.filter(computer => computer.status === 'online').length,
+          agents: computers.reduce((count, computer) => count + (computer.agents as unknown[]).length, 0),
+        },
+        computers,
+      },
+    );
   }
 
   // ---------------------------------------------------------------------

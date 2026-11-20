@@ -23,6 +23,8 @@
  *                    session scope unless the owner opts in)
  *   peers            allowed peerIds the reader may read through ('*' = all)
  *   materials        allowed material entry ids ('*' = all)
+ *   clusterInstances explicitly owner-approved member instance ids; this is
+ *                     intentionally not inherited from backend/peer wildcards
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { constantEqual, hash, isRecord, text } from '../protocol.js';
@@ -52,6 +54,7 @@ export interface ReaderGrant {
   allVendorSessions: boolean;
   peers: string[];
   materials: string[];
+  clusterInstances: string[];
 }
 
 export const publicGrant = (g: ReaderGrant): JsonObject => {
@@ -119,6 +122,7 @@ export class ReaderAccess {
       allVendorSessions: body.allVendorSessions === true,
       peers: strings(body.peers, 'peers', 64),
       materials: strings(body.materials, 'materials', 512),
+      clusterInstances: strings(body.clusterInstances, 'clusterInstances', 64),
     };
     const token = `xgr-${randomBytes(24).toString('base64url')}`;
     grant.tokenHash = hash(`xagt-reader:${token}`);
@@ -192,3 +196,6 @@ export const canSeeVendorSession = (
 
 export const canSeeMaterial = (g: ReaderGrant, matId: string): boolean =>
   allows(g.materials, matId);
+
+export const canSeeClusterInstance = (g: ReaderGrant, instanceId: string): boolean =>
+  (g.clusterInstances ?? []).includes(instanceId);

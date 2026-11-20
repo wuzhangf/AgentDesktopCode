@@ -216,7 +216,7 @@ export async function handleOwnerRoute(
     // gate (the same route on the phone listener serves peer Links).
     if (req.path === '/api/xagt/v1/read' && req.method === 'POST') {
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
-      return await ctx.xagt.read(req);
+      return await ctx.xagt.read(req, true);
     }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
@@ -485,7 +485,7 @@ export async function handleOwnerRoute(
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
       const b = exact(jsonBody(req), 'requestId', 'name', 'expiresInDays',
         'backends', 'projects', 'tasks', 'vendorSessions', 'allVendorSessions',
-        'peers', 'materials');
+        'peers', 'materials', 'clusterInstances');
       text(b, 'requestId');
       return { status: 201, body: await ctx.xagt.createReader(b) };
     }

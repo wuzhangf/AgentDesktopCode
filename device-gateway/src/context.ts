@@ -433,7 +433,7 @@ export interface GatewayLink {
 
 export interface GatewayXagt {
   /** POST /api/xagt/v1/read — {version:1,tool,arguments} → envelope/errors. */
-  read(request: HttpRequest): MaybePromise<HttpResponse>;
+  read(request: HttpRequest, localCluster?: boolean): MaybePromise<HttpResponse>;
   /** Owner: mint a reader grant — returns the grant + the one-time token. */
   createReader(body: JsonObject): MaybePromise<JsonObject>;
   listReaders(): MaybePromise<JsonObject>;

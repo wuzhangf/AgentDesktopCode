@@ -124,7 +124,7 @@ interface World {
   service: XagtReadService;
 }
 
-const world = (routes: RouteFn): World => {
+const world = (routes: RouteFn, cluster?: { directory(): Promise<Record<string, unknown>> }): World => {
   const store = new MemStore();
   const transport = new FakeTransport();
   transport.routes = routes;
@@ -139,6 +139,7 @@ const world = (routes: RouteFn): World => {
     materials,
     cursorSecret: CURSOR_KEY,
     deviceName: 'dev-this',
+    ...(cluster === undefined ? {} : { cluster: cluster as import('../src/member-cluster.js').MemberCluster }),
   });
   return {
     store, transport, readers: new ReaderAccess(store),
@@ -152,6 +153,32 @@ const mkReader = async (w: World, scope: Record<string, unknown>): Promise<Reade
 };
 
 const fullScope = { backends: ['*'], allVendorSessions: true, peers: ['*'], materials: ['*'] };
+
+describe('member cluster directory', () => {
+  it('uses explicit instance binding, target intersection, and typed output', async () => {
+    const w = world(standardRoutes, {
+      directory: async () => ({ schemaVersion: 'member-cluster/1', computers: [
+        { instanceId: 'pc-a', displayName: 'A', secret: 'drop', agents: [
+          { agentId: 'agent-a', displayName: 'Codex', reportedName: 'codex', engineId: 'codex', status: 'available', targets: [
+            { backendId: 'store-1', projectId: 'p1', secret: 'drop' },
+            { backendId: 'store-2', projectId: 'p2' },
+          ] },
+        ] },
+        { instanceId: 'pc-b', displayName: 'B', agents: [
+          { agentId: 'agent-b', displayName: 'Other', reportedName: 'other', engineId: 'other', targets: [{ backendId: 'store-1', projectId: 'p1' }] },
+        ] },
+      ] }),
+    });
+    const reader = await mkReader(w, { backends: ['store-1'], projects: ['p1'], clusterInstances: ['pc-a'] });
+    const env = await w.service.call(reader, 'xagt_list_cluster', {});
+    expect(env.data).toMatchObject({ schemaVersion: 'member-cluster/1', computers: [{
+      instanceId: 'pc-a', displayName: 'A', agents: [{
+        agentId: 'agent-a', displayName: 'Codex', reportedName: 'codex', engineId: 'codex', status: 'available',
+        targets: [{ backendId: 'store-1', projectId: 'p1' }],
+      }],
+    }] });
+  });
+});
 
 /** Envelope assertions shared by every tool. */
 const expectEnvelope = (env: Envelope): void => {
@@ -987,6 +1014,37 @@ describe('concurrency + rpc envelope', () => {
     const err = badBody.error as Record<string, unknown>;
     expect(['NOT_FOUND', 'INVALID_REQUEST']).toContain(err.code);
     expect(err.retryable).toBe(false);
+  });
+
+  it('owner-loopback RPC exposes only the explicitly bound local cluster', async () => {
+    const scopedWorld = world(standardRoutes, {
+      directory: async () => ({ schemaVersion: 'member-cluster/1', computers: [
+        { instanceId: 'pc-local', displayName: 'Local', agents: [{
+          agentId: 'agent-local', displayName: 'Codex', reportedName: 'codex', engineId: 'codex',
+          targets: [{ backendId: 'store-1', projectId: 'p1' }],
+        }] },
+        { instanceId: 'pc-peer', displayName: 'Peer', agents: [{
+          agentId: 'agent-peer', displayName: 'Peer', reportedName: 'peer', engineId: 'peer',
+          targets: [{ backendId: 'store-1', projectId: 'p1' }],
+        }] },
+      ] }),
+    });
+    const handlers = createXagtHandlers({
+      readers: scopedWorld.readers, service: scopedWorld.service,
+      peers: scopedWorld.peers, materials: scopedWorld.materials,
+    });
+    const { token } = scopedWorld.readers.create({ backends: ['store-1'], projects: ['p1'], clusterInstances: ['pc-local'] });
+    const req = {
+      method: 'POST', path: '/api/xagt/v1/read', query: new URLSearchParams(), rawQuery: null,
+      clientIp: '127.0.0.1', accessToken: token,
+      body: { version: 1, tool: 'xagt_list_cluster', arguments: {} },
+    } as Parameters<typeof handlers.read>[0];
+    await expect(handlers.read(req)).rejects.toMatchObject({ code: 'SCOPE_DENIED' });
+    const result = await handlers.read(req, true);
+    const body = result.body as { ok: boolean; result: Envelope };
+    expect(body.ok).toBe(true);
+    expect(body.result.data.counts).toEqual({ computers: 1, onlineComputers: 0, agents: 1 });
+    expect((body.result.data.computers as Record<string, unknown>[]).map(computer => computer.instanceId)).toEqual(['pc-local']);
   });
 });
 

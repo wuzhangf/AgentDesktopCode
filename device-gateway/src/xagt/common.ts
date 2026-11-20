@@ -1,7 +1,7 @@
 /**
  * xagt read surface — shared constants, bounded limits and the error shape.
  *
- * The seven read-only tools (`xagt_list_targets`, `xagt_list_sessions`,
+ * The eight read-only tools (`xagt_list_targets`, `xagt_list_sessions`,
  * `xagt_get_activity`, `xagt_read_history`, `xagt_search_history`,
  * `xagt_list_materials`, `xagt_read_material`) share one envelope:
  *
@@ -25,6 +25,7 @@ export const XAGT_TOOLS = [
   'xagt_search_history',
   'xagt_list_materials',
   'xagt_read_material',
+  'xagt_list_cluster',
 ] as const;
 export type XagtTool = (typeof XAGT_TOOLS)[number];
 export const isXagtTool = (value: unknown): value is XagtTool =>

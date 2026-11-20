@@ -84,6 +84,7 @@ import { MaterialStore } from './xagt/materials.js';
 import { SourceReader } from './xagt/source-reader.js';
 import { XagtReadService } from './xagt/read-service.js';
 import { createXagtHandlers } from './xagt/rpc.js';
+import { MemberCluster } from './member-cluster.js';
 
 // ---------------------------------------------------------------------------
 // Env parsing helpers — fail fast with CONFIG_* codes.
@@ -492,6 +493,7 @@ export interface BuiltGateway {
   config: GatewayConfig;
   cliSupervisor?: CliSupervisor;
   cloudLaunch?: WindowsCloudLaunch;
+  memberCluster?: MemberCluster;
 }
 
 export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
@@ -817,6 +819,21 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
       approvals.pending().items.length > 0);
   }
 
+  const cloudOrigin = (env('DEVICE_GATEWAY_CLOUD_ORIGIN')
+    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
+  const cloudRecoveryOnly = env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1';
+  const clusterSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
+    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
+  const memberCluster = clusterSession && cloudOrigin && !cloudRecoveryOnly
+    ? new MemberCluster(clusterSession,
+      async () => localTasks
+        ? localTasks.linkTargets(await localTasks.ownerCatalog())
+        : { targets: [] },
+      () => env('DEVICE_GATEWAY_DISPLAY_NAME') ?? hostname(),
+      fetch,
+      cloudOrigin)
+    : undefined;
+
   // xagt read-only surface — reader grants + peer records + explicit material
   // entries live in the same store; the cursor key is derived from the store
   // key (a distinct HMAC domain) so cursors can't be minted off-box.
@@ -838,20 +855,17 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         peers: xagtPeers,
         materials: xagtMaterials,
         cursorSecret: new Uint8Array(xagtCursorSecret),
+        ...(memberCluster !== undefined ? { cluster: memberCluster } : {}),
       }),
     });
   }
 
-  const cloudOrigin = (env('DEVICE_GATEWAY_CLOUD_ORIGIN')
-    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_ORIGIN'))?.replace(/\/$/, '');
-  const cloudSession = env('DEVICE_GATEWAY_CLOUD_SESSION')
-    ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
+  const cloudSession = clusterSession;
   const cloudAcs = process.platform === 'win32' && agentUpstream
     ? new CloudAcs(config.acsStoreId, agentUpstream) : undefined;
   if (cloudAcs) {
     ctx.ownerCloudAcsTargets = () => cloudAcs.catalog('owner');
   }
-  const cloudRecoveryOnly = env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1';
   const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
   const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly
     ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;
@@ -868,7 +882,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
   }
   if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;
-  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
+  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch, memberCluster };
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +964,8 @@ export async function main(): Promise<void> {
       if (!server.listening) return resolveClose();
       server.close(() => resolveClose());
     })));
+    built.cloudLaunch?.stop();
+    built.memberCluster?.stop();
     built.store.close();
     throw error;
   }
@@ -1071,6 +1087,7 @@ export async function main(): Promise<void> {
     void built.cliSupervisor.start();
   }
   built.cloudLaunch?.start();
+  built.memberCluster?.start();
   const handoffProgress = built.ctx.nativeLocalHandoffs ? setInterval(() => {
     if (built.ctx.updatePreparation?.preparing) return;
     const finish = built.ctx.updatePreparation?.admit();
@@ -1140,6 +1157,7 @@ export async function main(): Promise<void> {
     clearInterval(refreshAlternates);
     if (handoffProgress) clearInterval(handoffProgress);
     built.cloudLaunch?.stop();
+    built.memberCluster?.stop();
     mdns.stop();
     let pending = listeners.length;
     const done = (): void => {

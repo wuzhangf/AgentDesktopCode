@@ -13,7 +13,8 @@
  *           MCP adapter can forward code+retryable verbatim.
  * Non-200:  auth (401/410), malformed envelope (400/413) only.
  *
- * This route is the ONLY cross-device surface: seven whitelisted tools, a
+ * This route is the ONLY cross-device surface: seven peer tools and one
+ * loopback-only cluster tool, a
  * fixed path, bounded bodies. It is not an HTTP proxy and cannot pass paths,
  * URLs, raw source ids or continuation state it did not itself issue.
  */
@@ -59,7 +60,7 @@ export interface XagtDeps {
 }
 
 export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['xagt']> => ({
-  async read(req: HttpRequest): Promise<HttpResponse> {
+  async read(req: HttpRequest, localCluster = false): Promise<HttpResponse> {
     if (req.method !== 'POST') xfail('INVALID_REQUEST', '仅支持 POST。', false, 404);
     const grant = deps.readers.authenticate(bearer(req));
     const body = jsonBody(req, LIMITS.rpcBodyMax);
@@ -73,6 +74,7 @@ export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['
     if (!isXagtTool(body.tool)) {
       xfail('INVALID_REQUEST', '未知工具。', false, 400);
     }
+    if (body.tool === 'xagt_list_cluster' && !localCluster) xfail('SCOPE_DENIED');
     const args = body.arguments === undefined ? {}
       : isRecord(body.arguments) ? body.arguments
       : xfail('INVALID_REQUEST', 'arguments 必须是对象。', false, 400);
