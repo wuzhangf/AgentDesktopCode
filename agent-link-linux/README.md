@@ -12,8 +12,11 @@ sh agent-link-linux/packaging/build.sh [--out DIR]
 
 Produces `agent-link-<version>-linux.tar.gz` containing the gateway bundle, the `cli-bridge` agent
 runtime (`AgentWorkersCode/cli-bridge/host.mjs`, override with
-`WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks and
-a `release-manifest.json` with per-file SHA-256.
+`WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks,
+the pinned Linux x86_64 Node runtime and its license, and a
+`release-manifest.json` with per-file SHA-256. The build checks the
+runtime archive against a pinned digest. Set `AGENT_LINK_LINUX_NODE_ARCHIVE`
+to build with a cached copy of that same archive.
 
 Release builds set `AGENT_LINK_PRODUCT_VERSION` and `AGENT_LINK_BUILD_NUMBER`
 from the same release inputs as the Mac package. The archive name uses the
@@ -23,14 +26,15 @@ default to the `device-gateway` package version and build number `1`.
 ## Install / upgrade
 
 ```sh
+mkdir -p agent-link-linux
 tar -xzf agent-link-<version>-linux.tar.gz -C agent-link-linux
 cd agent-link-linux
-sh install.sh                 # or: sh install.sh --prefix /opt/agent-link --bind 0.0.0.0 --project ~/code
+sh install.sh
 ```
 
-- Requires `node >= 24.18` on PATH and a `systemd --user` session. On headless
-  machines run `loginctl enable-linger $USER` once so the service survives
-  logout.
+- Requires Ubuntu 24.04 x86_64 and a `systemd --user` session. The installer
+  and service use the bundled Node. On headless machines run
+  `loginctl enable-linger $USER` once so the service survives logout.
 - First install writes `~/.config/agent-link/env` (mode 600) with generated
   owner tokens and kernel-probed free ports, then enables and starts
   `agent-link.service`.

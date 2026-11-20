@@ -14,6 +14,9 @@ GATEWAY="$REPO/device-gateway"
 WORKERS_REPO="${WORKERS_REPO:-$(CDPATH= cd -- "$REPO/../AgentWorkersCode" 2>/dev/null && pwd || true)}"
 WORKER_BRIDGE="${WORKER_BRIDGE:-$WORKERS_REPO/cli-bridge/host.mjs}"
 OUT="$REPO/.local/agent-link-linux-release"
+NODE_VERSION=24.22.1
+NODE_DIST="node-v$NODE_VERSION-linux-x64"
+NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,7 +40,27 @@ if (!/^[1-9]\d*$/.test(buildNumber) || !Number.isSafeInteger(Number(buildNumber)
 EOF
 
 [ -d "$OUT" ] && { echo "choose a fresh output directory: $OUT" >&2; exit 1; }
-mkdir -p "$OUT/payload/hooks" "$OUT/payload/systemd"
+runtime_tmp=$(mktemp -d)
+trap 'rm -rf "$runtime_tmp"' EXIT
+runtime_archive=${AGENT_LINK_LINUX_NODE_ARCHIVE:-$runtime_tmp/$NODE_DIST.tar.xz}
+if [ -z "${AGENT_LINK_LINUX_NODE_ARCHIVE:-}" ]; then
+    curl -fsSL --retry 2 "https://nodejs.org/dist/v$NODE_VERSION/$NODE_DIST.tar.xz" -o "$runtime_archive"
+fi
+node - "$runtime_archive" "$NODE_SHA256" <<'EOF'
+const { createHash } = require('node:crypto');
+const { createReadStream } = require('node:fs');
+const [archive, expected] = process.argv.slice(2);
+(async () => {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(archive)) hash.update(chunk);
+  if (hash.digest('hex') !== expected) throw new Error('Linux Node archive checksum mismatch');
+})().catch(error => { console.error(error.message); process.exitCode = 1; });
+EOF
+tar -xJf "$runtime_archive" -C "$runtime_tmp" "$NODE_DIST/bin/node" "$NODE_DIST/LICENSE"
+
+mkdir -p "$OUT/payload/hooks" "$OUT/payload/runtime" "$OUT/payload/systemd"
+install -m 755 "$runtime_tmp/$NODE_DIST/bin/node" "$OUT/payload/runtime/node"
+install -m 644 "$runtime_tmp/$NODE_DIST/LICENSE" "$OUT/payload/runtime/node-LICENSE"
 
 npm --prefix "$GATEWAY" run build
 cp "$GATEWAY/dist/device-gateway.mjs" "$OUT/payload/device-gateway.mjs"
@@ -56,9 +79,9 @@ chmod +x "$OUT/payload/install.sh" "$OUT/payload/uninstall.sh"
 
 GATEWAY_SHA=$(git -C "$REPO" rev-parse HEAD)
 DIRTY=$(git -C "$REPO" status --porcelain -- device-gateway agent-link-linux | wc -l | tr -d ' ')
-node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$BUILD_NUMBER" "$GATEWAY_SHA" "$DIRTY" <<'EOF'
+node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$BUILD_NUMBER" "$GATEWAY_SHA" "$DIRTY" "$NODE_VERSION" <<'EOF'
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const [root, out, version, buildNumber, sha, dirty] = process.argv.slice(2);
+const [root, out, version, buildNumber, sha, dirty, nodeVersion] = process.argv.slice(2);
 const files = [];
 const walk = (dir) => {
   for (const name of fs.readdirSync(dir).sort()) {
@@ -74,7 +97,7 @@ walk(root);
 fs.writeFileSync(out, JSON.stringify({
   schemaVersion: 1, product: 'Agent Link', version, buildNumber: Number(buildNumber),
   build: 'linux-user-service', gatewayBaseRevision: sha,
-  gatewayWorkingTree: dirty !== '0', nodeRequirement: '>=24.18.0',
+  gatewayWorkingTree: dirty !== '0', platform: 'linux', arch: 'x64', nodeVersion, nodeRequirement: '>=24.18.0',
   files,
 }, null, 2) + '\n');
 EOF

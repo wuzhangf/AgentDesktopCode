@@ -6,8 +6,8 @@
 #
 #   sh install.sh [--prefix PATH] [--bind ADDR] [--port N] [--project DIR]
 #
-# Requires: node >= 24.18 (device-gateway uses node:sqlite) on PATH,
-# systemctl --user (systemd user session). The gateway runs the LOCAL_CLI
+# Requires: Linux x86_64, systemctl --user and runnable bundled Node.
+# The gateway runs the LOCAL_CLI
 # (free LAN) profile: phones pair over LAN/mDNS and launch local CLI agents
 # (claude/codex/pi detected on PATH); member/relay features are not part of
 # this package.
@@ -33,9 +33,12 @@ done
 
 die() { echo "agent-link install: $*" >&2; exit 1; }
 
-NODE=$(command -v node) || die "node >= 24.18 is required on PATH"
-node_ok=$(node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.stdout.write(a>24||(a===24&&b>=18)?"1":"0")')
-[ "$node_ok" = 1 ] || die "node >= 24.18 required (found $(node --version)) — the gateway uses node:sqlite"
+[ "$(uname -sm)" = 'Linux x86_64' ] || die "this package requires Linux x86_64"
+RUNTIME="$HERE/runtime/node"
+[ -x "$RUNTIME" ] && [ -f "$HERE/runtime/node-LICENSE" ] || die "bundled Node runtime is missing; unpack the full archive"
+"$RUNTIME" -e 'const [a,b]=process.versions.node.split(".").map(Number);
+require("node:sqlite"); if (a<24 || (a===24 && b<18)) process.exit(1)' \
+    || die "bundled Node could not start; check the system libraries and execution permissions"
 command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 systemctl --user show-environment >/dev/null 2>&1 \
     || die "systemd --user is unavailable (log in a user session; for headless use: loginctl enable-linger $USER)"
@@ -48,6 +51,10 @@ if [ "$upgrade" = 1 ]; then
 fi
 
 mkdir -p "$PREFIX" "$CONFIG_DIR" "$UNIT_DIR" "$PROJECT_DIR"
+mkdir -p "$PREFIX/runtime"
+NODE="$PREFIX/runtime/node"
+install -m 755 "$RUNTIME" "$NODE"
+install -m 644 "$HERE/runtime/node-LICENSE" "$PREFIX/runtime/node-LICENSE"
 cp "$HERE/device-gateway.mjs" "$PREFIX/device-gateway.mjs"
 [ -f "$HERE/cli-bridge.mjs" ] && cp "$HERE/cli-bridge.mjs" "$PREFIX/cli-bridge.mjs"
 if [ -d "$HERE/adapters" ]; then
@@ -66,11 +73,11 @@ if [ ! -f "$ENV_FILE" ]; then
     # First install: allocate free loopback/LAN ports and generate owner
     # secrets into a 0600 env file. Ports are probed by binding :0 so the
     # kernel hands back a free one.
-    PHONE_PORT=${PORT:-$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"0.0.0.0",()=>{console.log(s.address().port);s.close()})')}
-    OWNER_PORT=$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
-    HOOKS_PORT=$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+    PHONE_PORT=${PORT:-$("$NODE" -e 'const n=require("net");const s=n.createServer();s.listen(0,"0.0.0.0",()=>{console.log(s.address().port);s.close()})')}
+    OWNER_PORT=$("$NODE" -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+    HOOKS_PORT=$("$NODE" -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
     PHONE_BIND=${BIND:-0.0.0.0}
-    rand() { node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))'; }
+    rand() { "$NODE" -e 'console.log(require("crypto").randomBytes(32).toString("hex"))'; }
     umask 077
     {
         echo "DEVICE_GATEWAY_DATA_DIR=$PREFIX/data"

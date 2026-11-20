@@ -26,6 +26,8 @@ fi
 rm -f "$UNIT_DIR/agent-link.service"
 command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload || true
 rm -f "$PREFIX/device-gateway.mjs" "$PREFIX/cli-bridge.mjs" "$PREFIX/release-manifest.json"
+rm -f "$PREFIX/runtime/node" "$PREFIX/runtime/node-LICENSE"
+rmdir "$PREFIX/runtime" 2>/dev/null || true
 rm -f "$PREFIX/hooks/agent_pre_tool.py" "$PREFIX/hooks/install.py"
 rm -rf "$PREFIX/adapters"
 rmdir "$PREFIX/hooks" 2>/dev/null || true
