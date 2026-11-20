@@ -3,6 +3,7 @@ import { constants, existsSync } from 'node:fs';
 import { chmod, copyFile, readFile, realpath, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
+import { Agent, setGlobalDispatcher } from 'undici';
 import { CurrentBuildError, stageVerifiedRelease } from './verify-release.mjs';
 import { extractLinuxArchive } from './linux-archive.mjs';
 import { install, InstallationDeferred, installationPaths } from '../../../agent-link-linux/install-transaction.mjs';
@@ -139,6 +140,8 @@ async function checkForUpdate(args, { program, updateRoot, config }, active) {
   }
 }
 
+// Use the corrected HTTP connection handling with TUF's built-in fetch on Node 24.
+setGlobalDispatcher(new Agent());
 main().catch(error => {
   const deferred = error instanceof DeferredUpdate || error instanceof CurrentBuildError || error instanceof InstallationDeferred;
   console[deferred ? 'log' : 'error'](`Agent Link updater: ${error.message}`);

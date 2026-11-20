@@ -62,6 +62,15 @@ function Sign-LinkFile([string]$Path) {
     if ($LASTEXITCODE) { throw 'Windows release signature verification failed.' }
 }
 if (Test-Path -LiteralPath $out) { throw 'Choose a fresh output directory.' }
+$nodeVersion = 'v26.13.1'
+$nodeSha256 = 'f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb'
+if (!(Test-Path -LiteralPath $Node -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $Node -Algorithm SHA256).Hash -ne $nodeSha256) {
+    throw "Use the official Windows x64 Node $nodeVersion binary. The SHA-256 must match the pinned release."
+}
+$Node = (Resolve-Path -LiteralPath $Node).Path
+$license = Join-Path (Split-Path $Node -Parent) 'LICENSE'
+if (!(Test-Path -LiteralPath $license -PathType Leaf)) { throw 'Use a Node distribution that includes LICENSE.' }
 $payload = Join-Path $out 'payload'
 $hostOutput = Join-Path $payload 'host'
 New-Item -ItemType Directory -Path $out | Out-Null
@@ -81,13 +90,11 @@ if ([version]$fileVersion -ne [version]$expectedFileVersion -or [version]$hostFi
 
 $runtime = (New-Item -ItemType Directory -Path (Join-Path $payload 'runtime')).FullName
 $gatewayOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/gateway')).FullName
-$nodeVersion = & $Node --version
-if ($LASTEXITCODE -or $nodeVersion -notmatch '^v24\.\d+\.\d+$' -or [version]$nodeVersion.Substring(1) -lt [version]'24.18.0') {
-    throw 'Node 24.18 or later in the 24.x line is required.'
+$runtimeNode = Join-Path $runtime 'gateway-node.exe'
+Copy-Item -LiteralPath $Node -Destination $runtimeNode
+if ((Get-FileHash -LiteralPath $runtimeNode -Algorithm SHA256).Hash -ne $nodeSha256) {
+    throw 'The packaged Windows Node binary differs from the pinned release.'
 }
-$license = Join-Path (Split-Path $Node -Parent) 'LICENSE'
-if (!(Test-Path -LiteralPath $license)) { throw 'Use a Node distribution that includes LICENSE.' }
-Copy-Item -LiteralPath $Node -Destination (Join-Path $runtime 'gateway-node.exe')
 Copy-Item -LiteralPath $license -Destination (Join-Path $runtime 'NODE-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $product 'runtime/await-parent.mjs') -Destination $runtime
 Copy-Item -LiteralPath (Join-Path $gateway 'dist/device-gateway.mjs') -Destination $gatewayOutput
@@ -182,7 +189,7 @@ if ($VersionedPayload) {
         $verifier = Join-Path $msiTree 'verify-windows.cjs'
         & $esbuild (Join-Path $updater 'src/windows-cli.mjs') --bundle --platform=node --format=cjs --target=node24 "--outfile=$verifier"
         if ($LASTEXITCODE) { throw 'Windows verifier bundling failed.' }
-        Copy-Item -LiteralPath $Node -Destination (Join-Path $msiTree 'update-node.exe')
+        Copy-Item -LiteralPath $runtimeNode -Destination (Join-Path $msiTree 'update-node.exe')
         Copy-Item -LiteralPath $license -Destination (Join-Path $msiTree 'NODE-LICENSE.txt')
         $channel = [ordered]@{
             metadataBaseUrl = $TufMetadataUrl

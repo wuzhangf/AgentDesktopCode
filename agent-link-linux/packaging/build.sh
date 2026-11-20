@@ -15,9 +15,9 @@ UPDATE_TOOLS="$REPO/packages/agent-link-update"
 WORKERS_REPO="${WORKERS_REPO:-$(CDPATH= cd -- "$REPO/../AgentWorkersCode" 2>/dev/null && pwd || true)}"
 WORKER_BRIDGE="${WORKER_BRIDGE:-$WORKERS_REPO/cli-bridge/host.mjs}"
 OUT="$REPO/.local/agent-link-linux-release"
-NODE_VERSION=24.22.1
+NODE_VERSION=24.22.3
 NODE_DIST="node-v$NODE_VERSION-linux-x64"
-NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
+NODE_SHA256=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
 
 while [ $# -gt 0 ]; do
     case "$1" in
