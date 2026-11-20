@@ -30,6 +30,7 @@ internal sealed class ConnectorSupervisor : IDisposable
     private readonly Func<Ports?> ports;
     private readonly Func<CancellationToken, Task<bool>> ensureDescriptor;
     private readonly Action<Uri> openBrowser;
+    private readonly UpdateActivity updateActivity;
     private readonly string workDir;
     private readonly string logDir;
     private readonly string descriptorFile;
@@ -57,7 +58,7 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     internal ConnectorSupervisor(string installRoot, string memberOrigin,
         Func<bool> enabled, Func<Ports?> ports,
-        Func<CancellationToken, Task<bool>> ensureDescriptor, Action<Uri> openBrowser)
+        Func<CancellationToken, Task<bool>> ensureDescriptor, Action<Uri> openBrowser, UpdateActivity updateActivity)
     {
         this.installRoot = installRoot;
         this.memberOrigin = memberOrigin;
@@ -65,6 +66,7 @@ internal sealed class ConnectorSupervisor : IDisposable
         this.ports = ports;
         this.ensureDescriptor = ensureDescriptor;
         this.openBrowser = openBrowser;
+        this.updateActivity = updateActivity;
         workDir = Path.Combine(LinkProtocol.Root, "connector");
         logDir = Path.Combine(LinkProtocol.Root, "logs");
         descriptorFile = Path.Combine(workDir, "public-pac-descriptor.json");
@@ -89,6 +91,16 @@ internal sealed class ConnectorSupervisor : IDisposable
     }
 
     internal bool PackagePresent => packagePresent;
+
+    internal bool LoginPending { get { lock (gate) return wantLink || linkActive; } }
+
+    internal async Task StopForUpdateAsync()
+    {
+        OwnedProcess? process;
+        lock (gate) { process = owned; owned = null; }
+        if (process is null) return;
+        using (process) await process.StopForUpdateAsync(requireCleanExit: false);
+    }
 
     internal Task RunAsync(CancellationToken cancellation) =>
         loop = MonitorAsync(cancellation);
@@ -161,7 +173,11 @@ internal sealed class ConnectorSupervisor : IDisposable
     {
         while (!cancellation.IsCancellationRequested)
         {
-            try { await EvaluateAsync(cancellation); }
+            try
+            {
+                using var activity = updateActivity.Enter();
+                if (activity is not null) await EvaluateAsync(cancellation);
+            }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
             catch (Exception) { }
             var delay = Task.Delay(1500, cancellation);
@@ -411,8 +427,10 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     private async Task StopOwnedAsync(OwnedProcess proc)
     {
-        try { await proc.StopAsync(TimeSpan.FromSeconds(2)); } catch (Exception) { }
-        proc.Dispose();
+        using var activity = updateActivity.Enter();
+        try { await proc.StopForUpdateAsync(requireCleanExit: false); }
+        catch (Exception) { updateActivity.MarkUnconfirmed(); }
+        finally { proc.Dispose(); }
     }
 
     public void Dispose()

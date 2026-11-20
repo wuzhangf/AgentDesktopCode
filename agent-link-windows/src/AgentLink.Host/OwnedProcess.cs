@@ -59,6 +59,30 @@ internal sealed class OwnedProcess : IDisposable
         }
     }
 
+    internal async Task StopForUpdateAsync(bool requireCleanExit)
+    {
+        if (!Process.HasExited)
+        {
+            Process.StandardInput.Close();
+            using var graceful = new CancellationTokenSource(TimeSpan.FromSeconds(requireCleanExit ? 7 : 2));
+            try { await Process.WaitForExitAsync(graceful.Token); }
+            catch (OperationCanceledException) when (!requireCleanExit) { }
+        }
+        if (requireCleanExit && (!Process.HasExited || Process.ExitCode != 0))
+            throw new IOException("The gateway did not close cleanly.");
+        if (ActiveJobProcesses() != 0 && !TerminateJobObject(job, 1)) throw new Win32Exception();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+        while (ActiveJobProcesses() != 0) await Task.Delay(50, deadline.Token);
+    }
+
+    private uint ActiveJobProcesses()
+    {
+        const int basicAccounting = 1;
+        if (!QueryInformationJobObject(job, basicAccounting, out var data, Marshal.SizeOf<Accounting>(), IntPtr.Zero))
+            throw new Win32Exception();
+        return data.ActiveProcesses;
+    }
+
     public void Dispose()
     {
         job.Dispose();
@@ -84,6 +108,13 @@ internal sealed class OwnedProcess : IDisposable
         public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Accounting
+    {
+        public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateJobObjectW(IntPtr attributes, string? name);
 
@@ -92,4 +123,11 @@ internal sealed class OwnedProcess : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(SafeFileHandle job, int infoClass, out Accounting result,
+        int size, IntPtr returnedSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
 }

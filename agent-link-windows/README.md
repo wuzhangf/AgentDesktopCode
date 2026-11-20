@@ -54,6 +54,12 @@ foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines
 
 The contract cases cover the connector's `pac-relay/1` route and approval lines, the invite relay-injection guard (host/store/certificate match), and availability-filtered launch-scope expansion.
 
-The versioned payload contract runs separately with `dotnet run --project agent-link-windows/tests/AgentLink.Payload.Smoke`. It exercises archive and manifest verification, busy deferral, version selection after the health callback, and recovery after termination of the selecting process. The launcher will supply TUF-authorized release descriptors, the Host stop reservation and the isolated health probe.
+The versioned payload contract runs separately with `dotnet run --project agent-link-windows/tests/AgentLink.Payload.Smoke`. It exercises archive and manifest verification, busy deferral, version selection after the health callback, and recovery after termination of the selecting process.
+
+The Host exposes `prepare-update` on its local owner pipe. The launcher must hold `LinkUpdateTransition.Acquire(operationId)` throughout the transaction. The Host keeps file operations and connector changes out of the shutdown window and confirms the same operation and gateway boot after the gateway reserves its Workers. The reply identifies the stopping processes. The launcher must also wait for the Host to exit and match the completed `update-stopped.json` receipt before copying state.
+
+The launcher supplies a private copy of `identity.dpapi` and the `gateway` directory under `LinkUpdateTransition.SnapshotPath(operationId)`. The candidate Host's `--probe-update <operationId>` starts only its bundled gateway and verifies the previous host identity, store and device count. The gateway stays fenced until shutdown. The launcher and signed release channel still need to connect this contract to MSI migration and automatic installation.
+
+Run the Host update protocol smoke suite with `dotnet run --project agent-link-windows/tests/AgentLink.Update.Smoke -- <node> <bundled-gateway.mjs> <await-parent.mjs>`. It uses local synthetic state and an actual gateway process.
 
 The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

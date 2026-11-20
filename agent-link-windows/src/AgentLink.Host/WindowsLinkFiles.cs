@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 
 namespace AgentLink;
 
-internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
+internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin, UpdateActivity updateActivity)
 {
     private readonly string worker = Path.Combine(installRoot, "components", "files", "agent-link-files.exe");
 
@@ -27,7 +27,13 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
                     var request = await LinkProtocol.ReadAsync<LinkRequest>(channel, framing.Token);
                     framing.CancelAfter(TimeSpan.FromMinutes(29));
                     LinkReply reply;
-                    try { reply = await ExecuteAsync(request, framing.Token); }
+                    try
+                    {
+                        using var operation = updateActivity.Enter();
+                        reply = operation is null
+                            ? new(false, "UPDATE_IN_PROGRESS")
+                            : await ExecuteAsync(request, framing.Token);
+                    }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException
                         or InvalidOperationException or CryptographicException or System.ComponentModel.Win32Exception)
                     {
@@ -76,7 +82,8 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8,
         };
-        using var process = Process.Start(info) ?? throw new IOException("Unable to start file worker.");
+        using var workerJob = new OwnedProcess(info, signalStart: false);
+        var process = workerJob.Process;
         try
         {
             var output = process.StandardOutput.ReadToEndAsync(cancellation);
@@ -96,7 +103,13 @@ internal sealed class WindowsLinkFiles(string installRoot, string memberOrigin)
         }
         finally
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            try { await workerJob.StopForUpdateAsync(requireCleanExit: false); }
+            catch (Exception error) when (error is IOException or InvalidOperationException or
+                System.ComponentModel.Win32Exception or OperationCanceledException)
+            {
+                updateActivity.MarkUnconfirmed();
+                throw;
+            }
         }
     }
 

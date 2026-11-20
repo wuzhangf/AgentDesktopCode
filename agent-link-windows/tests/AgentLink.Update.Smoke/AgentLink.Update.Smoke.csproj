@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/AgentLink.Contracts/AgentLink.Contracts.csproj" />
+    <Compile Include="../../src/AgentLink.Host/UpdateActivity.cs" Link="UpdateActivity.cs" />
+    <Compile Include="../../src/AgentLink.Host/GatewayUpdateReservation.cs" Link="GatewayUpdateReservation.cs" />
+    <Compile Include="../../src/AgentLink.Host/GatewayProbeClient.cs" Link="GatewayProbeClient.cs" />
+  </ItemGroup>
+</Project>

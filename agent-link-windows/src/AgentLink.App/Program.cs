@@ -398,6 +398,7 @@ internal static class Program
 
     private static void StartHost()
     {
+        if (LinkUpdateTransition.IsHeld()) return;
         using var child = Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "host", "AgentLink.Host.exe"))
         {
             UseShellExecute = false, CreateNoWindow = true,

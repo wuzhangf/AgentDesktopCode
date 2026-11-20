@@ -15,6 +15,13 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args is ["--probe-update", var operationId])
+        {
+            try { return WindowsGatewayProbe.RunAsync(operationId).GetAwaiter().GetResult() ? 0 : 1; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
+                or System.Security.Cryptography.CryptographicException or JsonException or Win32Exception
+                or HttpRequestException or OperationCanceledException or InvalidOperationException) { return 1; }
+        }
         if (args is ["--status"] or ["--stop"])
         {
             try
@@ -31,6 +38,7 @@ internal static class Program
         catch (AbandonedMutexException) { }
         try
         {
+            if (LinkUpdateTransition.IsHeld()) return 0;
             using var host = new LinkHost();
             host.RunAsync().GetAwaiter().GetResult();
             return 0;
@@ -62,6 +70,9 @@ internal sealed class LinkHost : IDisposable
     }) { Timeout = TimeSpan.FromSeconds(5) };
     private readonly string computer = Environment.MachineName;
     private readonly SemaphoreSlim mutations = new(1, 1);
+    private readonly UpdateActivity updateActivity = new();
+    private volatile PreparedUpdate? preparedUpdate;
+    private bool gatewayStoppedForUpdate;
     private volatile LinkStatus status;
     private LinkIdentity? identity;
     private volatile bool enabled;
@@ -79,7 +90,7 @@ internal sealed class LinkHost : IDisposable
         managed = new ManagedAgents(InstallRoot, OwnerAsync);
         connector = new ConnectorSupervisor(InstallRoot, MemberOrigin,
             enabled: () => enabled, ports: () => ports,
-            ensureDescriptor: EnsureDescriptorAsync, openBrowser: OpenMemberPage);
+            ensureDescriptor: EnsureDescriptorAsync, openBrowser: OpenMemberPage, updateActivity: updateActivity);
         status = NewStatus("正在启动");
     }
 
@@ -90,7 +101,7 @@ internal sealed class LinkHost : IDisposable
     {
         var local = ServeAsync(stop.Token);
         var relay = connector.RunAsync(stop.Token);
-        var files = new WindowsLinkFiles(InstallRoot, MemberOrigin).RunAsync(stop.Token);
+        var files = new WindowsLinkFiles(InstallRoot, MemberOrigin, updateActivity).RunAsync(stop.Token);
         try
         {
             try
@@ -114,7 +125,26 @@ internal sealed class LinkHost : IDisposable
             await local;
             await relay;
             await files;
-            connector.Dispose();
+            try
+            {
+                if (preparedUpdate is { } update && gatewayStoppedForUpdate &&
+                    LinkUpdateTransition.Matches(update.Receipt.OperationId))
+                {
+                    await Task.WhenAll(managed.StopForUpdateAsync(), connector.StopForUpdateAsync());
+                    if (LinkUpdateTransition.Matches(update.Receipt.OperationId))
+                        LinkIdentity.SaveAtomic(LinkUpdateTransition.StoppedReceipt,
+                            JsonSerializer.SerializeToUtf8Bytes(update.Receipt, LinkProtocol.Json));
+                }
+            }
+            catch (OperationCanceledException error)
+            {
+                throw new IOException("Windows update could not confirm process shutdown.", error);
+            }
+            finally
+            {
+                connector.Dispose();
+                preparedUpdate?.Activity.Dispose();
+            }
         }
     }
 
@@ -247,7 +277,11 @@ internal sealed class LinkHost : IDisposable
                 if (await Task.WhenAny(tick, exited) == exited) break;
                 await tick;
                 await mutations.WaitAsync(cancellation);
-                try { await RefreshAsync(gateway.Process.Id, cancellation); refreshFailures = 0; }
+                try
+                {
+                    if (!updateActivity.Held) await RefreshAsync(gateway.Process.Id, cancellation);
+                    refreshFailures = 0;
+                }
                 // A transient owner-API failure must not kill a live gateway;
                 // only surface it after ~30s of consecutive failures.
                 catch (Exception error) when (error is HttpRequestException or IOException)
@@ -264,7 +298,12 @@ internal sealed class LinkHost : IDisposable
         finally
         {
             ports = null;
-            await gateway.StopAsync();
+            if (preparedUpdate?.Receipt.GatewayPid == gateway.Process.Id && stop.IsCancellationRequested)
+            {
+                await gateway.StopForUpdateAsync(requireCleanExit: true);
+                gatewayStoppedForUpdate = true;
+            }
+            else await gateway.StopAsync();
             await stderr;
             if (stdout is not null) await stdout;
         }
@@ -305,7 +344,7 @@ internal sealed class LinkHost : IDisposable
         return info;
     }
 
-    private static Ports AllocatePorts()
+    internal static Ports AllocatePorts()
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -600,6 +639,7 @@ internal sealed class LinkHost : IDisposable
                 await channel.WaitForConnectionAsync(cancellation);
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 deadline.CancelAfter(TimeSpan.FromSeconds(8));
+                var updateAcknowledged = false;
                 try
                 {
                     var request = await LinkProtocol.ReadAsync<LinkRequest>(channel, deadline.Token);
@@ -615,9 +655,22 @@ internal sealed class LinkHost : IDisposable
                         reply = new(false, "内部错误：" + unexpected.GetType().Name);
                     }
                     await LinkProtocol.WriteAsync(channel, reply, deadline.Token);
-                    if (request.Operation == "exit" && reply.Ok) stop.Cancel();
+                    updateAcknowledged = request.Operation == "prepare-update" && reply.Ok;
+                    if (reply.Ok && (request.Operation == "exit" || updateAcknowledged)) stop.Cancel();
                 }
                 catch (Exception error) when (error is IOException or OperationCanceledException or JsonException) { }
+                finally
+                {
+                    if (!updateAcknowledged && preparedUpdate is { } abandoned)
+                    {
+                        try { await ReleaseUpdateAsync(abandoned.Receipt.OperationId, abandoned.Ports); }
+                        finally
+                        {
+                            preparedUpdate = null;
+                            abandoned.Activity.Dispose();
+                        }
+                    }
+                }
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -638,6 +691,7 @@ internal sealed class LinkHost : IDisposable
             if (request.Operation == "managedAgents")
                 return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
             if (!status.Ready || ports is null) return new(false, "后台网关暂未就绪");
+            if (request.Operation == "prepare-update") return await PrepareUpdateAsync(request.Id, cancellation);
             switch (request.Operation)
             {
                 case "handoffSigningKey":
@@ -802,6 +856,49 @@ internal sealed class LinkHost : IDisposable
         finally { mutations.Release(); }
     }
 
+    private async Task<LinkReply> PrepareUpdateAsync(string? operationId, CancellationToken cancellation)
+    {
+        if (operationId is null || !LinkUpdateTransition.ValidOperationId(operationId))
+            return new(false, "INVALID_UPDATE_OPERATION");
+        if (!LinkUpdateTransition.Matches(operationId)) return new(false, "UPDATE_LOCK_REQUIRED");
+        if (ports is not { } active || status.GatewayPid is not int gatewayPid || gatewayPid <= 0)
+            return new(false, "GATEWAY_UNCONFIRMED");
+        var hold = updateActivity.Reserve();
+        if (hold is null) return new(false, "UPDATE_LOCAL_ACTIVITY");
+        var attempted = false;
+        try
+        {
+            if (connector.LoginPending || managed.HasUnregisteredWorker)
+                return new(false, "UPDATE_LOCAL_ACTIVITY");
+            attempted = true;
+            var reservation = await GatewayUpdateReservation.AcquireAsync(OwnerAsync, operationId, cancellation);
+            if (reservation.Error is { } error) return new(false, error);
+            if (!ReferenceEquals(active, ports) || gatewayPid != status.GatewayPid || !LinkUpdateTransition.Matches(operationId))
+                return new(false, "GATEWAY_UNCONFIRMED");
+            var receipt = new LinkUpdateHandoff(operationId, Environment.ProcessId, gatewayPid, reservation.BootId!,
+                reservation.Identity!);
+            var reply = new LinkReply(true, Data: JsonSerializer.SerializeToNode(receipt, LinkProtocol.Json));
+            preparedUpdate = new(receipt, active, hold);
+            return reply;
+        }
+        finally
+        {
+            if (preparedUpdate is null)
+            {
+                try { if (attempted) await ReleaseUpdateAsync(operationId, active); }
+                finally { hold.Dispose(); }
+            }
+        }
+    }
+
+    private async Task ReleaseUpdateAsync(string operationId, Ports active)
+    {
+        if (!ReferenceEquals(active, ports)) return;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try { await OwnerAsync(HttpMethod.Post, "update-preparation/release", new { operationId }, deadline.Token); }
+        catch (Exception error) when (error is IOException or HttpRequestException or JsonException or OperationCanceledException) { }
+    }
+
     public void Dispose()
     {
         managed.Dispose();
@@ -811,6 +908,7 @@ internal sealed class LinkHost : IDisposable
     }
 
     private sealed record WorkerCard(string ConnectionId, string Url, string Token, string? DisplayName);
+    private sealed record PreparedUpdate(LinkUpdateHandoff Receipt, Ports Ports, IDisposable Activity);
 }
 
 internal sealed record Ports(int Phone, int Owner, int Relay);

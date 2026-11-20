@@ -933,15 +933,44 @@ export async function main(): Promise<void> {
     throw error;
   }
 
+  let earlyStop: string | undefined;
+  let handleStop = (signal: string): void => { earlyStop ??= signal; };
+  const stopForTerm = (): void => handleStop('SIGTERM');
+  const stopForInterrupt = (): void => handleStop('SIGINT');
+  const stopForParent = (): void => handleStop('parent-stdin-closed');
+  const watchParent = env('DEVICE_GATEWAY_STOP_ON_STDIN_END') === '1';
+  process.on('SIGTERM', stopForTerm);
+  process.on('SIGINT', stopForInterrupt);
+  if (watchParent) {
+    process.stdin.once('end', stopForParent);
+    process.stdin.resume();
+  }
+
   if (startup && updateMarker) {
     // All required listeners are bound. Keep requests and background work
     // fenced until the installer commits the program and state transaction.
     startup.ready = true;
-    for (let marker = readUpdateMarker(); marker !== undefined; marker = readUpdateMarker()) {
+    for (let marker = readUpdateMarker(); marker !== undefined && !earlyStop; marker = readUpdateMarker()) {
       if (marker !== startup.operationId) {
         configError('CONFIG_INVALID', 'installation operation changed during startup');
       }
       await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (earlyStop) {
+      // A health process exits while the marker is still present. Never open
+      // task intake or start background work just to drain the listeners.
+      await Promise.all(listeners.map(({ server }) => new Promise<void>((closed) => {
+        server.close(() => closed());
+        server.closeAllConnections();
+      })));
+      built.store.close();
+      process.off('SIGTERM', stopForTerm);
+      process.off('SIGINT', stopForInterrupt);
+      if (watchParent) {
+        process.stdin.off('end', stopForParent);
+        process.stdin.pause();
+      }
+      return;
     }
     delete built.ctx.startupUpdate;
   }
@@ -1102,12 +1131,8 @@ export async function main(): Promise<void> {
     for (const { server } of listeners) server.close(done);
     setTimeout(() => process.exit(1), 5_000).unref();
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  if (env('DEVICE_GATEWAY_STOP_ON_STDIN_END') === '1') {
-    process.stdin.once('end', () => shutdown('parent-stdin-closed'));
-    process.stdin.resume();
-  }
+  handleStop = shutdown;
+  if (earlyStop) shutdown(earlyStop);
 }
 
 const isMain = process.argv[1] !== undefined
