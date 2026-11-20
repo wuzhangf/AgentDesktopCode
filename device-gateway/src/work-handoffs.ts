@@ -22,7 +22,7 @@ import {
   type KeyObject,
 } from 'crypto';
 import {
-  chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync,
+  chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync,
   renameSync, unlinkSync, writeFileSync, writeSync,
 } from 'fs';
 import { join } from 'path';
@@ -30,6 +30,7 @@ import type {
   GatewayAuth, GatewayLocalTasks, GatewayStoreView,
   GatewayWorkHandoffs, JsonObject, LocalTaskResult,
 } from './context.js';
+import type { ImportedOrigin } from './xagt/origin-grants.js';
 import {
   Device, exact as exactFields, fail, GatewayError, hash,
   id as checkId, isRecord, permitsLaunch, scopeContains, text as fieldText,
@@ -267,6 +268,7 @@ interface HandoffImport {
   receipts: Receipt[];
   spentKeys: string[];
   grantRevision: number;
+  admittedGrantRevision?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -310,6 +312,7 @@ const MATERIAL_PRIORITY = ['DOC', 'TRANSCRIPT', 'MANIFEST', 'PROOF', 'BUNDLE'];
 const STOP_PROOF_METHODS = ['WINDOWS_JOB_ACTIVE_ZERO', 'DARWIN_KQUEUE_NO_FORK_GROUP_ZERO',
   'OWNED_PROCESS_GROUP', 'MODEL_NO_FORK_AND_REGISTERED_PROCESS_GROUP_ZERO'];
 const PEER_PREFLIGHT_TTL = 2 * 60_000;
+const ORIGIN_COPY_DIGEST_LIMIT = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // ACS upstream seam (Java AcsUpstream.call / callBytes).
@@ -3688,6 +3691,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     imp.sourceHostRef = sourceHostRef; imp.sourceKeyId = text(proof, 'sourceKeyId');
     imp.sealScheme = scheme; imp.sealSignature = text(proof, 'signature');
     imp.phase = 'STAGED'; imp.grantRevision = device.revision;
+    imp.admittedGrantRevision = device.revision;
     imp.received = {}; imp.chunks = []; imp.stagedRefs = {}; imp.receipts = []; imp.spentKeys = [];
     imp.evidenceAt = 0;
     imp.createdAt = imp.updatedAt = Date.now();
@@ -4315,6 +4319,226 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
     if (!targetInScope) delete view.consumptionReport;
     return { ...view, frozenManifestDigest: imp.sealBinding.split('|')[1],
       recoveryActor: { deviceId: device.id, originalDeviceId: imp.deviceId, targetInScope } };
+  }
+
+  /**
+   * Resolve the provenance of an already-started local import for the MCP
+   * reader.  This is deliberately a read-only proof gate: it does not refresh
+   * evidence, launch a task, expose prompt/launch wires, or return filesystem
+   * paths.  Every value returned here is derived from a freshly verified,
+   * frozen manifest and the exact target task binding supplied by the caller.
+   */
+  async resolveImportedOrigin(
+    importId: string,
+    targetStoreId: string,
+    targetTaskId: string,
+    targetDeviceId?: string,
+  ): Promise<ImportedOrigin> {
+    id(importId); id(targetStoreId); id(targetTaskId);
+    const imp = this.store.transaction(() => this.store.list<HandoffImport>(IMPORT_KIND)
+      .find(row => row.importId === importId));
+    if (imp == null) fail('NOT_FOUND', 404);
+    if (imp.retirementProof != null || ['CANCELLED', 'CANCELLING', 'RETIRING'].includes(imp.phase)) {
+      fail('HANDOFF_IMPORT_CANCELLED', 409);
+    }
+    if (!['STARTING', 'STARTED'].includes(imp.phase) || imp.targetKind !== 'WORKER_LOCAL' ||
+        imp.targetStoreId !== targetStoreId || imp.targetTaskRef !== targetTaskId ||
+        (targetDeviceId != null && imp.deviceId !== targetDeviceId)) {
+      fail('HANDOFF_TARGET_MISMATCH', 403);
+    }
+
+    let manifest: JsonObject;
+    try {
+      const parsed: unknown = JSON.parse(imp.manifestJson);
+      if (!isRecord(parsed)) fail('MANIFEST_INVALID', 422);
+      manifest = parsed;
+    } catch (e) {
+      if (e instanceof GatewayError) throw e;
+      fail('MANIFEST_INVALID', 422);
+    }
+    if (asText(manifest.schemaVersion) !== 'work-handoff/1' ||
+        asText(manifest.handoffId) !== imp.sourceHandoffId ||
+        asText(manifest.materialDigest) !== imp.manifestDigest ||
+        asText(manifest.requestKey) == null || !Number.isSafeInteger(asLong(manifest.materialRevision, -1)) ||
+        asLong(manifest.materialRevision, -1) < 0) {
+      fail('MANIFEST_INVALID', 422);
+    }
+    if (imp.sealScheme !== 'RSA-SHA256-FROZEN-1' || !imp.sealBinding.startsWith('work-handoff-frozen/1|')) {
+      fail('SEAL_PROOF_SCHEME_UNSUPPORTED', 422);
+    }
+
+    // Re-check the issuer key and the complete frozen-manifest signature. A
+    // peer registration is the trust anchor; the stored signature is never
+    // treated as sufficient merely because the import reached STARTED.
+    const trusted = this.peer(imp.sourceHostRef, imp.sourceKeyId);
+    if (trusted == null) fail('PEER_NOT_TRUSTED', 403);
+    const frozenDigest = this.digest(manifest);
+    const frozenBinding = `work-handoff-frozen/1|${frozenDigest}`;
+    if (imp.sealBinding !== frozenBinding || !this.verify(trusted.publicKey, frozenBinding, imp.sealSignature)) {
+      fail('SEAL_PROOF_INVALID', 403);
+    }
+
+    const source = manifest.sourceRef;
+    const target = manifest.targetAgentRef;
+    if (!isRecord(source) || !isRecord(target)) fail('MANIFEST_INVALID', 422);
+    const sourceKind = asText(source.kind);
+    if (sourceKind !== 'WORKER_LOCAL' && sourceKind !== 'ACS') fail('MANIFEST_INVALID', 422);
+    const sourceStoreId = asText(source.storeId);
+    const sourceEngineId = asText(source.engineId);
+    const sourceTaskId = asText(source.taskId);
+    const sourceSessionId = asText(source.sessionId);
+    if (!sourceStoreId || !sourceEngineId ||
+        (sourceKind === 'WORKER_LOCAL' ? !sourceTaskId : !sourceSessionId)) {
+      fail('MANIFEST_INVALID', 422);
+    }
+    const sourceIdentity: JsonObject = {
+      kind: sourceKind, storeId: sourceStoreId, engineId: sourceEngineId,
+      hostRef: imp.sourceHostRef,
+      ...(sourceKind === 'WORKER_LOCAL' ? { taskId: sourceTaskId } : { sessionId: sourceSessionId }),
+      ...(asText(source.workspaceAlias) ? { workspaceAlias: asText(source.workspaceAlias) } : {}),
+    };
+
+    // The target proof is issued by this gateway. Verify issuer (our current
+    // key), audience (the original device/grant), source round and exact C
+    // target before returning any origin data.
+    this.ensureSigningKey();
+    const pair = this.signingKeyPair!;
+    const targetProof = manifest.targetPreflight;
+    const expectedTarget: JsonObject = {
+      hostKey: this.namespace, kind: 'WORKER_LOCAL', storeId: imp.targetStoreId,
+      engineId: imp.targetEngineId, projectRef: imp.targetProjectRef,
+      ...(imp.targetPolicyPresetId == null ? {} : { policyPresetId: imp.targetPolicyPresetId }),
+    };
+    const signedRevision = asLong(at(targetProof, 'grantRevision'), -1);
+    const admittedRevision = imp.admittedGrantRevision ?? imp.grantRevision;
+    const appendedLegacyScope = imp.admittedGrantRevision == null && imp.targetLaunchTaskRef === targetTaskId &&
+      signedRevision === admittedRevision - 1;
+    if (!isRecord(targetProof) || targetProof.schemaVersion !== 'work-handoff-target-preflight/1' ||
+        targetProof.sourceHostRef !== imp.sourceHostRef || targetProof.requestKey !== manifest.requestKey ||
+        targetProof.targetDeviceId !== imp.deviceId || typeof targetProof.grantRevision !== 'number' ||
+        (signedRevision !== admittedRevision && !appendedLegacyScope) ||
+        targetProof.kid !== pair.kid || asText(targetProof.optionsRevision) !== imp.targetOptionsRevision ||
+        canonical(targetProof.target) !== canonical(target) || canonical(target) !== canonical(expectedTarget) ||
+        canonical(targetProof.sourceRef) !== canonical(this.peerSourceBinding(source)) ||
+        !this.verify(pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+          canonical(this.peerPreflightBinding(targetProof)), asText(targetProof.signature) ?? '')) {
+      fail('HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+    }
+    const issued = asLong(targetProof.issuedAt, -1), expires = asLong(targetProof.expiresAt, -1);
+    // The preflight TTL gates admission, not historical provenance reads. A
+    // frozen import remains resolvable after the two-minute window as long as
+    // its durable creation time was within the signed audience interval (with
+    // a small clock-skew allowance).
+    if (issued < 0 || expires !== issued + PEER_PREFLIGHT_TTL ||
+        imp.createdAt < issued - 10_000 || imp.createdAt > expires + 10_000) {
+      fail('HANDOFF_TARGET_PREFLIGHT_EXPIRED', 409);
+    }
+    if (asText(target.kind) !== 'WORKER_LOCAL' || asText(target.hostKey) !== this.namespace ||
+        asText(target.storeId) !== imp.targetStoreId || asText(target.engineId) !== imp.targetEngineId ||
+        asText(target.projectRef) !== imp.targetProjectRef ||
+        (asText(target.policyPresetId) ?? undefined) !== (imp.targetPolicyPresetId ?? undefined)) {
+      fail('HANDOFF_TARGET_MISMATCH', 403);
+    }
+
+    let items: Item[];
+    try { items = this.manifestItems(manifest); } catch (e) {
+      if (e instanceof GatewayError) throw e;
+      fail('MANIFEST_INVALID', 422);
+    }
+    if (items.length === 0 || !items.some(item => item.type === 'DOC' && item.sizeBytes > 0) ||
+        this.itemsDigest(items) !== imp.manifestDigest) {
+      fail('MANIFEST_DIGEST_MISMATCH', 409);
+    }
+    const sourceSeal = at(manifest, 'sourceSeal');
+    if (!isRecord(sourceSeal) || asText(sourceSeal.state) !== 'SEALED' ||
+        asText(sourceSeal.sealId) !== imp.sourceSealRef) fail('SEAL_PROOF_INVALID', 403);
+
+    const materials: JsonObject[] = [];
+    for (const item of items) {
+      let name: string;
+      try { name = relName(item.relName); } catch (e) {
+        if (e instanceof GatewayError) throw e;
+        fail('MANIFEST_INVALID', 422);
+      }
+      const file = join(this.materialsDir, 'imports', imp.importId, name);
+      let sizeVerified = false;
+      let boundedDigestVerified = false;
+      if (existsSync(file)) {
+        try {
+          const size = statSync(file).size;
+          sizeVerified = size === item.sizeBytes && imp.received[name] === item.sizeBytes &&
+            imp.chunks.includes(`complete:${name}`);
+          if (sizeVerified && size <= ORIGIN_COPY_DIGEST_LIMIT) {
+            boundedDigestVerified = sha256hex(new Uint8Array(readFileSync(file))) === item.sha256;
+          }
+        } catch { /* unavailable copy remains an explicit false */ }
+      }
+      materials.push({
+        relName: name, type: item.type, role: item.role, sizeBytes: item.sizeBytes,
+        sha256: item.sha256, availableLocally: sizeVerified,
+        boundedDigestVerified: sizeVerified && item.sizeBytes <= ORIGIN_COPY_DIGEST_LIMIT
+          ? boundedDigestVerified : undefined,
+        sourceMaterialRef: {
+          handoffId: imp.sourceHandoffId, relName: name, sha256: item.sha256,
+          materialRevision: asLong(manifest.materialRevision),
+        },
+      });
+    }
+    const sourceRound: JsonObject = {
+      handoffId: imp.sourceHandoffId, requestKey: asText(manifest.requestKey)!,
+      sourceSealRef: imp.sourceSealRef, materialRevision: asLong(manifest.materialRevision),
+      materialDigest: imp.manifestDigest,
+      ...(isRecord(manifest.snapshotRange) ? {
+        snapshotRange: {
+          ...(asText(manifest.snapshotRange.cursor) == null ? {} : { cursor: asText(manifest.snapshotRange.cursor) }),
+          ...(asLong(manifest.snapshotRange.observedAt, -1) < 0 ? {} : { observedAt: asLong(manifest.snapshotRange.observedAt) }),
+        },
+      } : {}),
+      ...(Array.isArray(manifest.phases) ? {
+        phases: asArr(manifest.phases).slice(0, 64).filter(isRecord).map(phase => ({
+          ...(asText(phase.phase) == null ? {} : { phase: asText(phase.phase) }),
+          ...(asText(phase.actionId) == null ? {} : { actionId: asText(phase.actionId) }),
+          ...(asLong(phase.at, -1) < 0 ? {} : { at: asLong(phase.at) }),
+        })),
+      } : {}),
+      ...(Array.isArray(manifest.resumableRequestRefs) ? {
+        sourceTurnEvidence: asArr(manifest.resumableRequestRefs).slice(0, 32).filter(isRecord).map(ref => ({
+          ...(asText(ref.kind) == null ? {} : { kind: asText(ref.kind) }),
+          ...(asText(ref.requestKey) == null ? {} : { requestKey: asText(ref.requestKey) }),
+          ...(asText(ref.ref) == null ? {} : { ref: asText(ref.ref) }),
+        })),
+      } : {}),
+    };
+    const publicFacts: JsonObject = {
+      schemaVersion: 'xagt-origin/1', importId: imp.importId,
+      sourceHostRef: imp.sourceHostRef, source: sourceIdentity, sourceRound,
+      frozenManifest: {
+        schemaVersion: 'work-handoff/1', handoffId: imp.sourceHandoffId,
+        requestKey: asText(manifest.requestKey)!, materialRevision: asLong(manifest.materialRevision),
+        materialDigest: imp.manifestDigest, sourceRef: sourceIdentity,
+        targetAgentRef: { ...expectedTarget },
+        sourceSeal: { sealId: imp.sourceSealRef, state: 'SEALED', sealedAt: asLong(sourceSeal.sealedAt, 0) },
+      },
+      proof: { scheme: imp.sealScheme, sourceKeyId: imp.sourceKeyId, verified: true },
+      target: {
+        kind: imp.targetKind, hostKey: this.namespace, storeId: imp.targetStoreId,
+        taskId: imp.targetTaskRef, engineId: imp.targetEngineId, projectRef: imp.targetProjectRef,
+        ...(imp.targetWorkspaceAlias == null ? {} : { workspaceAlias: imp.targetWorkspaceAlias }),
+        deviceId: imp.deviceId, grantRevision: imp.grantRevision,
+        optionsRevision: imp.targetOptionsRevision, phase: imp.phase,
+      },
+      materials, availableLocalCopies: materials.filter(item => item.availableLocally === true).length,
+    };
+    return {
+      sourceHostRef: imp.sourceHostRef,
+      sourceKeyId: imp.sourceKeyId,
+      sourceHandoffId: imp.sourceHandoffId,
+      manifestDigest: imp.manifestDigest,
+      sourceStoreId,
+      sourceTaskId: sourceTaskId ?? sourceSessionId!,
+      targetProjectId: imp.targetProjectRef ?? '',
+      publicFacts,
+    };
   }
 
   private importView(imp: HandoffImport): JsonObject {

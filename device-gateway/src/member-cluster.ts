@@ -41,6 +41,8 @@ const stableId = (value: string): string => 'agt-' + createHash('sha256').update
 export class MemberCluster {
   private timer?: ReturnType<typeof setTimeout>;
   private readonly shutdown = new AbortController();
+  private handoffKey?: { hostRef: string; read: () => Json | Promise<Json> };
+  private registeredHandoffKey?: string;
 
   constructor(
     private readonly sessionFile: string,
@@ -57,6 +59,10 @@ export class MemberCluster {
 
   start(): void {
     void this.sync().finally(() => this.schedule());
+  }
+
+  handoffSigningKey(hostRef: string, read: () => Json | Promise<Json>): void {
+    this.handoffKey = { hostRef, read };
   }
 
   private schedule(): void {
@@ -117,6 +123,17 @@ export class MemberCluster {
         grouped.set(agentId, row);
       }
       await this.request(identity, 'PUT', selfRoute, { displayName: this.displayName().slice(0, 80), agents: [...grouped.values()] });
+      if (this.handoffKey) {
+        const { hostRef, read } = this.handoffKey;
+        const key = await read();
+        if (identifier(key.kid) && typeof key.publicKey === 'string') {
+          const registration = JSON.stringify([identity.origin, identity.workspaceId, identity.instanceId, hostRef, key.kid]);
+          if (this.registeredHandoffKey !== registration) {
+            await this.request(identity, 'POST', `${linkRoute}/delegations/handoff-keys`, { hostRef, kid: key.kid, publicKey: key.publicKey });
+            this.registeredHandoffKey = registration;
+          }
+        }
+      }
     } catch { /* best effort; reads remain fail-closed */ }
   }
   async directory(): Promise<Json> {

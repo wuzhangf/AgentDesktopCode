@@ -76,7 +76,7 @@ export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['
     if (!isXagtTool(body.tool)) {
       xfail('INVALID_REQUEST', '未知工具。', false, 400);
     }
-    if (body.tool === 'xagt_list_cluster' && !localCluster) xfail('SCOPE_DENIED');
+    if (['xagt_list_cluster', 'xagt_list_handoff_origins', 'xagt_resolve_origin'].includes(body.tool) && !localCluster) xfail('SCOPE_DENIED');
     const args = body.arguments === undefined ? {}
       : isRecord(body.arguments) ? body.arguments
       : xfail('INVALID_REQUEST', 'arguments 必须是对象。', false, 400);

@@ -34,6 +34,7 @@ import {
   type CursorPayload,
 } from './refs.js';
 import type { MemberCluster } from '../member-cluster.js';
+import type { OriginGrants } from './origin-grants.js';
 
 type Json = Record<string, unknown>;
 
@@ -47,6 +48,7 @@ export interface XagtReadDeps {
   deviceName?: string;
   now?: () => number;
   cluster?: MemberCluster;
+  origins?: OriginGrants;
 }
 
 const PAGE_CAP = 20; // vendor transcript route serves ≤20 messages per call.
@@ -85,6 +87,8 @@ const TOOL_ARGS: Record<XagtTool, ReadonlySet<string>> = {
   xagt_list_materials: new Set(['sessionRef', 'prefix', 'cursor', 'limit']),
   xagt_read_material: new Set(['materialRef', 'expectedSha256', 'cursor', 'maxBytes']),
   xagt_list_cluster: new Set(),
+  xagt_list_handoff_origins: new Set(),
+  xagt_resolve_origin: new Set(['handoffRef']),
 };
 
 export class XagtReadService {
@@ -124,6 +128,8 @@ export class XagtReadService {
           case 'xagt_list_materials': return this.listMaterials(reader, args);
           case 'xagt_read_material': return this.readMaterial(reader, args);
           case 'xagt_list_cluster': return this.listCluster(reader);
+          case 'xagt_list_handoff_origins': return this.listOrigins(reader);
+          case 'xagt_resolve_origin': return this.resolveOrigin(reader, args.handoffRef);
         }
       })();
       return envelope;
@@ -142,6 +148,60 @@ export class XagtReadService {
         ref, code: outcome, bytes,
       })}`);
     }
+  }
+
+  private async listOrigins(reader: ReaderGrant): Promise<Envelope> {
+    if (!this.deps.origins) xfail('UNSUPPORTED');
+    return this.envelope(
+      { deviceName: this.deviceName, agentName: 'xagt-link', adapter: 'work-handoff', access: 'local', ref: '' },
+      { level: 'FULL', basis: 'SOURCE_FACTS', limitations: [] },
+      { origins: this.deps.origins.list(reader) },
+    );
+  }
+
+  private async resolveOrigin(reader: ReaderGrant, handoffRef: unknown): Promise<Envelope> {
+    const origins = this.deps.origins;
+    if (!origins) xfail('UNSUPPORTED');
+    const origin = await origins.resolve(reader, handoffRef);
+    let sourceAccess = 'FROZEN_ONLY';
+    let sessionRef: string | undefined;
+    let peerName = origin.sourceHostRef;
+    if (origin.peerId) {
+      const peer = this.deps.peers.require(origin.peerId);
+      peerName = peer.name || peerName;
+      const targets = await this.peerTargets(peer);
+      const target = targets.find(row => row.backendStoreId === origin.sourceStoreId && row.online === true);
+      if (!target || typeof target.targetRef !== 'string') {
+        sourceAccess = targets.some(row => row.online === true) ? 'SOURCE_NOT_SHARED' : 'SOURCE_OFFLINE';
+      } else {
+        try {
+          const sessions = await this.listSessions(reader, { targetRef: target.targetRef, query: origin.sourceTaskId, limit: 10 });
+          const items = sessions.data.sessions;
+          const session = Array.isArray(items) ? items.find(row => isRecord(row) && row.kind === 'MANAGED_TASK'
+            && row.title === origin.sourceTaskId && typeof row.sessionRef === 'string'
+            && typeof row.projectId === 'string' && canSeeTask(reader, origin.sourceStoreId, row.projectId, origin.sourceTaskId)) : undefined;
+          if (session !== undefined) {
+            const bound = resolveRef(this.deps.store, session.sessionRef, 'session');
+            if (bound.o !== 'p' || bound.p !== origin.peerId) xfail('SCOPE_DENIED');
+            sessionRef = issueRef(this.deps.store, 'session', { ...bound, originHandoffRef: handoffRef });
+            sourceAccess = 'ONLINE';
+          } else sourceAccess = 'SOURCE_NOT_SHARED';
+        } catch (error) {
+          const denied = error instanceof XagtError && ['SCOPE_DENIED', 'GRANT_EXPIRED', 'NOT_FOUND'].includes(error.code);
+          sourceAccess = denied ? 'SOURCE_NOT_SHARED' : 'SOURCE_OFFLINE';
+        }
+      }
+    }
+    const latest = await origins.resolve(reader, handoffRef);
+    if (latest.peerId !== origin.peerId) { sessionRef = undefined; sourceAccess = 'FROZEN_ONLY'; }
+    return this.envelope(
+      { deviceName: peerName, agentName: '', adapter: 'verified-handoff-origin', access: 'local', ref: String(handoffRef) },
+      { level: sourceAccess === 'ONLINE' ? 'FULL' : 'PARTIAL', basis: 'SOURCE_FACTS',
+        limitations: sourceAccess === 'ONLINE' ? [] : [sourceAccess] },
+      { handoffRef, sourceHandoffId: origin.sourceHandoffId, sourceHostRef: origin.sourceHostRef,
+        manifestDigest: origin.manifestDigest, frozen: origin.publicFacts, sourceAccess,
+        ...(sessionRef === undefined ? {} : { sessionRef, sessionCoverage: 'LIVE_AUTHORIZED_HISTORY' }) },
+    );
   }
 
   private async listCluster(reader: ReaderGrant): Promise<Envelope> {
@@ -248,6 +308,8 @@ export class XagtReadService {
   ): Promise<Envelope> {
     const peerId = String(binding.p);
     if (!canUsePeer(reader, peerId)) xfail('SCOPE_DENIED');
+    const originRef = typeof binding.originHandoffRef === 'string' ? binding.originHandoffRef : undefined;
+    if (originRef !== undefined && (await this.deps.origins?.resolve(reader, originRef))?.peerId !== peerId) xfail('SCOPE_DENIED');
     const peer = this.deps.peers.require(peerId);
     const remoteArgs: Json = { ...args };
     remoteArgs[refKey] = binding.r;
@@ -274,7 +336,8 @@ export class XagtReadService {
     const remote = json.result as Json;
     // Re-wrap remote refs + cursor so the model only ever sees local handles.
     const data = isRecord(remote.data) ? { ...remote.data } : {};
-    this.rewrapRefs(data, peerId);
+    if (originRef !== undefined && (await this.deps.origins?.resolve(reader, originRef))?.peerId !== peerId) xfail('SCOPE_DENIED');
+    this.rewrapRefs(data, peerId, originRef);
     const remoteCursor = typeof remote.nextCursor === 'string' ? remote.nextCursor : undefined;
     const localCursor = remoteCursor !== undefined
       ? this.cursor(reader, { kind: 'peer', for: bindingKey(binding), remote: remoteCursor })
@@ -294,10 +357,11 @@ export class XagtReadService {
     );
   }
 
-  private rewrapRefs(data: Json, peerId: string): void {
+  private rewrapRefs(data: Json, peerId: string, originRef?: string): void {
     const wrap = (value: unknown, kind: 'target' | 'session' | 'material'): string | undefined =>
       typeof value === 'string' && value.length > 0
-        ? issueRef(this.deps.store, kind, { v: 1, o: 'p', p: peerId, r: value })
+        ? issueRef(this.deps.store, kind, { v: 1, o: 'p', p: peerId, r: value,
+          ...(originRef === undefined ? {} : { originHandoffRef: originRef }) })
         : undefined;
     for (const key of ['targets', 'sessions', 'materials', 'messages', 'matches', 'events']) {
       const list = data[key];

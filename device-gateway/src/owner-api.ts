@@ -227,6 +227,10 @@ export async function handleOwnerRoute(
       if ((req.rawBody?.length ?? 0) > 64 * 1024 || req.bodyError === 'BODY_TOO_LARGE') fail('INVALID_REQUEST', 413);
       return { status: 200, body: await ctx.xagtOfflineOrigin.rpc(req.accessToken, jsonBody(req)) };
     }
+    if (req.path === '/api/xagt/v1/handoff' && req.method === 'POST') {
+      if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: await ctx.xagtHandoff.rpc(req.accessToken, jsonBody(req)) };
+    }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
     if (!secureEquals(creds.ownerClientToken, req.clientSessionHeader)) fail('UNAUTHORIZED', 401);
@@ -267,6 +271,26 @@ export async function handleOwnerRoute(
     if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-offline-targets') {
       if (!ctx.xagtOfflineTarget) fail('OPERATION_NOT_ALLOWED', 403);
       await ctx.xagtOfflineTarget.revoke(parts[5]);
+      return { status: 204, body: null };
+    }
+    if (method === 'POST' && path === `${ROOT}/mcp-handoff-origins`) {
+      if (!ctx.xagtOrigins) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.xagtOrigins.create(jsonBody(req)) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-handoff-origins') {
+      if (!ctx.xagtOrigins) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      ctx.xagtOrigins.remove(parts[5]);
+      return { status: 204, body: null };
+    }
+    if (method === 'POST' && path === `${ROOT}/mcp-handoff-actions`) {
+      if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.xagtHandoff.issue(jsonBody(req)) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-handoff-actions') {
+      if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      ctx.xagtHandoff.revoke(parts[5]);
       return { status: 204, body: null };
     }
     if (method === 'GET' && path === `${ROOT}/work-handoffs/signing-key`) {

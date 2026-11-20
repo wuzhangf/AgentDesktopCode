@@ -11,6 +11,8 @@
 import type { Device, LaunchScope, Resource, ScopeRecord, SourceRead } from './protocol';
 import type { OfflineOrigin } from './xagt/offline-origin.js';
 import type { OfflineTargetService } from './xagt/offline-target.js';
+import type { ImportedOrigin, OriginGrants } from './xagt/origin-grants.js';
+import type { HandoffMcp } from './xagt/handoff-mcp.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 export type JsonObject = Record<string, unknown>;
@@ -315,6 +317,7 @@ export interface GatewayChildMessages {
 
 export interface GatewayWorkHandoffs {
   advanceConfirmedLocalHandoffs?(): Promise<void>;
+  resolveImportedOrigin?(importId: string, targetStoreId: string, targetTaskId: string): Promise<ImportedOrigin>;
   /** Java remote() — the whole /personal/v1/work-handoffs dispatcher. */
   remote(
     token: string,
@@ -490,5 +493,7 @@ export interface GatewayContext {
   xagt?: GatewayXagt;
   xagtOfflineOrigin?: OfflineOrigin;
   xagtOfflineTarget?: OfflineTargetService;
+  xagtOrigins?: OriginGrants;
+  xagtHandoff?: HandoffMcp;
   config: GatewayConfig;
 }

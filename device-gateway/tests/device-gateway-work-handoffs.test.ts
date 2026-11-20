@@ -4,7 +4,8 @@
  * native/ACS seams. Assertions key on phase derivation, idempotent replay,
  * honest pending states, sealing order and takeover evidence.
  */
-import { mkdtempSync, rmSync } from 'fs';
+import { createPrivateKey, generateKeyPairSync, sign as cryptoSign } from 'crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
@@ -162,7 +163,7 @@ const rig = (nativeReplies: Map<string, NativeReply>, acsReplies = new Map<strin
   const acs = acsFake(acsReplies);
   const access = new WorkHandoffAccess(
     store, auth(d), acs.port, local.port, join(dir, 'materials'), join(dir, 'signing'), 'host-1');
-  return { access, store, local, acs, device: d, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { access, store, local, acs, device: d, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 };
 
 const CREATE_BODY: JsonObject = {
@@ -181,6 +182,62 @@ const expectError = async (p: Promise<unknown>, code: string, status: number) =>
     expect(err.code).toBe(code);
     expect(err.httpStatus).toBe(status);
   }
+};
+
+const canonicalForProof = (value: unknown): unknown => Array.isArray(value)
+  ? value.map(canonicalForProof)
+  : value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, entry]) => [key, canonicalForProof(entry)]))
+    : value;
+
+/** A frozen worker import fixture with a real peer signature and local target
+ * preflight. The resolver tests intentionally bypass create/start so they can
+ * exercise re-verification against durable state directly. */
+const importedOriginFixture = async () => {
+  const native = new Map<string, NativeReply>([
+    ['store-tgt POST /task-preflights', { status: 200, body: { projectId: 'proj', engineId: 'pi', optionsRevision: 'opts-1' } }],
+  ]);
+  const fixture = rig(native);
+  const sourcePair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const sourcePublicKey = sourcePair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+  await fixture.access.registerPeer({ peerHostRef: 'source-host', kid: 'src-kid', publicKey: sourcePublicKey });
+  const sourceRef = { kind: 'WORKER_LOCAL', storeId: 'store-src', taskId: 'task-src', engineId: 'pi' };
+  const targetRef = { hostKey: 'host-1', kind: 'WORKER_LOCAL', storeId: 'store-tgt', engineId: 'pi', projectRef: 'proj' };
+  const targetProofReply = await fixture.access.remote('tok', 'POST', ['target-preflights'], {
+    requestKey: 'source-rk', sourceHostRef: 'source-host', sourceRef, targetAgentRef: targetRef,
+  }, 'source-rk', null);
+  const targetPreflight = targetProofReply.body as JsonObject;
+  const bytes = Buffer.from('x', 'utf8');
+  const item = { relName: 'handoff.md', type: 'DOC', sizeBytes: bytes.length, sha256: hash('handoff.md|' + hash('x') + ';'), role: 'REFERENCE_TEXT' };
+  // itemsDigest() binds `relName|sha256;`, not file contents.
+  item.sha256 = hash(bytes.toString('utf8'));
+  const manifest: JsonObject = {
+    schemaVersion: 'work-handoff/1', handoffId: 'wh-source', requestKey: 'source-rk', sourceRef,
+    targetAgentRef: targetRef, targetPreflight, materialRevision: 3,
+    materialDigest: hash(`${item.relName}|${item.sha256};`), items: [item],
+    snapshotRange: { cursor: 'cursor-3', observedAt: Date.now() },
+    phases: [{ phase: 'TARGET_STAGING', actionId: 'phase-1', at: Date.now() }],
+    sourceSeal: { sealId: 'seal-source', state: 'SEALED', sealedAt: Date.now() },
+  };
+  const frozenBinding = `work-handoff-frozen/1|${hash(JSON.stringify(canonicalForProof(manifest)))}`;
+  const sourcePrivateKey = createPrivateKey({ key: sourcePair.privateKey.export({ format: 'der', type: 'pkcs8' }), format: 'der', type: 'pkcs8' });
+  const sealSignature = cryptoSign('sha256', Buffer.from(frozenBinding, 'utf8'), sourcePrivateKey).toString('base64');
+  const imp = {
+    importId: 'import-1', deviceId: 'dev-1', requestKey: 'import-rk', fingerprint: 'fp-1',
+    manifestJson: JSON.stringify(manifest), manifestDigest: manifest.materialDigest as string,
+    sourceHandoffId: 'wh-source', sourceSealRef: 'seal-source', sealBinding: frozenBinding,
+    sourceHostRef: 'source-host', sourceKeyId: 'src-kid', sealScheme: 'RSA-SHA256-FROZEN-1', sealSignature,
+    targetKind: 'WORKER_LOCAL', targetStoreId: 'store-tgt', targetEngineId: 'pi', targetProjectRef: 'proj',
+    phase: 'STARTED', received: { 'handoff.md': 1 }, chunks: ['complete:handoff.md'], stagedRefs: {},
+    targetTaskRef: 'task-target', targetOptionsRevision: 'opts-1', targetPolicyPresetId: undefined,
+    evidenceAt: 0, receipts: [], spentKeys: [], grantRevision: fixture.device.revision,
+    createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  fixture.store.put('handoff-import', 'dev-1:import-1', imp);
+  mkdirSync(join(fixture.dir, 'materials', 'imports', 'import-1'), { recursive: true });
+  writeFileSync(join(fixture.dir, 'materials', 'imports', 'import-1', 'handoff.md'), bytes);
+  return { ...fixture, imp, manifest, targetPreflight, sourcePrivateKey };
 };
 
 /** Full native script for a worker-local → worker-local takeover. */
@@ -502,5 +559,90 @@ describe('WorkHandoffAccess takeover', () => {
       expect(body.pendingReason).toBe('TARGET_VERIFY_PENDING');
       expect(body.targetTaskRef).toBe('t-tgt');
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('WorkHandoffAccess.resolveImportedOrigin', () => {
+  it('returns a sanitized exact source round and bounded local-copy evidence', async () => {
+    const f = await importedOriginFixture();
+    try {
+      const resolved = await f.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target');
+      expect(resolved.sourceHostRef).toBe('source-host');
+      expect(resolved.sourceKeyId).toBe('src-kid');
+      expect(resolved.sourceHandoffId).toBe('wh-source');
+      expect(resolved.sourceStoreId).toBe('store-src');
+      expect(resolved.sourceTaskId).toBe('task-src');
+      expect(resolved.manifestDigest).toBe(f.imp.manifestDigest);
+      expect(resolved.publicFacts.schemaVersion).toBe('xagt-origin/1');
+      expect((resolved.publicFacts.target as JsonObject).taskId).toBe('task-target');
+      expect(resolved.publicFacts.availableLocalCopies).toBe(1);
+      const materials = resolved.publicFacts.materials as JsonObject[];
+      expect(materials[0].availableLocally).toBe(true);
+      expect(materials[0].boundedDigestVerified).toBe(true);
+      expect(materials[0].path).toBeUndefined();
+      expect(resolved.publicFacts.targetLaunchWire).toBeUndefined();
+    } finally { f.cleanup(); }
+  });
+
+  it('keeps the original signed audience after the launch appends the target scope', async () => {
+    const f = await importedOriginFixture();
+    try {
+      const live = { ...f.imp, grantRevision: f.imp.grantRevision + 1, targetLaunchTaskRef: 'task-target' };
+      f.store.put('handoff-import', 'dev-1:import-1', { ...live, admittedGrantRevision: f.imp.grantRevision });
+      await expect(f.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target')).resolves.toBeDefined();
+      f.store.put('handoff-import', 'dev-1:import-1', live);
+      await expect(f.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target')).resolves.toBeDefined();
+      f.store.put('handoff-import', 'dev-1:import-1', { ...live, grantRevision: live.grantRevision + 1 });
+      await expectError(f.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+    } finally { f.cleanup(); }
+  });
+
+  it('rejects forged issuer, audience, round/digest, and retired imports', async () => {
+    const issuer = await importedOriginFixture();
+    try {
+      (issuer.imp as { sourceKeyId: string }).sourceKeyId = 'untrusted-kid';
+      issuer.store.put('handoff-import', 'dev-1:import-1', issuer.imp);
+      await expectError(issuer.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'PEER_NOT_TRUSTED', 403);
+    } finally { issuer.cleanup(); }
+
+    const audience = await importedOriginFixture();
+    try {
+      const changed = structuredClone(audience.manifest) as JsonObject;
+      (changed.targetPreflight as JsonObject).targetDeviceId = 'other-device';
+      audience.imp.manifestJson = JSON.stringify(changed);
+      audience.imp.sealBinding = `work-handoff-frozen/1|${hash(JSON.stringify(canonicalForProof(changed)))}`;
+      audience.imp.sealSignature = cryptoSign('sha256', Buffer.from(audience.imp.sealBinding, 'utf8'), audience.sourcePrivateKey).toString('base64');
+      audience.store.put('handoff-import', 'dev-1:import-1', audience.imp);
+      await expectError(audience.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+    } finally { audience.cleanup(); }
+
+    const round = await importedOriginFixture();
+    try {
+      const changed = structuredClone(round.manifest) as JsonObject;
+      changed.requestKey = 'different-round';
+      round.imp.manifestJson = JSON.stringify(changed);
+      round.imp.sealBinding = `work-handoff-frozen/1|${hash(JSON.stringify(canonicalForProof(changed)))}`;
+      round.imp.sealSignature = cryptoSign('sha256', Buffer.from(round.imp.sealBinding, 'utf8'), round.sourcePrivateKey).toString('base64');
+      round.store.put('handoff-import', 'dev-1:import-1', round.imp);
+      await expectError(round.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'HANDOFF_TARGET_PREFLIGHT_INVALID', 403);
+    } finally { round.cleanup(); }
+
+    const digest = await importedOriginFixture();
+    try {
+      const changed = structuredClone(digest.manifest) as JsonObject;
+      changed.materialDigest = hash('forged-material-round');
+      digest.imp.manifestJson = JSON.stringify(changed);
+      digest.imp.sealBinding = `work-handoff-frozen/1|${hash(JSON.stringify(canonicalForProof(changed)))}`;
+      digest.imp.sealSignature = cryptoSign('sha256', Buffer.from(digest.imp.sealBinding, 'utf8'), digest.sourcePrivateKey).toString('base64');
+      digest.store.put('handoff-import', 'dev-1:import-1', digest.imp);
+      await expectError(digest.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'MANIFEST_INVALID', 422);
+    } finally { digest.cleanup(); }
+
+    const retired = await importedOriginFixture();
+    try {
+      (retired.imp as { retirementProof?: JsonObject }).retirementProof = { state: 'RETIRED', retiredAt: Date.now() };
+      retired.store.put('handoff-import', 'dev-1:import-1', retired.imp);
+      await expectError(retired.access.resolveImportedOrigin('import-1', 'store-tgt', 'task-target'), 'HANDOFF_IMPORT_CANCELLED', 409);
+    } finally { retired.cleanup(); }
   });
 });

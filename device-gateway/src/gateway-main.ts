@@ -86,6 +86,8 @@ import { XagtReadService } from './xagt/read-service.js';
 import { XagtInteractService } from './xagt/interact.js';
 import { OfflineOrigin } from './xagt/offline-origin.js';
 import { OfflineTargetService } from './xagt/offline-target.js';
+import { OriginGrants } from './xagt/origin-grants.js';
+import { HandoffMcp } from './xagt/handoff-mcp.js';
 import { createXagtHandlers } from './xagt/rpc.js';
 import { MemberCluster } from './member-cluster.js';
 
@@ -849,9 +851,13 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   const xagtPeers = new PeerStore(store, () => opts.storeKey);
   const xagtMaterials = new MaterialStore(store);
   const xagtReaders = new ReaderAccess(store);
+  const resolveImported = ctx.workHandoffs?.resolveImportedOrigin?.bind(ctx.workHandoffs);
+  const origins = memberCluster && resolveImported
+    ? new OriginGrants(store, xagtReaders, xagtPeers, resolveImported, () => memberCluster.delegationIdentity()) : undefined;
   const xagtInteract = memberCluster === undefined ? undefined
     : new XagtInteractService({ store, readers: xagtReaders, transport, memberCluster });
   if (env('DEVICE_GATEWAY_XAGT_READ') !== 'off' && env('DEVICE_GATEWAY_XAGT_READ') !== '0') {
+    ctx.xagtOrigins = origins;
     ctx.xagt = createXagtHandlers({
       readers: xagtReaders,
       peers: xagtPeers,
@@ -864,6 +870,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         materials: xagtMaterials,
         cursorSecret: new Uint8Array(xagtCursorSecret),
         ...(memberCluster !== undefined ? { cluster: memberCluster } : {}),
+        ...(origins === undefined ? {} : { origins }),
       }),
       ...(xagtInteract === undefined ? {} : { interact: xagtInteract }),
     });
@@ -894,6 +901,11 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   if (memberCluster && ctx.xagt) {
     ctx.xagtOfflineOrigin = new OfflineOrigin(store, transport, memberCluster);
     ctx.xagtOfflineTarget = new OfflineTargetService({ store, transport, memberCluster });
+    if (ctx.workHandoffs && localTasks) {
+      memberCluster.handoffSigningKey(host.id, () => ctx.workHandoffs!.publicSigningKey());
+      ctx.xagtHandoff = new HandoffMcp({ store, handoffs: ctx.workHandoffs, auth: devices,
+        local: localTasks, member: memberCluster, storeKey: () => opts.storeKey, hostRef: host.id });
+    }
   }
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch, memberCluster,
     xagtOfflineOrigin: ctx.xagtOfflineOrigin, xagtOfflineTarget: ctx.xagtOfflineTarget };

@@ -26,6 +26,8 @@ export const XAGT_TOOLS = [
   'xagt_list_materials',
   'xagt_read_material',
   'xagt_list_cluster',
+  'xagt_list_handoff_origins',
+  'xagt_resolve_origin',
 ] as const;
 export type XagtTool = (typeof XAGT_TOOLS)[number];
 export const isXagtTool = (value: unknown): value is XagtTool =>
