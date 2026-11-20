@@ -14,7 +14,7 @@ it('publishes stable agent identities and reads the member directory', async () 
     'PAC_RELAY_MEMBER_ORIGIN=https://member.example',
     'PAC_RELAY_AGENT_ACCESS_TOKEN=token', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
     'PAC_RELAY_MEMBER_ID=member', 'PAC_RELAY_WORKSPACE_ID=workspace',
-  ].join('\n'));
+  ].join('\n'), { mode: 0o600 });
   const requests: { url: string; method?: string; body?: string }[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     requests.push({ url: String(input), method: init?.method, body: init?.body as string | undefined });
