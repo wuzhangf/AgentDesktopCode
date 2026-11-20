@@ -64,6 +64,7 @@ import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
 import { clearCloudOwnerGrant, WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { LocalSchedules } from './local-schedules.js';
 import { CloudAcs } from './cloud-acs.js';
 import { LinuxMemberEnrollment } from './linux-member.js';
 import { UpdatePreparation } from './update-preparation.js';
@@ -883,6 +884,9 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.ownerCloudAcsTargets = () => cloudAcs.catalog('owner');
   }
   const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
+  if (linuxProfile && localTasks) {
+    ctx.localSchedules = new LocalSchedules(store, host.id, localTasks, ctx.updatePreparation);
+  }
   const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly
     ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;
   const linuxMember = memberSession ? new LinuxMemberEnrollment(memberSession, host.id,
@@ -991,6 +995,7 @@ export async function main(): Promise<void> {
       server.close(() => resolveClose());
     })));
     built.cloudLaunch?.stop();
+    built.ctx.localSchedules?.stop();
     built.xagtOfflineOrigin?.stop();
     built.xagtOfflineTarget?.stop();
     built.memberCluster?.stop();
@@ -1115,6 +1120,7 @@ export async function main(): Promise<void> {
     void built.cliSupervisor.start();
   }
   built.cloudLaunch?.start();
+  built.ctx.localSchedules?.start();
   built.xagtOfflineOrigin?.start();
   built.xagtOfflineTarget?.start();
   built.memberCluster?.start();
@@ -1187,6 +1193,7 @@ export async function main(): Promise<void> {
     clearInterval(refreshAlternates);
     if (handoffProgress) clearInterval(handoffProgress);
     built.cloudLaunch?.stop();
+    built.ctx.localSchedules?.stop();
     built.xagtOfflineOrigin?.stop();
     built.xagtOfflineTarget?.stop();
     built.memberCluster?.stop();

@@ -140,6 +140,49 @@ existing task receipts remain recoverable. A local-only installation leaves
 cloud configuration unset and skips member sign-in. Cloud dispatch requires
 a separate owner grant for each project and engine.
 
+## Local scheduled tasks
+
+Under the authenticated loopback owner API, use
+`GET /api/v2/personal-access/local-schedules` to list rules or `POST` to
+create one. Use a project and engine advertised under `linkTargets` in
+`GET /api/v2/personal-access/capabilities`. The request's target uses
+`backendStoreId` from the catalog's `backendId`.
+
+```json
+{
+  "requestKey": "weekday-scan",
+  "target": {
+    "backendStoreId": "worker-store",
+    "projectId": "project",
+    "engineId": "codex"
+  },
+  "instruction": "Summarize recent changes in this project.",
+  "timezone": "Asia/Shanghai",
+  "schedule": {"kind": "weekly", "dayOfWeek": 0, "timeOfDay": "09:00"},
+  "offlinePolicy": "queue",
+  "dstPolicy": "fire",
+  "catchUpSeconds": 3600
+}
+```
+
+`daily` takes `timeOfDay`, `weekly` also takes Monday-based `dayOfWeek`,
+and `interval` takes `everySeconds` (300 through 2,592,000). The default
+catch-up window is one hour. `queue` lets a late occurrence wait for the
+same local Worker until then. `skip` skips a trigger when Link or its
+Worker was unavailable. A repeated local hour fires once. `dstPolicy:
+"skip"` skips an invalid spring-forward time, while `fire` moves it
+forward by the offset change.
+
+For one rule, use `GET /local-schedules/{ruleId}`,
+`PUT /local-schedules/{ruleId}` with changed fields and
+`expectedRevision` (including `paused` for pause/resume), or
+`POST /local-schedules/{ruleId}/remove` with `expectedRevision`. Paths
+are relative to the owner API prefix above. Its `GET .../occurrences`
+returns the latest 100 triggers with their local task IDs and states.
+An interrupted submission stays `submitting` until its original Worker
+receipt can be read. These rules are installed and executed on this Link
+and use its existing local SQLite state.
+
 ## Owner operations
 
 Owner API is loopback-only at `http://127.0.0.1:$OWNER_PORT` with

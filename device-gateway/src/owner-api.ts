@@ -343,10 +343,31 @@ export async function handleOwnerRoute(
       } finally { finished?.(); }
     }
 
+    const scheduleRoot = `${ROOT}/local-schedules`;
+    const scheduler = ctx.localSchedules;
+    if (scheduler && path === scheduleRoot) {
+      if (method === 'GET') return { status: 200, body: scheduler.list() };
+      if (method === 'POST') return { status: 201, body: await scheduler.create(jsonBody(req)) };
+    }
+    if (scheduler && path.startsWith(scheduleRoot + '/')) {
+      const [ruleId, action, extra] = path.slice(scheduleRoot.length + 1).split('/');
+      if (ruleId && extra === undefined) {
+        if (method === 'GET' && action === undefined) return { status: 200, body: scheduler.get(ruleId) };
+        if (method === 'GET' && action === 'occurrences') return { status: 200, body: scheduler.occurrences(ruleId) };
+        if (method === 'PUT' && action === undefined) {
+          return { status: 200, body: await scheduler.update(ruleId, jsonBody(req)) };
+        }
+        if (method === 'POST' && action === 'remove') {
+          return { status: 200, body: await scheduler.update(ruleId, jsonBody(req), true) };
+        }
+      }
+    }
+
     if (method === 'GET' && path === `${ROOT}/capabilities`) {
       const out: JsonObject = { ...(await ctx.auth.ownerStatus()) };
       out.acsSessionCreate = ctx.agentSessions !== undefined;
       out.nativeLocalHandoffs = ctx.nativeLocalHandoffs === true;
+      out.localSchedules = ctx.localSchedules !== undefined;
       // The tray's member-center entry reads this same field on the owner
       // surface — phone-api already publishes it (MC-R06).
       out.dailyOrigin = ctx.commercial?.dailyOrigin ?? null;

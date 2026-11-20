@@ -359,8 +359,10 @@ export class LocalTaskAccess {
     body: unknown,
     key?: string,
     deadlineMillis?: number,
+    recheckDeadline?: () => number,
   ): Promise<LocalResult> {
-    const result = await this.source(backend, method, tail, method === 'GET' ? undefined : body, key, deadlineMillis);
+    const result = await this.source(backend, method, tail, method === 'GET' ? undefined : body, key,
+      deadlineMillis, recheckDeadline);
     return { status: result.status, body: result.data as Json | null };
   }
 
