@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Updater } from 'tuf-js';
@@ -52,7 +53,7 @@ function checkRelease(release, installed) {
 /** Verify and stage a full archive using a provisioned TUF metadata cache. */
 export async function stageVerifiedRelease({
   metadataDir, metadataBaseUrl, targetBaseUrl, releaseRecordPath, installed,
-  stagingParent = tmpdir(), metadataOnly = false, authorizeArchive,
+  stagingParent = tmpdir(), metadataOnly = false, authorizeArchive, archiveCache,
 }) {
   if (typeof releaseRecordPath !== 'string' || !SAFE_TARGET_PATH.test(releaseRecordPath)) {
     throw new Error('Invalid release record target path');
@@ -88,7 +89,19 @@ export async function stageVerifiedRelease({
       await rm(stagingDir, { recursive: true, force: true });
       return { release };
     }
-    const archivePath = await updater.downloadTarget(target, join(stagingDir, 'archive'));
+    const archivePath = join(stagingDir, 'archive');
+    if (archiveCache) {
+      const cached = await lstat(archiveCache).catch(() => undefined);
+      if (cached?.isFile() && cached.uid === process.getuid() && cached.size === artifact.length) {
+        const copied = await copyFile(archiveCache, archivePath, constants.COPYFILE_FICLONE)
+          .then(() => true, () => false);
+        if (copied && await updater.findCachedTarget(target, archivePath)) {
+          return { release, archivePath, stagingDir, fromCache: true };
+        }
+        await rm(archivePath, { force: true });
+      }
+    }
+    await updater.downloadTarget(target, archivePath);
     return { release, archivePath, stagingDir };
   } catch (error) {
     await rm(stagingDir, { recursive: true, force: true });

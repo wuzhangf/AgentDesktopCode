@@ -179,6 +179,7 @@ test('Sparkle receives only the archive and EdDSA signature from the verified TU
   const repo = await repository(t);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const options = { ...repo.options({ ...repo.installed, platform: 'macos' }),
+    archiveCache: join(repo.stagingParent, '..', 'verified-macos.zip'),
     sparkleEdPublicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
   const artifact = { path: artifactPath, length: archive.length, sha256: digest(archive) };
   const edSignature = sign(null, archive, privateKey).toString('base64');
@@ -203,6 +204,17 @@ test('Sparkle receives only the archive and EdDSA signature from the verified TU
     assert.equal((await fetch(new URL('/another.zip', candidate.feedURL))).status, 404);
   } finally { await staged.close(); }
   assert.deepEqual(await readdir(repo.stagingParent), []);
+  assert.deepEqual(await readFile(options.archiveCache), archive);
+
+  const archiveRequest = '/targets/' + artifactPath;
+  const requestsBeforeRetry = repo.requests.filter(path => path === archiveRequest).length;
+  repo.files.delete(archiveRequest);
+  const cached = await startSparkleSession(options);
+  await cached.close();
+  assert.equal(repo.requests.filter(path => path === archiveRequest).length, requestsBeforeRetry);
+  await writeFile(options.archiveCache, Buffer.alloc(archive.length));
+  await assert.rejects(startSparkleSession(options));
+  assert.ok(repo.requests.filter(path => path === archiveRequest).length > requestsBeforeRetry);
 
   repo.publish({ version: 2, release: { ...release, withdrawnBuilds: [repo.installed.buildNumber] } });
   await assert.rejects(confirmSparkleCandidate(options), /trusted version for recovery/);

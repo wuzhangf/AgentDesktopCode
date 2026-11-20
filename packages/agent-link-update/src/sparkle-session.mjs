@@ -1,7 +1,8 @@
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { chmod, copyFile, readFile, rename, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { stageVerifiedRelease } from './verify-release.mjs';
 
@@ -49,7 +50,7 @@ export async function startSparkleSession(options) {
   const rawKey = base64(options.sparkleEdPublicKey, 32, 'Sparkle public key');
   const publicKey = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), rawKey]),
     format: 'der', type: 'spki' });
-  const { release, archivePath, stagingDir } = await stageVerifiedRelease(options);
+  const { release, archivePath, stagingDir, fromCache } = await stageVerifiedRelease(options);
   let server;
   async function close() {
     if (server?.listening) {
@@ -65,6 +66,17 @@ export async function startSparkleSession(options) {
     const signature = Buffer.from(candidate.sparkleEdSignature, 'base64');
     if (!verify(null, await readFile(archivePath), publicKey, signature)) {
       throw new Error('Sparkle signature does not match the verified archive');
+    }
+    if (options.archiveCache && !fromCache) {
+      const retained = join(stagingDir, 'retained');
+      try {
+        await copyFile(archivePath, retained, constants.COPYFILE_FICLONE);
+        await chmod(retained, 0o600);
+        await rename(retained, options.archiveCache);
+      } catch {
+        // A cache write failure does not prevent use of this verified session.
+        await rm(retained, { force: true });
+      }
     }
 
     const prefix = '/' + randomUUID();
