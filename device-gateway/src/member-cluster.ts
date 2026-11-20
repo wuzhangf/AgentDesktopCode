@@ -120,4 +120,21 @@ export class MemberCluster {
   async directory(): Promise<Json> {
     return this.request(this.identity(), 'GET');
   }
+
+  async authorizeInteraction(callerInstanceId: string, expectedBinding?: string): Promise<string> {
+    const identity = this.identity();
+    const binding = createHash('sha256').update(JSON.stringify([
+      identity.origin, identity.memberId, identity.workspaceId, identity.instanceId, callerInstanceId,
+    ])).digest('hex');
+    if (expectedBinding !== undefined && expectedBinding !== binding) fail('MEMBER_SESSION_CHANGED', 409);
+    const directory = await this.request(identity, 'GET');
+    if (directory.schemaVersion !== 'member-cluster/1' || !Array.isArray(directory.computers)) {
+      fail('MEMBER_CLUSTER_UNAVAILABLE', 503);
+    }
+    const computers = directory.computers;
+    const registered = (instanceId: string) => computers.some(computer =>
+      isRecord(computer) && computer.instanceId === instanceId);
+    if (!registered(identity.instanceId) || !registered(callerInstanceId)) fail('SCOPE_DENIED', 403);
+    return binding;
+  }
 }

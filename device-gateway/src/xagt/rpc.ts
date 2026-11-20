@@ -30,6 +30,7 @@ import type { ReaderAccess } from './reader-access.js';
 import type { XagtReadService } from './read-service.js';
 import type { PeerStore } from './peer-reader.js';
 import type { MaterialStore } from './materials.js';
+import type { XagtInteractService } from './interact.js';
 
 const jsonBody = (req: HttpRequest, budget: number): JsonObject => {
   if (req.bodyError === 'BODY_TOO_LARGE') xfail('INVALID_REQUEST', '请求体过大。', false, 413);
@@ -57,6 +58,7 @@ export interface XagtDeps {
   service: XagtReadService;
   peers: PeerStore;
   materials: MaterialStore;
+  interact?: XagtInteractService;
 }
 
 export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['xagt']> => ({
@@ -87,6 +89,15 @@ export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['
     }
   },
 
+  async interact(req: HttpRequest, localCluster = false): Promise<HttpResponse> {
+    if (!deps.interact) xfail('UNSUPPORTED');
+    if (!localCluster && req.path !== '/api/xagt/v1/interact') xfail('NOT_FOUND', undefined, false, 404);
+    const body = jsonBody(req, LIMITS.rpcBodyMax);
+    // The action service performs its own independent bearer authentication;
+    // this route must never accept the read credential by accident.
+    return deps.interact.handle({ ...req, body }, localCluster);
+  },
+
   createReader(body: JsonObject): MaybePromise<JsonObject> {
     const { grant, token } = deps.readers.create(body);
     return { ...grant, token };
@@ -96,6 +107,14 @@ export const createXagtHandlers = (deps: XagtDeps): NonNullable<GatewayContext['
   },
   revokeReader(readerId: string): MaybePromise<void> {
     deps.readers.revoke(readerId);
+  },
+  createInteract(body: JsonObject): MaybePromise<JsonObject> {
+    if (!deps.interact) xfail('UNSUPPORTED');
+    return deps.interact.create(body);
+  },
+  revokeInteract(interactId: string): MaybePromise<void> {
+    if (!deps.interact) xfail('UNSUPPORTED');
+    deps.interact.revoke(interactId);
   },
   upsertPeer(body: JsonObject): MaybePromise<JsonObject> {
     const peer = deps.peers.upsert(body);

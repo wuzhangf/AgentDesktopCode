@@ -22,7 +22,7 @@ import { xfail, type ReaderAuthContext } from './common.js';
 // Refs — deterministic opaque handles over internal bindings.
 // ---------------------------------------------------------------------------
 
-export type RefKind = 'target' | 'session' | 'material';
+export type RefKind = 'target' | 'session' | 'material' | 'state';
 
 export interface RefRecord {
   refId: string;
@@ -31,7 +31,7 @@ export interface RefRecord {
   createdAt: string;
 }
 
-const REF_PREFIX: Record<RefKind, string> = { target: 'xtr', session: 'xsr', material: 'xmr' };
+const REF_PREFIX: Record<RefKind, string> = { target: 'xtr', session: 'xsr', material: 'xmr', state: 'xst' };
 
 /** Recursive sorted-key stringify — bindings must hash deterministically. */
 const canon = (value: unknown): string => {

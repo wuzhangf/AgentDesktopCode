@@ -719,6 +719,17 @@ export class XagtReadService {
       ? this.cursor(reader, { kind: 'activity', for: forKey, ev: evNext })
       : undefined;
     const caps = isRecord(facts.capabilities) ? facts.capabilities : {};
+    const stateBucket = Math.floor(this.now() / 300_000);
+      const expectedStateRef = (reader.actions ?? []).includes('INTERACT') && facts.engineId === 'sage-pi' && caps.followUp === true
+      && typeof facts.generation === 'string' && typeof facts.nativeSessionId === 'string'
+      && typeof facts.currentCommandId === 'string'
+      ? issueRef(this.deps.store, 'state', {
+      v: 1, o: 'l', c: binding.c, b: binding.b, k: 't', t: binding.t,
+      p: facts.projectId, g: facts.generation, s: facts.nativeSessionId,
+      ...(typeof facts.nativeTurnId === 'string' ? { turn: facts.nativeTurnId } : {}),
+      cmd: facts.currentCommandId, readerId: reader.readerId, revision: reader.grantRevision,
+      expiresAt: (stateBucket + 2) * 300_000,
+    }) : undefined;
     return this.envelope(
       this.localSource(String(binding.c), sessionRef),
       { level: 'FULL', basis: 'SOURCE_FACTS', limitations: [] },
@@ -733,6 +744,7 @@ export class XagtReadService {
         nativeSessionId: facts.nativeSessionId,
         nativeTurnId: facts.nativeTurnId,
         currentCommandId: facts.currentCommandId,
+        ...(expectedStateRef === undefined ? {} : { expectedStateRef }),
         configuredModel: facts.configuredModel,
         projectId: facts.projectId,
         engineId: facts.engineId,

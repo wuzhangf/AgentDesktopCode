@@ -434,10 +434,14 @@ export interface GatewayLink {
 export interface GatewayXagt {
   /** POST /api/xagt/v1/read — {version:1,tool,arguments} → envelope/errors. */
   read(request: HttpRequest, localCluster?: boolean): MaybePromise<HttpResponse>;
+  /** POST /api/xagt/v1/interact — independent exact-session online lane. */
+  interact(request: HttpRequest, localCluster?: boolean): MaybePromise<HttpResponse>;
   /** Owner: mint a reader grant — returns the grant + the one-time token. */
   createReader(body: JsonObject): MaybePromise<JsonObject>;
   listReaders(): MaybePromise<JsonObject>;
   revokeReader(readerId: string): MaybePromise<void>;
+  createInteract(body: JsonObject): MaybePromise<JsonObject>;
+  revokeInteract(interactId: string): MaybePromise<void>;
   /** Owner: register/update a peer Link {origin,certSha256,token}. */
   upsertPeer(body: JsonObject): MaybePromise<JsonObject>;
   listPeers(): MaybePromise<JsonObject>;

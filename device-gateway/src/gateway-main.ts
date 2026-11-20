@@ -83,6 +83,7 @@ import { PeerStore } from './xagt/peer-reader.js';
 import { MaterialStore } from './xagt/materials.js';
 import { SourceReader } from './xagt/source-reader.js';
 import { XagtReadService } from './xagt/read-service.js';
+import { XagtInteractService } from './xagt/interact.js';
 import { createXagtHandlers } from './xagt/rpc.js';
 import { MemberCluster } from './member-cluster.js';
 
@@ -843,9 +844,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     .update('xagt-cursor-v1').digest();
   const xagtPeers = new PeerStore(store, () => opts.storeKey);
   const xagtMaterials = new MaterialStore(store);
+  const xagtReaders = new ReaderAccess(store);
+  const xagtInteract = memberCluster === undefined ? undefined
+    : new XagtInteractService({ store, readers: xagtReaders, transport, memberCluster });
   if (env('DEVICE_GATEWAY_XAGT_READ') !== 'off' && env('DEVICE_GATEWAY_XAGT_READ') !== '0') {
     ctx.xagt = createXagtHandlers({
-      readers: new ReaderAccess(store),
+      readers: xagtReaders,
       peers: xagtPeers,
       materials: xagtMaterials,
       service: new XagtReadService({
@@ -857,6 +861,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
         cursorSecret: new Uint8Array(xagtCursorSecret),
         ...(memberCluster !== undefined ? { cluster: memberCluster } : {}),
       }),
+      ...(xagtInteract === undefined ? {} : { interact: xagtInteract }),
     });
   }
 

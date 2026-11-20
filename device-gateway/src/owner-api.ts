@@ -218,6 +218,10 @@ export async function handleOwnerRoute(
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
       return await ctx.xagt.read(req, true);
     }
+    if (req.path === '/api/xagt/v1/interact' && req.method === 'POST') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      return await ctx.xagt.interact(req, true);
+    }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
     if (!secureEquals(creds.ownerClientToken, req.clientSessionHeader)) fail('UNAUTHORIZED', 401);
@@ -485,7 +489,7 @@ export async function handleOwnerRoute(
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
       const b = exact(jsonBody(req), 'requestId', 'name', 'expiresInDays',
         'backends', 'projects', 'tasks', 'vendorSessions', 'allVendorSessions',
-        'peers', 'materials', 'clusterInstances');
+        'peers', 'materials', 'clusterInstances', 'actions');
       text(b, 'requestId');
       return { status: 201, body: await ctx.xagt.createReader(b) };
     }
@@ -497,6 +501,18 @@ export async function handleOwnerRoute(
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
       id(parts[5]);
       await ctx.xagt.revokeReader(parts[5]);
+      return { status: 204, body: null };
+    }
+    if (method === 'POST' && path === `${ROOT}/mcp-interacts`) {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      const b = exact(jsonBody(req), 'requestId', 'readerId', 'callerInstanceId', 'sessionRef', 'expectedStateRef', 'expiresInDays');
+      text(b, 'requestId');
+      return { status: 201, body: await ctx.xagt.createInteract(b) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-interacts') {
+      if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      await ctx.xagt.revokeInteract(parts[5]);
       return { status: 204, body: null };
     }
 

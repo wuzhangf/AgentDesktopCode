@@ -484,6 +484,10 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
     return ctx.xagt.read(req);
   }
+  if (path === '/api/xagt/v1/interact' && method === 'POST') {
+    if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
+    return ctx.xagt.interact(req);
+  }
 
   const token = bearer(req);
   const device = await ctx.auth.authenticate(token);

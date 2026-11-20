@@ -25,6 +25,8 @@
  *   materials        allowed material entry ids ('*' = all)
  *   clusterInstances explicitly owner-approved member instance ids; this is
  *                     intentionally not inherited from backend/peer wildcards
+ *   actions          explicit write capability names (currently INTERACT);
+ *                   empty for legacy read-only grants
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { constantEqual, hash, isRecord, text } from '../protocol.js';
@@ -55,6 +57,7 @@ export interface ReaderGrant {
   peers: string[];
   materials: string[];
   clusterInstances: string[];
+  actions: string[];
 }
 
 export const publicGrant = (g: ReaderGrant): JsonObject => {
@@ -123,6 +126,7 @@ export class ReaderAccess {
       peers: strings(body.peers, 'peers', 64),
       materials: strings(body.materials, 'materials', 512),
       clusterInstances: strings(body.clusterInstances, 'clusterInstances', 64),
+      actions: strings(body.actions, 'actions', 8),
     };
     const token = `xgr-${randomBytes(24).toString('base64url')}`;
     grant.tokenHash = hash(`xagt-reader:${token}`);

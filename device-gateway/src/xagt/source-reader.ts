@@ -174,7 +174,14 @@ export class SourceReader {
     // binds before.engine === selected (cli-bridge host.mjs /history).
     if (opts.engine !== undefined) params.set('engine', opts.engine);
     if (opts.cursor !== undefined) params.set('cursor', opts.cursor);
-    const data = await this.get(connectionId, `/history?${params}`, storeId, deadlineMillis);
+    const data = await this.get(connectionId, `/history?${params}`, storeId, deadlineMillis)
+      .catch(error => {
+        // Native-only workers expose managed tasks but may have no vendor catalog.
+        if (opts.cursor === undefined && error instanceof GatewayError && error.code === 'NOT_FOUND') {
+          return { items: [], pages: [] };
+        }
+        throw error;
+      });
     const items: VendorSessionRow[] = [];
     for (const item of Array.isArray(data.items) ? data.items : []) {
       // Rows without an engine or id could never be re-read — drop them.
