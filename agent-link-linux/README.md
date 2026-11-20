@@ -177,6 +177,10 @@ before installation or with the user service stopped can still be used.
 The command reads only the selected product metadata and service status.
 It performs no network requests or upload. [systemctl machine-readable state](https://www.freedesktop.org/software/systemd/man/256/systemctl.html)
 
+Rerun the verified installer on an older bridge installation to refresh its
+fixed updater. The new updater records subsequent installation and rollback
+receipts. The report can also show the failed build from an older updater.
+
 ```sh
 systemctl --user status agent-link.service
 journalctl --user -u agent-link.service -f
