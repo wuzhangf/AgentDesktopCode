@@ -1,9 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { confirmSparkleCandidate, startSparkleSession } from './sparkle-session.mjs';
+import { CurrentBuildError } from './verify-release.mjs';
+
+const confirming = process.argv[3] === '--confirm';
 
 async function main() {
   const options = JSON.parse(await readFile(process.argv[2], 'utf8'));
-  if (process.argv[3] === '--confirm') {
+  if (confirming) {
     process.stdout.write(JSON.stringify(await confirmSparkleCandidate(options)) + '\n');
     return;
   }
@@ -24,6 +27,10 @@ async function main() {
 }
 
 void main().catch(error => {
+  if (!confirming && error instanceof CurrentBuildError) {
+    process.stdout.write(JSON.stringify({ status: 'current' }) + '\n');
+    return;
+  }
   process.stderr.write(String(error?.message ?? 'Update verification failed') + '\n');
   process.exitCode = 1;
 });

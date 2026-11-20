@@ -463,6 +463,25 @@ test('removes staging data when the archive differs from its verified metadata',
   assert.deepEqual(await readdir(repo.stagingParent), []);
 });
 
+test('Sparkle CLI reports the authenticated current build without offering an archive', async t => {
+  const repo = await repository(t);
+  const { publicKey } = generateKeyPairSync('ed25519');
+  const options = { ...repo.options({ ...repo.installed, platform: 'macos', buildNumber: 42 }),
+    sparkleEdPublicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
+  const request = join(repo.stagingParent, '..', 'sparkle-verification.json');
+  await writeFile(request, JSON.stringify(options));
+  const cli = fileURLToPath(new URL('../src/sparkle-cli.mjs', import.meta.url));
+  const run = (...args) => promisify(execFile)(process.execPath, [cli, request, ...args], { timeout: 5000 });
+  repo.publish({ release: { platform: 'macos' } });
+  const result = await run();
+  assert.deepEqual(JSON.parse(result.stdout), { status: 'current' });
+  assert.equal(repo.requests.includes('/targets/' + artifactPath), false);
+  await assert.rejects(run('--confirm'), { code: 1, stdout: '' });
+  repo.publish({ version: 2, release: { platform: 'macos', availability: 'withdrawn' } });
+  await assert.rejects(run(), { code: 1, stdout: '' });
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+});
+
 test('Sparkle receives only the archive and EdDSA signature from the verified TUF record', async t => {
   const repo = await repository(t);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
