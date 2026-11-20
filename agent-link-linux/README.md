@@ -161,6 +161,26 @@ sh uninstall.sh --purge   # removes everything
 
 ## Verify
 
+Preview a support report using the verified archive or the installed slot.
+Pass the same `--prefix` used at installation if you selected a custom one.
+
+```sh
+sh install.sh diagnostics
+sh "${XDG_DATA_HOME:-$HOME/.local/share}/agent-link/program/current/install.sh" diagnostics --output agent-link-report.json
+```
+
+The export creates a new private JSON file. It contains the local OS and
+architecture, build numbers, user service state, update channel and schedule,
+the last recorded install outcome and an operation ID when available.
+`sources` shows whether each read returned usable data. A report generated
+before installation or with the user service stopped can still be used.
+The command reads only the selected product metadata and service status.
+It performs no network requests or upload. [systemctl machine-readable state](https://www.freedesktop.org/software/systemd/man/256/systemctl.html)
+
+Rerun the verified installer on an older bridge installation to refresh its
+fixed updater. The new updater records subsequent installation and rollback
+receipts. The report can also show the failed build from an older updater.
+
 ```sh
 systemctl --user status agent-link.service
 journalctl --user -u agent-link.service -f
