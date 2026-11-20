@@ -23,6 +23,12 @@ from the same release inputs as the Mac package. The archive name uses the
 product version, and the manifest records both values. Development builds
 default to the `device-gateway` package version and build number `1`.
 
+To provision the Linux update channel in the bridge package, pass
+`AGENT_LINK_UPDATE_TUF_ROOT`, `AGENT_LINK_UPDATE_TUF_METADATA_URL`,
+`AGENT_LINK_UPDATE_TUF_TARGET_URL` and `AGENT_LINK_UPDATE_TUF_RECORD_PATH`.
+`AGENT_LINK_UPDATE_TUF_CHANNEL` defaults to `stable`. The installation
+keeps the initial channel settings and the TUF cache across updates.
+
 ## Install / upgrade
 
 ```sh
@@ -49,6 +55,23 @@ sh install.sh
 - `DEVICE_GATEWAY_BIND` defaults to `0.0.0.0` so phones on the LAN can reach
   the gateway; use `--bind` to pin an interface. Owner and hooks surfaces stay
   loopback-only.
+
+## Automatic updates
+
+An installation with a configured channel enables `agent-link-update.timer`.
+It checks daily with a randomized delay. When the systemd user manager
+stops at logout, the next logged-in session resumes scheduled checks.
+
+The updater downloads Linux targets for Ubuntu 24.04 x86_64. Its signed
+release record must include `rollout` with `cohortSeed` and `percentage`,
+plus `withdrawnBuilds` containing builds unavailable for installation or
+rollback. An empty list allows recovery to the installed build. A
+withdrawn current build requires repair from a verified package.
+
+Use `systemctl --user disable --now agent-link-update.timer` to disable
+automatic checks. Use `systemctl --user start agent-link-update.service`
+to check and install an eligible update now. Results are available in
+`journalctl --user -u agent-link-update.service`.
 
 ## What the phone can do (free LAN tier)
 

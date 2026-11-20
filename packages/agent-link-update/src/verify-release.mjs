@@ -7,6 +7,8 @@ const RECORD_LIMIT = 1024 * 1024;
 const POSITIVE_INTEGER = value => Number.isSafeInteger(value) && value > 0;
 const SAFE_TARGET_PATH = /^(?:[A-Za-z0-9_-][A-Za-z0-9._+-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._+-]*$/;
 
+export class CurrentBuildError extends Error {}
+
 function repositoryUrl(value) {
   const url = new URL(value);
   const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]';
@@ -23,7 +25,7 @@ function checkRelease(release, installed) {
       release.platform !== installed.platform || release.arch !== installed.arch) {
     throw new Error('Release is unavailable for this platform, architecture or channel');
   }
-  if (!POSITIVE_INTEGER(release.buildNumber) || release.buildNumber <= installed.buildNumber) {
+  if (!POSITIVE_INTEGER(release.buildNumber) || release.buildNumber < installed.buildNumber) {
     throw new Error('Release build number must be newer');
   }
   if (typeof release.releaseId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(release.releaseId)) {
@@ -50,7 +52,7 @@ function checkRelease(release, installed) {
 /** Verify and stage a full archive using a provisioned TUF metadata cache. */
 export async function stageVerifiedRelease({
   metadataDir, metadataBaseUrl, targetBaseUrl, releaseRecordPath, installed,
-  stagingParent = tmpdir(),
+  stagingParent = tmpdir(), metadataOnly = false, authorizeArchive,
 }) {
   if (typeof releaseRecordPath !== 'string' || !SAFE_TARGET_PATH.test(releaseRecordPath)) {
     throw new Error('Invalid release record target path');
@@ -79,6 +81,12 @@ export async function stageVerifiedRelease({
     const target = await updater.getTargetInfo(artifact.path);
     if (!target || artifact.length !== target.length || artifact.sha256 !== target.hashes.sha256) {
       throw new Error('Release artifact and trusted target metadata disagree');
+    }
+    if (release.buildNumber === installed.buildNumber) throw new CurrentBuildError('Release build number must be newer');
+    await authorizeArchive?.(release);
+    if (metadataOnly) {
+      await rm(stagingDir, { recursive: true, force: true });
+      return { release };
     }
     const archivePath = await updater.downloadTarget(target, join(stagingDir, 'archive'));
     return { release, archivePath, stagingDir };

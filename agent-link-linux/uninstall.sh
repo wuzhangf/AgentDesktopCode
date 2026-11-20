@@ -44,6 +44,11 @@ if command -v systemctl >/dev/null 2>&1; then
         echo 'agent-link uninstall: the user service belongs to a different installation' >&2
         exit 1
     fi
+    if [ -d "$PREFIX/program/updater" ]; then
+        systemctl --user disable --now agent-link-update.timer 2>/dev/null || true
+        systemctl --user disable --now agent-link-update.service 2>/dev/null || true
+        rm -f "$UNIT_DIR/agent-link-update.timer" "$UNIT_DIR/agent-link-update.service"
+    fi
     systemctl --user disable --now agent-link.service 2>/dev/null || true
 fi
 rm -f "$UNIT_DIR/agent-link.service"
@@ -52,6 +57,7 @@ if [ -d "$PREFIX/program/versions" ]; then
     rm -f "$PREFIX/program/current" "$PREFIX/program/previous"
     rm -f "$PREFIX/program/last-failed-build"
     rm -rf "$PREFIX/program/versions"
+    rm -rf "$PREFIX/program/updater"
     rmdir "$PREFIX/program" 2>/dev/null || true
 fi
 rm -f "$PREFIX/device-gateway.mjs" "$PREFIX/cli-bridge.mjs" "$PREFIX/release-manifest.json"
@@ -61,7 +67,7 @@ rm -f "$PREFIX/hooks/agent_pre_tool.py" "$PREFIX/hooks/install.py"
 rm -rf "$PREFIX/adapters"
 rmdir "$PREFIX/hooks" 2>/dev/null || true
 if [ "$PURGE" = 1 ]; then
-    rm -rf "$PREFIX/data" "$CONFIG_DIR"
+    rm -rf "$PREFIX/data" "$PREFIX/updates" "$CONFIG_DIR"
     rmdir "$PREFIX" 2>/dev/null || true
     echo "removed service, payload, env and data"
 else

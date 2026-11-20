@@ -11,6 +11,7 @@ set -eu
 PRODUCT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 REPO=$(CDPATH= cd -- "$PRODUCT/.." && pwd)
 GATEWAY="$REPO/device-gateway"
+UPDATE_TOOLS="$REPO/packages/agent-link-update"
 WORKERS_REPO="${WORKERS_REPO:-$(CDPATH= cd -- "$REPO/../AgentWorkersCode" 2>/dev/null && pwd || true)}"
 WORKER_BRIDGE="${WORKER_BRIDGE:-$WORKERS_REPO/cli-bridge/host.mjs}"
 OUT="$REPO/.local/agent-link-linux-release"
@@ -59,6 +60,7 @@ EOF
 tar -xJf "$runtime_archive" -C "$runtime_tmp" "$NODE_DIST/bin/node" "$NODE_DIST/LICENSE"
 
 mkdir -p "$OUT/payload/hooks" "$OUT/payload/runtime" "$OUT/payload/systemd"
+mkdir -p "$OUT/payload/bootstrap"
 install -m 755 "$runtime_tmp/$NODE_DIST/bin/node" "$OUT/payload/runtime/node"
 install -m 644 "$runtime_tmp/$NODE_DIST/LICENSE" "$OUT/payload/runtime/node-LICENSE"
 
@@ -73,10 +75,57 @@ if [ -d "$(dirname "$WORKER_BRIDGE")/adapters" ]; then
 fi
 cp "$GATEWAY/hooks/agent_pre_tool.py" "$GATEWAY/hooks/install.py" "$OUT/payload/hooks/"
 cp "$PRODUCT/install.sh" "$PRODUCT/uninstall.sh" "$OUT/payload/"
-cp "$PRODUCT/install.mjs" "$PRODUCT/launch.sh" "$PRODUCT/slots.mjs" "$OUT/payload/"
-cp "$PRODUCT/systemd/agent-link.service" "$OUT/payload/systemd/agent-link.service"
+cp "$PRODUCT/install.mjs" "$PRODUCT/install-transaction.mjs" "$PRODUCT/configure-update.mjs" \
+    "$PRODUCT/launch.sh" "$PRODUCT/slots.mjs" "$OUT/payload/"
+cp "$PRODUCT/systemd/agent-link.service" "$PRODUCT/systemd/agent-link-update.service" \
+    "$PRODUCT/systemd/agent-link-update.timer" "$OUT/payload/systemd/"
 cp "$PRODUCT/README.md" "$OUT/payload/README.md" 2>/dev/null || true
 chmod +x "$OUT/payload/install.sh" "$OUT/payload/uninstall.sh" "$OUT/payload/launch.sh"
+
+npm --prefix "$UPDATE_TOOLS" ci --ignore-scripts --no-audit
+"$GATEWAY/node_modules/.bin/esbuild" "$UPDATE_TOOLS/src/linux-updater.mjs" \
+    --bundle --platform=node --format=cjs --target=node24 --minify --outfile="$OUT/payload/bootstrap/update.cjs"
+node - "$UPDATE_TOOLS" "$OUT/payload/bootstrap/THIRD-PARTY-NOTICES.txt" <<'EOF'
+const { readFileSync, readdirSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const [tools, out] = process.argv.slice(2);
+const { packages } = JSON.parse(readFileSync(join(tools, 'package-lock.json'), 'utf8'));
+const notices = [];
+for (const [name, { version, dev }] of Object.entries(packages)) {
+  if (!name || dev) continue;
+  const dir = join(tools, name);
+  for (const file of readdirSync(dir).filter(file => /^(?:licen[cs]e|copying|notice)(?:[.-].*|$)/i.test(file))) {
+    notices.push(`${name.slice('node_modules/'.length)} ${version} (${file})\n${readFileSync(join(dir, file), 'utf8')}`);
+  }
+}
+writeFileSync(out, notices.join('\n\n'));
+EOF
+
+tuf_root=${AGENT_LINK_UPDATE_TUF_ROOT:-}
+tuf_metadata=${AGENT_LINK_UPDATE_TUF_METADATA_URL:-}
+tuf_targets=${AGENT_LINK_UPDATE_TUF_TARGET_URL:-}
+tuf_record=${AGENT_LINK_UPDATE_TUF_RECORD_PATH:-}
+tuf_channel=${AGENT_LINK_UPDATE_TUF_CHANNEL:-stable}
+if [ -n "$tuf_root$tuf_metadata$tuf_targets$tuf_record" ]; then
+    [ -f "$tuf_root" ] && [ -n "$tuf_metadata" ] && [ -n "$tuf_targets" ] && [ -n "$tuf_record" ] \
+        || { echo 'The Linux update channel needs a pinned root, both repository URLs and a release record path.' >&2; exit 2; }
+    node - "$OUT/payload/bootstrap/trust.json" "$tuf_metadata" "$tuf_targets" "$tuf_record" "$tuf_channel" <<'EOF'
+const { writeFileSync } = require('node:fs');
+const [path, metadataBaseUrl, targetBaseUrl, releaseRecordPath, channel] = process.argv.slice(2);
+for (const value of [metadataBaseUrl, targetBaseUrl]) {
+  const url = new URL(value);
+  const local = ['127.0.0.1', '[::1]'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !(local && url.protocol === 'http:')) ||
+      url.username || url.password || url.search || url.hash) throw new Error('Invalid TUF repository URL');
+}
+if (!['stable', 'preview'].includes(channel) ||
+    !/^(?:[A-Za-z0-9_-][A-Za-z0-9._+-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._+-]*$/.test(releaseRecordPath)) {
+  throw new Error('Invalid TUF channel or record path');
+}
+writeFileSync(path, JSON.stringify({ metadataBaseUrl, targetBaseUrl, releaseRecordPath, channel }) + '\n');
+EOF
+    cp "$tuf_root" "$OUT/payload/bootstrap/root.json"
+fi
 
 GATEWAY_SHA=$(git -C "$REPO" rev-parse HEAD)
 DIRTY=$(git -C "$REPO" status --porcelain -- device-gateway agent-link-linux | wc -l | tr -d ' ')
@@ -107,6 +156,6 @@ fs.writeFileSync(out, JSON.stringify({
 }, null, 2) + '\n');
 EOF
 
-tar -czf "$OUT/agent-link-$VERSION-linux.tar.gz" -C "$OUT/payload" .
+COPYFILE_DISABLE=1 tar --format=ustar -czf "$OUT/agent-link-$VERSION-linux.tar.gz" -C "$OUT/payload" .
 echo "built $OUT/agent-link-$VERSION-linux.tar.gz"
 echo "payload at $OUT/payload (release-manifest.json included)"

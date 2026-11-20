@@ -133,6 +133,19 @@ test('refuses expired and replayed metadata', async t => {
   await assert.rejects(repo.stage());
 });
 
+test('allows checking current signed metadata and rollout without fetching archives', async t => {
+  const repo = await repository(t);
+  repo.publish();
+  const { release, archivePath } = await stageVerifiedRelease({ ...repo.options(), metadataOnly: true });
+  assert.equal(release.buildNumber, 42);
+  assert.equal(archivePath, undefined);
+  await assert.rejects(stageVerifiedRelease({ ...repo.options(),
+    authorizeArchive: () => { throw new Error('Outside rollout'); },
+  }), /Outside rollout/);
+  assert.ok(!repo.requests.includes('/targets/' + artifactPath));
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+});
+
 test('keeps ineligible releases away from the archive download', async t => {
   const repo = await repository(t);
   const cases = [

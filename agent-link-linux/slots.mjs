@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const manifestName = 'release-manifest.json';
+export const manifestName = 'release-manifest.json';
 const slotName = /^versions\/[1-9][0-9]*$/;
 const executables = new Set(['runtime/node', 'install.sh', 'uninstall.sh', 'launch.sh']);
 const required = [
@@ -14,7 +14,14 @@ const required = [
   'runtime/node', 'runtime/node-LICENSE', 'systemd/agent-link.service', 'install.sh',
   'uninstall.sh', 'launch.sh', 'slots.mjs', 'install.mjs',
 ];
-const allowed = new Set([...required, 'README.md']);
+const allowed = new Set([
+  ...required, 'README.md', 'install-transaction.mjs', 'configure-update.mjs',
+  'bootstrap/update.cjs', 'bootstrap/trust.json', 'bootstrap/root.json', 'bootstrap/THIRD-PARTY-NOTICES.txt',
+  'systemd/agent-link-update.service', 'systemd/agent-link-update.timer',
+]);
+
+export const isPayloadFile = path => typeof path === 'string' &&
+  (allowed.has(path) || /^adapters\/[a-zA-Z0-9_-]+\/adapter\.mjs$/.test(path));
 
 export function syncPath(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -54,8 +61,7 @@ function validatePackage(root) {
   }
   const entries = new Map();
   for (const { path, sha256 } of manifest.files) {
-    if (typeof path !== 'string' ||
-        (!allowed.has(path) && !/^adapters\/[a-zA-Z0-9_-]+\/adapter\.mjs$/.test(path)) ||
+    if (!isPayloadFile(path) ||
         entries.has(path) || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) {
       throw new Error('Unexpected or duplicate Linux release manifest entry');
     }
@@ -105,9 +111,12 @@ export function setSlot(program, name, target) {
   }
 }
 
-export function stageVersion(program, source) {
+export function stageVersion(program, source, release) {
   const root = realpathSync(source);
   const { manifest, bytes, entries } = validatePackage(root);
+  if (release && (manifest.buildNumber !== release.buildNumber || manifest.version !== release.displayVersion)) {
+    throw new Error('Linux package version differs from the signed release');
+  }
   const target = `versions/${manifest.buildNumber}`;
   const versions = join(program, 'versions');
   mkdirSync(versions, { recursive: true, mode: 0o700 });
