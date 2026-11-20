@@ -705,9 +705,25 @@ internal sealed class LinkHost : IDisposable
                 case "setHandoffRecovery" when request.Args is JsonObject recovery:
                     return new(true, Data: await OwnerAsync(HttpMethod.Put, "work-handoffs/recovery-grants", recovery, cancellation));
                 case "cloudLaunch" or "setCloudLaunch":
-                    var cloudCap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
-                    return request.Operation == "cloudLaunch"
-                        ? CloudLaunchGrant.Read(cloudCap) : CloudLaunchGrant.Save(cloudCap, request.Args);
+                    try
+                    {
+                        var reading = request.Operation == "cloudLaunch";
+                        if (!reading && request.Args is not JsonObject) return new(false, "授权参数无效");
+                        return new(true, Data: await OwnerAsync(reading ? HttpMethod.Get : HttpMethod.Put,
+                            "cloud-launch-grant", reading ? null : request.Args, cancellation));
+                    }
+                    catch (HttpRequestException error)
+                    {
+                        return new(false, error.Message switch
+                        {
+                            "CLOUD_SESSION_REQUIRED" => "请先连接会员账号。若已连接，请重新登录会员。",
+                            "CLOUD_SESSION_CHANGED" => "会员账号已切换，请重新打开授权窗口。",
+                            "CLOUD_GRANT_CHANGED" => "云任务授权已变化，请重新打开授权窗口。",
+                            "CLOUD_TARGET_UNAVAILABLE" => "所选目标已变化，请重新打开授权窗口。",
+                            "CLOUD_GRANT_INVALID" => "授权参数无效",
+                            _ => "暂时无法核对云任务授权，请重试。",
+                        });
+                    }
                 case "agents":
                     var cap = await OwnerAsync(HttpMethod.Get, "capabilities", null, cancellation);
                     return new(true, Data: cap?["localSource"]?.DeepClone());

@@ -850,13 +850,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;
   const linuxMember = memberSession ? new LinuxMemberEnrollment(memberSession, host.id,
     session => clearCloudOwnerGrant(store, session)) : undefined;
-  const ownerManagedCloud = Boolean(linuxMember || (linuxProfile && env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1'));
+  const ownerGrantStorage = linuxMember || (linuxProfile && env('DEVICE_GATEWAY_CLOUD_OWNER_GRANTS') === '1')
+    ? 'store' : process.platform === 'win32' && env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION') ? 'file' : undefined;
   const hasCloudSession = linuxMember || (cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession);
   const cloudLaunch = hasCloudSession && localTasks
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin ?? '', cloudSession ?? '',
       join(opts.dataDir, 'windows-cloud-launch.json'), fetch, cloudRecoveryOnly,
-      ctx.updatePreparation, ownerManagedCloud, linuxMember) : undefined;
-  if (ownerManagedCloud && cloudLaunch && !cloudRecoveryOnly) {
+      ctx.updatePreparation, ownerGrantStorage, linuxMember) : undefined;
+  if (ownerGrantStorage && cloudLaunch && !cloudRecoveryOnly) {
     ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
   }
   if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;

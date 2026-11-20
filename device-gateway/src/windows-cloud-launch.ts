@@ -1,4 +1,5 @@
-import { lstatSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
 import type { UpdatePreparation } from './update-preparation.js';
@@ -10,6 +11,7 @@ const kind = 'link.task.launch.v2';
 const actionKind = 'link.task.action.v2';
 const journal = 'windows-cloud-launch';
 const actions = 'windows-cloud-action';
+const fileGrantSchema = 'windows-cloud-launch-grant/1';
 const identifier = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value);
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
@@ -98,7 +100,7 @@ export class WindowsCloudLaunch {
     private readonly fetcher: typeof fetch = fetch,
     private readonly recoveryOnly = false,
     private readonly updatePreparation?: UpdatePreparation,
-    private readonly ownerManaged = false,
+    private readonly ownerGrantStorage?: 'store' | 'file',
     private readonly linuxMember?: LinuxMemberEnrollment,
   ) {}
 
@@ -131,7 +133,7 @@ export class WindowsCloudLaunch {
       return identity && { ...identity, scope: sessionScope(identity) };
     }
     try {
-      if (this.ownerManaged) {
+      if (this.ownerGrantStorage === 'store') {
         const file = lstatSync(this.sessionFile);
         if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0 || file.size > 65536) return;
       }
@@ -151,10 +153,10 @@ export class WindowsCloudLaunch {
   }
 
   private grant(session: Session): Grant | undefined {
-    if (this.ownerManaged) return this.store.get<Grant>('cloud-owner-grants', session.scope) ?? undefined;
+    if (this.ownerGrantStorage === 'store') return this.store.get<Grant>('cloud-owner-grants', session.scope) ?? undefined;
     try {
       const value: unknown = JSON.parse(readFileSync(this.grantFile, 'utf8').replace(/^\uFEFF/, ''));
-      if (!isRecord(value) || value.schemaVersion !== 'windows-cloud-launch-grant/1'
+      if (!isRecord(value) || value.schemaVersion !== fileGrantSchema
           || value.memberId !== session.memberId || value.workspaceId !== session.workspaceId
           || value.instanceId !== session.instanceId || typeof value.revision !== 'number'
           || !Number.isSafeInteger(value.revision) || value.revision < 1
@@ -170,10 +172,30 @@ export class WindowsCloudLaunch {
     } catch { return; }
   }
 
+  private saveGrant(session: Session, grant: Grant): void {
+    if (this.ownerGrantStorage === 'store') {
+      this.store.put('cloud-owner-grants', session.scope, grant);
+      return;
+    }
+    // Keep the existing Windows file as the single grant record so older
+    // packaged versions also see permission changes after a rollback.
+    const { memberId, workspaceId, instanceId } = session;
+    const { revision, scopes, controls, approvals } = grant;
+    const temporary = this.grantFile + '.' + randomUUID() + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ schemaVersion: fileGrantSchema,
+        memberId, workspaceId, instanceId, revision, launchScopes: scopes, controls, approvals }),
+      { flag: 'wx', mode: 0o600, flush: true });
+      renameSync(temporary, this.grantFile);
+    } finally { rmSync(temporary, { force: true }); }
+  }
+
   async ownerGrant(request?: Json): Promise<Json> {
-    if (!this.ownerManaged || this.recoveryOnly) fail('OPERATION_NOT_ALLOWED', 403);
+    if (!this.ownerGrantStorage || this.recoveryOnly) fail('OPERATION_NOT_ALLOWED', 403);
     const session = this.session();
     if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+    if (request && (this.ownerGrantStorage === 'file' || request.expectedScope !== undefined)
+        && request.expectedScope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
     const catalog = Array.isArray(request?.launchScopes) && request.launchScopes.length === 0 ? [] : await this.targets();
     if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
     let grant = this.grant(session);
@@ -198,14 +220,17 @@ export class WindowsCloudLaunch {
       }
       const next = { revision: (grant?.revision ?? 0) + 1, scopes,
         controls: scopes.length > 0 && request.controls, approvals: scopes.length > 0 && request.approvals };
-      if (!grant || JSON.stringify(grant.scopes) !== JSON.stringify(next.scopes) ||
+      const previousScopes = grant?.scopes ?? [];
+      const sameScopes = previousScopes.length === scopes.length && scopes.every(scope => previousScopes.some(other =>
+        other.backendStoreId === scope.backendStoreId && other.projectId === scope.projectId && other.engineId === scope.engineId));
+      if (!grant || !sameScopes ||
           grant.controls !== next.controls || grant.approvals !== next.approvals) {
-        this.store.put('cloud-owner-grants', session.scope, next);
+        this.saveGrant(session, next);
         grant = next;
       }
     }
     return { revision: grant?.revision ?? 0, launchScopes: grant?.scopes ?? [],
-      controls: grant?.controls ?? false, approvals: grant?.approvals ?? false, targets: catalog };
+      scope: session.scope, controls: grant?.controls ?? false, approvals: grant?.approvals ?? false, targets: catalog };
   }
 
   private async hosted(session: Session, method: 'GET' | 'POST' | 'PUT', path: string, body?: Json): Promise<Json> {
@@ -287,6 +312,7 @@ export class WindowsCloudLaunch {
     }
     const entries = this.localCatalog.linkTargets(catalog).targets;
     return Array.isArray(entries) ? entries.filter(target => isRecord(target) && target.sourceKind === 'NATIVE'
+      && (this.ownerGrantStorage !== 'file' || target.engineId !== 'macos')
       && (!grant || grant.scopes.some(scope => this.matches(scope, target)))) : [];
   }
 
@@ -357,7 +383,8 @@ export class WindowsCloudLaunch {
       fail('CLOUD_REQUEST_CONFLICT', 409);
     }
     const deadline = time(authorization.dispatchBefore);
-    if (!supported || row.grantRevision !== grant.revision || !preflight || !isRecord(preflight.body)
+    if (!supported || this.session()?.scope !== session.scope || this.grant(session)?.revision !== row.grantRevision
+        || !preflight || !isRecord(preflight.body)
         || typeof preflight.body.optionsRevision !== 'string' || !(Date.now() < deadline)) {
       row.phase = 'receipt';
       row.outcome = 'not_accepted';
