@@ -1,0 +1,16 @@
+{
+  "sessionId": "public-capture-session",
+  "sessionVersion": 1,
+  "readRevision": "0",
+  "title": "Controlled read capture",
+  "workspaceAlias": "control",
+  "status": "ACTIVE",
+  "interactionMode": "ACT",
+  "intent": "IMPLEMENT",
+  "createdAt": 1793997097667,
+  "updatedAt": 1793997097667,
+  "archivedAt": null,
+  "activeRunId": null,
+  "activeRunObservation": "KNOWN",
+  "eventCursor": 1
+}

@@ -60,3 +60,34 @@ CREATE TABLE IF NOT EXISTS xagt_asset_tombstones (
     deletion_epoch INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, workspace_id, member_id, asset_id)
 );
+
+-- Attachment metadata is deliberately separate from revision payloads.  A
+-- row is staged before bytes are uploaded and becomes reader-visible only at
+-- commit.  ``object_key`` is random and contains no user-controlled path.
+CREATE TABLE IF NOT EXISTS xagt_asset_attachments (
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    attachment_id TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('cloudProcessable', 'userHeld')),
+    content_type TEXT NOT NULL,
+    expected_bytes INTEGER NOT NULL CHECK (expected_bytes >= 0),
+    sha256 TEXT NOT NULL,
+    object_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN ('staged', 'committed', 'deleted')),
+    envelope_json TEXT,
+    stored_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    uploaded_at TEXT,
+    committed_at TEXT,
+    deleted_at TEXT,
+    PRIMARY KEY (tenant_id, workspace_id, member_id, asset_id, revision_id, attachment_id),
+    FOREIGN KEY (tenant_id, workspace_id, member_id, asset_id)
+        REFERENCES xagt_asset_conversations(tenant_id, workspace_id, member_id, asset_id)
+);
+
+CREATE INDEX IF NOT EXISTS xagt_asset_attachments_revision_idx
+    ON xagt_asset_attachments (tenant_id, workspace_id, member_id, asset_id, revision_id, state);

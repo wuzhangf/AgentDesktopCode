@@ -74,13 +74,19 @@ def _validate_user_held(payload: Any) -> dict[str, Any]:
 
 
 class AssetStore:
-    def __init__(self, dsn: str, cloud_key: bytes,
-                 write_guard: Callable[[Any, Any], None] | None = None):
+    def __init__(self, dsn: str, cloud_key: bytes | None,
+                 write_guard: Callable[[Any, Any], None] | None = None,
+                 *, allowed_modes: set[str] | frozenset[str] | None = None):
         self.dsn = dsn
         self.cloud_key = cloud_key
         self.write_guard = write_guard
-        if not isinstance(self.cloud_key, bytes) or len(self.cloud_key) != 32:
+        self.allowed_modes = frozenset(MODES if allowed_modes is None else allowed_modes)
+        if not self.allowed_modes or not self.allowed_modes.issubset(MODES):
+            raise ValueError("allowed_modes must be a non-empty subset of supported modes")
+        if self.cloud_key is not None and (not isinstance(self.cloud_key, bytes) or len(self.cloud_key) != 32):
             raise ValueError("cloud_key must be exactly 32 bytes")
+        if "cloudProcessable" in self.allowed_modes and self.cloud_key is None:
+            raise ValueError("cloud_key is required when cloudProcessable is enabled")
         self._sqlite = dsn.startswith("sqlite:")
         if self._sqlite:
             raw = dsn.removeprefix("sqlite:///")
@@ -160,6 +166,28 @@ class AssetStore:
                 details.append("missing columns: " + ", ".join(missing_columns))
             raise RuntimeError("asset schema is not ready; " + "; ".join(details))
 
+    def check_attachment_schema(self) -> None:
+        """Fail closed only when an attachment service is configured.
+
+        Existing 0.1 deployments may continue serving revision-only assets;
+        enabling AttachmentService explicitly opts into this migration check.
+        """
+        with self.connection() as conn:
+            if self._sqlite:
+                found = {str(row["name"]) for row in self._query(conn, "PRAGMA table_info(xagt_asset_attachments)")}
+            else:
+                found = {str(row["name"]) for row in self._query(
+                    conn,
+                    "SELECT column_name AS name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=?",
+                    ("xagt_asset_attachments",))}
+        required = {"tenant_id", "workspace_id", "member_id", "subject_id", "asset_id",
+                    "revision_id", "attachment_id", "mode", "object_key", "state",
+                    "expected_bytes", "sha256", "stored_sha256"}
+        missing = sorted(required - found)
+        if missing:
+            raise RuntimeError("attachment schema is not ready; missing columns: " + ", ".join(missing))
+
     def _query(self, conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         if self._sqlite:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -196,8 +224,8 @@ class AssetStore:
                      idempotency_key: str) -> dict[str, Any]:
         if not actor.can_ingest:
             raise PermissionError("assets:ingest is required")
-        if mode not in MODES:
-            raise ValueError("unsupported asset mode")
+        if mode not in self.allowed_modes:
+            raise PermissionError("asset mode is disabled")
         if not idempotency_key or not PORTABLE_ID.fullmatch(idempotency_key):
             raise ValueError("invalid Idempotency-Key")
         if not PORTABLE_ID.fullmatch(asset_id) or not PORTABLE_ID.fullmatch(revision_id):
@@ -267,6 +295,8 @@ class AssetStore:
             row = rows[0]
             stored = json.loads(row["payload_json"])
             if row["mode"] == "cloudProcessable":
+                if "cloudProcessable" not in self.allowed_modes or self.cloud_key is None:
+                    raise PermissionError("asset mode is disabled")
                 aad = _aad(actor, asset_id, revision_id, row["mode"], subject_id=row["subject_id"])
                 stored = _cloud_open(stored, self.cloud_key, aad)
             return {"assetId": asset_id, "revisionId": revision_id, "parentRevision": row["parent_revision"], "mode": row["mode"], "payload": stored, "payloadDigest": row["payload_digest"], "createdAt": row["created_at"]}
@@ -276,7 +306,10 @@ class AssetStore:
             raise PermissionError("assets:read is required")
         limit = max(1, min(int(limit), 100))
         with self.connection() as conn:
-            return self._query(conn, "SELECT asset_id,title,created_at,updated_at,head_revision FROM xagt_asset_conversations WHERE tenant_id=? AND workspace_id=? AND member_id=? AND deleted_at IS NULL ORDER BY updated_at DESC,asset_id DESC LIMIT ?", (actor.tenant_id, actor.workspace_id, actor.member_id, limit))
+            if self.allowed_modes == MODES:
+                return self._query(conn, "SELECT asset_id,title,created_at,updated_at,head_revision FROM xagt_asset_conversations WHERE tenant_id=? AND workspace_id=? AND member_id=? AND deleted_at IS NULL ORDER BY updated_at DESC,asset_id DESC LIMIT ?", (actor.tenant_id, actor.workspace_id, actor.member_id, limit))
+            mode = next(iter(self.allowed_modes))
+            return self._query(conn, "SELECT c.asset_id,c.title,c.created_at,c.updated_at,c.head_revision FROM xagt_asset_conversations c WHERE c.tenant_id=? AND c.workspace_id=? AND c.member_id=? AND c.deleted_at IS NULL AND (c.head_revision IS NULL OR EXISTS (SELECT 1 FROM xagt_asset_revisions r WHERE r.tenant_id=c.tenant_id AND r.workspace_id=c.workspace_id AND r.member_id=c.member_id AND r.asset_id=c.asset_id AND r.revision_id=c.head_revision AND r.mode=?)) ORDER BY c.updated_at DESC,c.asset_id DESC LIMIT ?", (actor.tenant_id, actor.workspace_id, actor.member_id, mode, limit))
 
     def operation(self, actor: Any, operation_id: str) -> dict[str, Any]:
         if not actor.can_read and not actor.can_ingest:
@@ -299,14 +332,20 @@ class AssetStore:
             if self.write_guard is not None:
                 self.write_guard(conn, actor)
             self._lock_asset(conn, actor, asset_id)
-            rows = self._query(conn, "SELECT 1 FROM xagt_asset_conversations WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=? AND deleted_at IS NULL", (actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
+            rows = self._query(conn, "SELECT deleted_at FROM xagt_asset_conversations WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=?", (actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
             if not rows:
                 raise FileNotFoundError("conversation not found")
-            # Preserve immutable receipts and digests, but erase all encrypted
-            # revision material as part of the owner's deletion transaction.
-            self._exec(conn, "UPDATE xagt_asset_revisions SET payload_json=? WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=?", ("null", actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
-            self._exec(conn, "UPDATE xagt_asset_conversations SET deleted_at=?,updated_at=? WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=?", (deleted, deleted, actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
-            self._exec(conn, "INSERT INTO xagt_asset_tombstones (tenant_id,workspace_id,member_id,asset_id,deleted_at,deletion_epoch) VALUES (?,?,?,?,?,?) ON CONFLICT (tenant_id,workspace_id,member_id,asset_id) DO UPDATE SET deleted_at=excluded.deleted_at,deletion_epoch=excluded.deletion_epoch", (actor.tenant_id, actor.workspace_id, actor.member_id, asset_id, deleted, int(datetime.now(timezone.utc).timestamp())))
+            if rows[0]["deleted_at"] is not None:
+                deleted = rows[0]["deleted_at"]
+            else:
+                self._exec(conn, "UPDATE xagt_asset_revisions SET payload_json=? WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=?", ("null", actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
+                self._exec(conn, "UPDATE xagt_asset_conversations SET deleted_at=?,updated_at=? WHERE tenant_id=? AND workspace_id=? AND member_id=? AND asset_id=?", (deleted, deleted, actor.tenant_id, actor.workspace_id, actor.member_id, asset_id))
+                self._exec(conn, "INSERT INTO xagt_asset_tombstones (tenant_id,workspace_id,member_id,asset_id,deleted_at,deletion_epoch) VALUES (?,?,?,?,?,?) ON CONFLICT (tenant_id,workspace_id,member_id,asset_id) DO UPDATE SET deleted_at=excluded.deleted_at,deletion_epoch=excluded.deletion_epoch", (actor.tenant_id, actor.workspace_id, actor.member_id, asset_id, deleted, int(datetime.now(timezone.utc).timestamp())))
+        attachment_service = getattr(self, "_attachment_service", None)
+        if attachment_service is not None:
+            # Object deletion is idempotent and can be retried by the same
+            # service if an object backend is temporarily unavailable.
+            attachment_service.delete_conversation(actor, asset_id)
         return {"assetId": asset_id, "state": "deleted", "deletedAt": deleted}
 
 

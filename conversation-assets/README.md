@@ -1,6 +1,6 @@
 # xagt.link conversation assets
 
-This package provides the first service for storing and restoring user-owned conversations. The standalone service uses PostgreSQL and a single owner. An optional collector token can submit captures and check its own receipts. Daily Hosted uses the same router behind its member and device authentication.
+This package provides a service for storing and restoring user-owned conversations. Run it on your own VPS with PostgreSQL and a single owner. An optional collector token submits captures and checks its own receipts. The official Hosted integration is a separate, ciphertext-only use of the storage API.
 
 ## Run a standalone instance
 
@@ -52,6 +52,34 @@ python -m xagt_assets.collector upload /path/to/session.jsonl \
   --operation-id example-capture-2
 ```
 
+## Automatic capture
+
+Create a local JSON allowlist outside the source trees. Each local item sets `path`, `root`, `installationId`, `storeId`, and `mode`. A directory is an explicit collection of its bounded contents. For one stable asset per native session, list each session file separately. A `userHeld` item also supplies `recipientPublicKeyFile`, `signerPrivateKeyFile`, `recipientDeviceId` and `signerDeviceId`.
+
+An ACS item sets `kind` to `acs` and specifies `baseUrl`, `sessionId`, `installationId`, `storeId`, `scope` with `OBSERVE`, `clientSessionTokenEnv`, and `mode`. Set `bearerEnv` when the ACS deployment also requires a bearer. Supply authorized source credentials through the named environment variables. The destination collector credential is `XAGT_ASSET_BEARER`. The archiver binds history pages to the selected session and transcript revision.
+
+```sh
+python -m xagt_assets.auto --enable --config /private/asset-sources.json \
+  --base-url http://127.0.0.1:8765/assets/v1 \
+  --journal /private/xagt-journal --state /private/xagt-state.json --once
+```
+
+Omit `--once` for continuous polling. The persisted state records the confirmed head and pending operation for each source. Keep it with the journal across restarts. An unchanged source is skipped. Partial captures are reported and require `--upload-partial` or the matching config policy to be uploaded. If enrollment refresh changes the destination token, set `--auth-subject` to the same verified installation identity when starting the process.
+
+## Attachment storage
+
+Install with `python -m pip install '.[s3]'`. Configure a private S3-compatible bucket on the user's storage service. Set `XAGT_ASSETS_S3_ENDPOINT`, `XAGT_ASSETS_S3_BUCKET`, `XAGT_ASSETS_S3_ACCESS_KEY` and `XAGT_ASSETS_S3_SECRET_KEY` together. `XAGT_ASSETS_S3_REGION` defaults to `us-east-1`. Use HTTPS for network endpoints. Run `standalone init` when upgrading so the new attachment tables are installed before starting the server.
+
+Attach a selected file to an already-saved revision with `python -m xagt_assets.attachment_client attach`. Pass the asset ID, revision ID, service URL, private journal and the revision's encryption mode. For `userHeld`, also supply the recipient and signing keys with the device IDs. `retry` resumes an interrupted upload. `check` verifies committed content, and `restore` writes a new file to the user-selected destination. Run `python -m xagt_assets.attachment_client --help` for options.
+
+```sh
+python -m xagt_assets.attachment_client attach /path/to/report.pdf \
+  --base-url http://127.0.0.1:8765/assets/v1 --asset-id ASSET_ID \
+  --revision-id REVISION_ID --mode cloudProcessable --journal /private/xagt-journal
+```
+
+The service stages metadata, validates size and digest, then commits the revision's attachment. An incomplete upload remains concealed from reads. Private VPS processing encrypts stored attachment bytes with the deployment key. Device-held uploads arrive as ciphertext. Review the returned byte limit in `/capabilities` and schedule `standalone cleanup-attachments` to expire staged uploads and clean up objects after deletion.
+
 ## Export and restore a conversation
 
 Use the owner token as `XAGT_ASSET_BEARER`. Export fixes the head revision and collects its parent chain. The portable bundle contains a manifest with file checksums. `cloudProcessable` bundles contain readable user data, so store the file privately. `userHeld` bundles retain ciphertext and the recipient envelope. Keep the recipient's decryption material separately.
@@ -88,4 +116,4 @@ python -m xagt_assets.unlock /private/conversation.zip \
 
 Install test dependencies with `python -m pip install '.[test]'`. Run `python -m pytest tests`. Supply `XAGT_ASSETS_TEST_POSTGRES` pointing to an isolated test server whose test role can create disposable databases to include database and HTTP verification.
 
-This foundation handles bounded immutable revisions stored in PostgreSQL. Object-store streaming and attachments, continuous source discovery, full-text search, server-side organization, revocable Agent grants, multi-user self-host administration and Control app screens are subsequent implementation steps. Supported capture formats and exact numeric limits are enforced at the collector and service. The member capability remains opt-in in Daily Hosted.
+Immutable revision payloads remain in PostgreSQL, with bounded attachments in S3-compatible storage. Automatic capture operates on the user's allowlist. New source discovery, large streamed transfers, content indexing and organization, revocable Agent grants, multi-user self-host administration and Control app screens are subsequent steps. The member capability remains disabled by default in Daily Hosted.

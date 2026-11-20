@@ -1,0 +1,17 @@
+{
+  "executionOwnership": "HOST_SESSION",
+  "schemaVersion": "session-foundation/1",
+  "hostId": "controlled-host",
+  "storeId": "controlled-host",
+  "sessionId": "public-capture-session",
+  "sessionVersion": "1",
+  "activeRunId": null,
+  "journalEpoch": "controlled-epoch",
+  "deadlineKnown": false,
+  "capabilities": {"sharedObserveV1": "READY", "commandReceiptV1": "READY"},
+  "sessionPurpose": "MAIN",
+  "threadRole": "ROOT",
+  "parentSessionId": null,
+  "createdAt": 1793997097667,
+  "origin": null
+}

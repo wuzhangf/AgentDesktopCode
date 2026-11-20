@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "session-message-page/1",
+  "sessionId": "public-capture-session",
+  "transcriptRevision": "3",
+  "items": [
+    {
+      "id": "capture-user",
+      "clientMessageId": "capture-client-user",
+      "role": "user",
+      "status": "SUCCEEDED",
+      "createdAt": 1793997097699,
+      "updatedAt": 1793997097699,
+      "contentRevision": "1",
+      "content": "CONTROL_PUBLIC_PACKET_user",
+      "contentState": "INLINE",
+      "contentBytes": 26,
+      "attachments": []
+    },
+    {
+      "id": "capture-assistant",
+      "clientMessageId": "capture-client-assistant",
+      "role": "assistant",
+      "status": "SUCCEEDED",
+      "createdAt": 1793997097703,
+      "updatedAt": 1793997097703,
+      "contentRevision": "1",
+      "content": "CONTROL_PUBLIC_PACKET_assistant",
+      "contentState": "INLINE",
+      "contentBytes": 31,
+      "attachments": []
+    }
+  ],
+  "beforeCursor": null,
+  "afterCursor": null,
+  "hasOlder": false,
+  "hasNewer": false,
+  "rangeComplete": true
+}

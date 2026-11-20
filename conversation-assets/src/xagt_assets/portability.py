@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .bundle import BundleError, export_bundle, import_bundle
+from .attachment_client import AttachmentClient
 from .collector import AssetUploader, UploadError
 from .crypto import canonical_json
 
@@ -51,6 +52,9 @@ def export_conversation(client: AssetUploader, asset_id: str, head_id: str, dest
     cursor = _resource_id(head_id)
     filenames: dict[str, bytes] = {}
     newest_first: list[str] = []
+    attachment_refs: list[dict[str, Any]] = []
+    capabilities = client.request("GET", "capabilities")
+    attachment_client = AttachmentClient(client) if capabilities.get("attachments") else None
     total_bytes = 0
     while cursor is not None:
         if cursor in newest_first or len(newest_first) >= _MAX_REVISIONS:
@@ -62,9 +66,42 @@ def export_conversation(client: AssetUploader, asset_id: str, head_id: str, dest
         if total_bytes > _MAX_CHAIN_BYTES:
             raise BundleError("revision chain exceeds the export size limit")
         filenames[f"revisions/{cursor}.json"] = content
+        listing = (client.request("GET", f"conversations/{asset_id}/revisions/{cursor}/attachments")
+                   if attachment_client is not None else {"items": []})
+        if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
+            raise BundleError("attachment listing is invalid")
+        for item in listing["items"]:
+            if not isinstance(item, dict) or item.get("revisionId") not in (None, cursor):
+                raise BundleError("attachment metadata does not match its revision")
+            attachment_id = _resource_id(item.get("attachmentId"))
+            data = attachment_client._download_bytes({**item, "assetId": asset_id, "revisionId": cursor})
+            expected = item.get("expectedBytes")
+            digest = item.get("sha256")
+            if not isinstance(expected, int) or expected != len(data) or not isinstance(digest, str) or hashlib.sha256(data).hexdigest() != digest:
+                raise BundleError("attachment digest or size differs from its metadata")
+            path = f"attachments/{cursor}/{attachment_id}.bin"
+            metadata_path = f"attachments/{cursor}/{attachment_id}.json"
+            filenames[path] = data
+            # Some object gateways intentionally omit the envelope from list
+            # metadata.  The opaque user-held object is still portable, so
+            # recover the public envelope from its JSON body without opening
+            # the content key.
+            if item.get("mode") == "userHeld" and not isinstance(item.get("envelope"), dict):
+                try:
+                    opaque = json.loads(data.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise BundleError("userHeld attachment payload is invalid") from exc
+                if not isinstance(opaque, dict) or not isinstance(opaque.get("envelope"), dict):
+                    raise BundleError("userHeld attachment envelope is missing")
+                item = {**item, "envelope": opaque["envelope"]}
+            filenames[metadata_path] = canonical_json({**item, "assetId": asset_id,
+                                                        "revisionId": cursor, "bundlePath": path})
+            attachment_refs.append({**item, "assetId": asset_id, "revisionId": cursor,
+                                    "bundlePath": path, "metadataPath": metadata_path})
         newest_first.append(cursor)
         cursor = fields["expectedRevision"]
-    metadata = {"kind": _ARCHIVE_KIND, "assetId": asset_id, "revisionIds": list(reversed(newest_first))}
+    metadata = {"kind": _ARCHIVE_KIND, "assetId": asset_id,
+                "revisionIds": list(reversed(newest_first)), "attachmentRefs": attachment_refs}
     return export_bundle(destination, files=filenames, metadata=metadata,
                          signing_private_key=signing_private_key,
                          signer_device_id=signer_device_id)["manifest"]
@@ -82,9 +119,34 @@ def restore_conversation(client: AssetUploader, source: Path, *,
         raise BundleError("invalid revision chain length")
     revision_ids = [_resource_id(revision_id) for revision_id in revision_ids]
     filenames = bundle["files"]
-    if len(set(revision_ids)) != len(revision_ids) or set(filenames) != {
-        f"revisions/{revision_id}.json" for revision_id in revision_ids
-    }:
+    revision_files = {f"revisions/{revision_id}.json" for revision_id in revision_ids}
+    refs = metadata.get("attachmentRefs", [])
+    if not isinstance(refs, list) or len(refs) > 10000:
+        raise BundleError("invalid attachment reference list")
+    attachment_files: set[str] = set()
+    for ref in refs:
+        if not isinstance(ref, dict):
+            raise BundleError("invalid attachment reference")
+        revision_id = _resource_id(ref.get("revisionId"))
+        attachment_id = _resource_id(ref.get("attachmentId"))
+        if revision_id not in revision_ids:
+            raise BundleError("attachment references an unknown revision")
+        data_path = ref.get("bundlePath")
+        metadata_path = ref.get("metadataPath")
+        if data_path != f"attachments/{revision_id}/{attachment_id}.bin" or metadata_path != f"attachments/{revision_id}/{attachment_id}.json":
+            raise BundleError("attachment bundle paths are invalid")
+        if data_path in attachment_files or metadata_path in attachment_files:
+            raise BundleError("duplicate attachment bundle path")
+        attachment_files.update((data_path, metadata_path))
+        if data_path not in filenames or metadata_path not in filenames:
+            raise BundleError("attachment bundle member is missing")
+        archived = json.loads(filenames[metadata_path])
+        if not isinstance(archived, dict) or archived.get("attachmentId") != attachment_id:
+            raise BundleError("attachment metadata member is invalid")
+        data = filenames[data_path]
+        if archived.get("expectedBytes") != len(data) or hashlib.sha256(data).hexdigest() != archived.get("sha256"):
+            raise BundleError("attachment bundle digest mismatch")
+    if len(set(revision_ids)) != len(revision_ids) or set(filenames) != revision_files | attachment_files:
         raise BundleError("archive revision list differs from its members")
 
     plan = []
@@ -97,11 +159,36 @@ def restore_conversation(client: AssetUploader, source: Path, *,
         operation = hashlib.sha256(canonical_json([asset_id, revision_id, fields])).hexdigest()
         plan.append((revision_id, fields, "import-" + operation))
 
+    attachment_client = None
+    if refs:
+        if not client.request("GET", "capabilities").get("attachments"):
+            raise BundleError("destination attachment storage is not available")
+        attachment_client = AttachmentClient(client)
     for revision_id, fields, operation_id in plan:
         # Original keys are local to their auth domain. Deterministic import keys let
         # a partially completed import be retried in this destination.
         client.request("PUT", _revision_path(asset_id, revision_id), body=fields, operation_id=operation_id)
-    return {"assetId": asset_id, "headRevision": revision_ids[-1], "revisionCount": len(revision_ids)}
+    restored_attachments = 0
+    for ref in refs:
+        revision_id = _resource_id(ref["revisionId"])
+        attachment_id = _resource_id(ref["attachmentId"])
+        data = filenames[ref["bundlePath"]]
+        body = {"attachmentId": attachment_id, "mode": ref.get("mode"),
+                "contentType": ref.get("contentType"), "expectedBytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest()}
+        if ref.get("mode") == "userHeld":
+            if not isinstance(ref.get("envelope"), dict):
+                raise BundleError("userHeld attachment envelope is missing")
+            body["envelope"] = ref["envelope"]
+        op = "import-attachment-" + hashlib.sha256(canonical_json([asset_id, revision_id, attachment_id, body])).hexdigest()[:40]
+        client.request("POST", _revision_path(asset_id, revision_id) + "/attachments",
+                       body=body, operation_id=op + "-create")
+        upload_path = _revision_path(asset_id, revision_id) + f"/attachments/{attachment_id}"
+        attachment_client._raw("PUT", upload_path, data, operation_id=op + "-upload")
+        client.request("POST", upload_path + "/commit", operation_id=op + "-commit")
+        restored_attachments += 1
+    return {"assetId": asset_id, "headRevision": revision_ids[-1],
+            "revisionCount": len(revision_ids), "attachmentCount": restored_attachments}
 
 
 def _key_file(path: Path | None) -> bytes | None:
