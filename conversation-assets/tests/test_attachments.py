@@ -10,9 +10,46 @@ from xagt_assets import Actor, AssetStore, AttachmentService, InMemoryObjectStor
 from xagt_assets.collector import CollectedRevision, make_user_held_payload
 from xagt_assets.crypto import generate_device_keypair
 from xagt_assets.object_store import ObjectNotFound, ObjectStoreError
+from xagt_assets.recovery import verify_storage
 
 
 KEY = b"0123456789abcdef0123456789abcdef"
+
+
+def test_recovery_checks_stored_bytes_and_resumable_uploads():
+    store = AssetStore("sqlite:///:memory:", cloud_key=KEY)
+    store.apply_schema()
+    objects = InMemoryObjectStore()
+    attachments = AttachmentService(store, objects)
+    actor = Actor("t", "w", "m", "s", can_ingest=True, can_manage=True, can_read=True)
+    content = b"snapshot content"
+    for asset_id in ("active", "deleted"):
+        store.put_revision(actor, asset_id, "rev", "cloudProcessable", None, {"message": "root"}, asset_id)
+        for attachment_id in ("committed", "staged", "pending"):
+            attachments.create(actor, asset_id, "rev", attachment_id, mode="cloudProcessable",
+                               content_type="text/plain", expected_bytes=len(content),
+                               sha256=hashlib.sha256(content).hexdigest())
+            if attachment_id != "pending":
+                attachments.upload(actor, asset_id, "rev", attachment_id, content)
+            if attachment_id == "committed":
+                attachments.commit(actor, asset_id, "rev", attachment_id)
+    store.delete_conversation(actor, "deleted")
+    assert verify_storage(store, objects).report() == {
+        "schemaVersion": "xagt-asset-storage-check/1", "ok": True, "checked": 2,
+        "missing": 0, "digest_mismatch": 0, "unavailable": 0,
+    }
+    with pytest.raises(ValueError, match="attachment storage is required"):
+        verify_storage(store, None)
+    with store.connection() as connection:
+        rows = store._query(connection,
+                            "SELECT attachment_id,object_key FROM xagt_asset_attachments WHERE asset_id=?",
+                            ("active",))
+    keys = {row["attachment_id"]: row["object_key"] for row in rows}
+    objects.delete(keys["staged"])
+    objects.delete(keys["committed"])
+    objects.put(keys["committed"], b"tampered stored bytes", content_type="application/octet-stream")
+    report = verify_storage(store, objects)
+    assert (report.ok, report.checked, report.missing, report.digest_mismatch) == (False, 2, 1, 1)
 
 
 def _app(store, actor, service):
