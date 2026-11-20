@@ -11,9 +11,23 @@ $ErrorActionPreference = 'Stop'
 $product = Split-Path $PSScriptRoot -Parent
 $repo = Split-Path $product -Parent
 $out = [IO.Path]::GetFullPath($OutputRoot)
-$version = ([xml](Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'AgentLink.wxs'))).Wix.Package.Version
-$managedVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $product 'Directory.Build.props'))).Project.PropertyGroup.Version
-if ($version -ne $managedVersion) { throw 'Installer and managed product versions must match.' }
+$defaultVersion = ([xml](Get-Content -Raw -LiteralPath (Join-Path $product 'Directory.Build.props'))).Project.PropertyGroup.Version
+$requestedVersion = if ($env:AGENT_LINK_PRODUCT_VERSION) { $env:AGENT_LINK_PRODUCT_VERSION } else { $defaultVersion }
+$parsedVersion = $null
+if ($requestedVersion -notmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z' -or
+    ![version]::TryParse($requestedVersion, [ref]$parsedVersion) -or
+    $parsedVersion.Major -gt 255 -or $parsedVersion.Minor -gt 255 -or $parsedVersion.Build -gt 65535) {
+    throw 'AGENT_LINK_PRODUCT_VERSION must fit the three numeric fields of Windows Installer ProductVersion.'
+}
+$version = $parsedVersion.ToString(3)
+$expectedFileVersion = "1.$version"
+$requestedBuild = if ($env:AGENT_LINK_BUILD_NUMBER) { $env:AGENT_LINK_BUILD_NUMBER } else { '1' }
+[long]$buildNumber = 0
+if ($requestedBuild -notmatch '\A[1-9][0-9]*\z' -or ![long]::TryParse($requestedBuild, [ref]$buildNumber) -or
+    $buildNumber -gt 9007199254740991) {
+    throw 'AGENT_LINK_BUILD_NUMBER must be a positive decimal integer representable in the release record.'
+}
+$versionArgs = @("-p:Version=$version", "-p:FileVersion=$expectedFileVersion")
 if (Test-Path -LiteralPath $out) { throw 'Choose a fresh output directory.' }
 $payload = Join-Path $out 'payload'
 $hostOutput = Join-Path $payload 'host'
@@ -22,12 +36,15 @@ $gateway = Join-Path $repo 'device-gateway'
 
 & npm.cmd --prefix $gateway run build
 if ($LASTEXITCODE) { throw 'Gateway build failed.' }
-& $Dotnet publish (Join-Path $product 'src/AgentLink.App') -c Release -r win-x64 --self-contained -o $payload
+& $Dotnet publish (Join-Path $product 'src/AgentLink.App') -c Release -r win-x64 --self-contained -o $payload @versionArgs
 if ($LASTEXITCODE) { throw 'Tray build failed.' }
-& $Dotnet publish (Join-Path $product 'src/AgentLink.Host') -c Release -r win-x64 --self-contained -o $hostOutput
+& $Dotnet publish (Join-Path $product 'src/AgentLink.Host') -c Release -r win-x64 --self-contained -o $hostOutput @versionArgs
 if ($LASTEXITCODE) { throw 'Host build failed.' }
 $fileVersion = (Get-Item -LiteralPath (Join-Path $payload 'AgentLink.exe')).VersionInfo.FileVersion
-if ([version]$fileVersion -ne [version]"1.$version") { throw 'Unexpected PE file version; preview upgrades must remain above 1.0.0.0.' }
+$hostFileVersion = (Get-Item -LiteralPath (Join-Path $hostOutput 'AgentLink.Host.exe')).VersionInfo.FileVersion
+if ([version]$fileVersion -ne [version]$expectedFileVersion -or [version]$hostFileVersion -ne [version]$expectedFileVersion) {
+    throw 'Tray and Host executables must both carry the expected PE file version.'
+}
 
 $runtime = (New-Item -ItemType Directory -Path (Join-Path $payload 'runtime')).FullName
 $gatewayOutput = (New-Item -ItemType Directory -Force -Path (Join-Path $payload 'components/gateway')).FullName
@@ -97,6 +114,7 @@ $manifest = [ordered]@{
     schemaVersion = 1
     product = 'Agent Link'
     version = $version
+    buildNumber = $buildNumber
     fileVersion = $fileVersion
     build = 'windows-lan-preview'
     gatewayBaseRevision = $gatewaySha
@@ -113,6 +131,6 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'release-manifest.json') -Encoding utf8
 $msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
 $icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
-& $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
+& $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" -d "LinkProductVersion=$version" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
 if ($LASTEXITCODE) { throw 'MSI build failed.' }
 Get-FileHash -LiteralPath $msi -Algorithm SHA256

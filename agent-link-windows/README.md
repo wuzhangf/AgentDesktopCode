@@ -40,7 +40,7 @@ The output directory contains the MSI and a manifest of the packaged files. The 
 
 The brand vector master is `src/AgentLink.App/Assets/Brand.xaml`. After editing it, run `powershell.exe -NoProfile -STA -File agent-link-windows/packaging/export-icon.ps1` from the repository root and commit the exported ICO. Its nine native sizes (16–256 px) are shared by the tray, executable, Start shortcut and installed-app entry. Normal builds consume the checked-in ICO and require no image tools.
 
-Keep the three-part product version in `Directory.Build.props` and `AgentLink.wxs` synchronized. PE file versions use `1.<product version>` because the first preview shipped `1.0.0.0`; Windows Installer must see increasing file versions when upgrading that preview. The packaging script checks both versions before producing an MSI.
+Release builds read `AGENT_LINK_PRODUCT_VERSION` and `AGENT_LINK_BUILD_NUMBER`. The product version has three numeric fields and is shared by the MSI and the managed projects. When unset, the product version comes from `Directory.Build.props` and the build number is 1. The build number is recorded in the release manifest. Change the three-part product version for each MSI upgrade. PE file versions use `1.<product version>` because the first preview shipped `1.0.0.0`. The packaging script verifies the tray and Host file versions before assembling the MSI.
 
 State-root startup regression checks run without opening a UI or touching user data:
 
