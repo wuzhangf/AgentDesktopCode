@@ -22,7 +22,7 @@ For a Windows Host launched with a configured local ACS, set `DEVICE_GATEWAY_ACS
 
 ## Build
 
-Install gateway build dependencies with `npm --prefix device-gateway ci` at the repository root. Use the .NET 10 SDK, WiX 6, and a Windows x64 Node 24 distribution from 24.18.0 onward that includes its license.
+Install gateway build dependencies with `npm --prefix device-gateway ci` at the repository root. Use the .NET 10 SDK, WiX 6, and the official [Node.js 26.13.1 Windows x64 ZIP](https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-x64.zip). Extract `node.exe` and `LICENSE` to the same directory. The packaging script verifies the binary against the pinned SHA-256 before copying it into the gateway and versioned update bootstrap.
 
 ```powershell
 .\agent-link-windows\packaging\build.ps1 -Dotnet <dotnet.exe> -Wix <wix.exe> -Node <node.exe> [-ConnectorPackage <dir>] [-CliBridge <host.mjs>] [-LinkFilesWorker <exe>]

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { installationPaths, systemctl } from './install-transaction.mjs';
 import { readSlot, syncPath, writeAtomic } from './slots.mjs';
@@ -7,7 +7,7 @@ import { readSlot, syncPath, writeAtomic } from './slots.mjs';
 const timer = 'agent-link-update.timer';
 const service = 'agent-link-update.service';
 const scheduled = 'agent-link-update-scheduled.service';
-const revision = '4\n';
+const revision = '5\n';
 
 const quoted = (value, exec = true) => {
   const path = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%');
@@ -42,9 +42,16 @@ export function configureUpdater(requestedPrefix) {
   }
   const node = join(bootstrap, 'node');
   const updater = join(bootstrap, 'update.cjs');
-  if (!existsSync(node)) {
-    linkSync(join(slot, 'runtime/node'), node);
+  // Use the verified slot runtime even when an earlier installer already fixed
+  // a different Node binary in the scheduler's directory.
+  const nextNode = join(bootstrap, '.node-next');
+  rmSync(nextNode, { force: true });
+  try {
+    linkSync(join(slot, 'runtime/node'), nextNode);
+    renameSync(nextNode, node);
     syncPath(bootstrap);
+  } finally {
+    rmSync(nextNode, { force: true });
   }
   writeAtomic(updater, readFileSync(join(slot, 'bootstrap/update.cjs')));
   const values = {

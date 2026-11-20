@@ -13,7 +13,7 @@ sh agent-link-linux/packaging/build.sh [--out DIR]
 Produces `agent-link-<version>-linux.tar.gz` containing the gateway bundle, the `cli-bridge` agent
 runtime (`AgentWorkersCode/cli-bridge/host.mjs`, override with
 `WORKER_BRIDGE=/path/host.mjs`), installer, unit template, Claude hooks,
-the pinned Linux x86_64 Node runtime and its license, and a
+the pinned Linux x86_64 Node.js 24.22.3 runtime and its license, and a
 `release-manifest.json` with per-file SHA-256. The build checks the
 runtime archive against a pinned digest. Set `AGENT_LINK_LINUX_NODE_ARCHIVE`
 to build with a cached copy of that same archive.
@@ -84,10 +84,13 @@ To limit automatic installation to local hours, create
 Automatic checks can download outside the window and retain one verified archive
 while waiting for the configured hours or for active work to finish. The updater
 checks fresh signed metadata before reusing the archive and before stopping the gateway.
+The updater bundles an Undici dispatcher that handles download servers closing
+HTTP connections after each response.
 See the schedule in `PREFIX/updates/automatic.json` and the logs in
 `journalctl --user -u agent-link-update-scheduled.service -u agent-link-update.service`.
 On older bridge installations, rerun the installer from this verified package
-to upgrade the scheduler. Existing channel trust and timer enablement are preserved.
+to refresh the scheduler and its Node runtime. The installer retains the
+existing channel trust, rollout cohort and timer enablement.
 
 ## What the phone can do (free LAN tier)
 
