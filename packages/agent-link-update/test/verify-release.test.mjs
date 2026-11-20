@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { canonicalize } from '@tufjs/canonical-json';
+import { stageVerifiedRelease } from '../src/verify-release.mjs';
+
+const recordPath = 'channels/stable.json';
+const artifactPath = 'agent-link/releases/link-42/Agent-Link.zip';
+const archive = Buffer.from('synthetic archive bytes');
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const describe = bytes => ({ length: bytes.length, hashes: { sha256: digest(bytes) } });
+
+function keyPair() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const model = {
+    keytype: 'ed25519',
+    scheme: 'ed25519',
+    keyval: { public: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex') },
+  };
+  return { model, privateKey, id: digest(canonicalize(model)) };
+}
+
+function signed(type, version, fields, keys) {
+  const expires = new Date(Date.now() + 7 * 86_400_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const content = { _type: type, version, spec_version: '1.0.31', expires, ...fields };
+  const body = Buffer.from(canonicalize(content));
+  return Buffer.from(JSON.stringify({
+    signed: content,
+    signatures: keys.map(({ id, privateKey }) => ({
+      keyid: id, sig: sign(null, body, privateKey).toString('hex'),
+    })),
+  }));
+}
+
+async function repository(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'link-tuf-test-'));
+  const files = new Map();
+  const requests = [];
+  const server = createServer((request, reply) => {
+    requests.push(request.url);
+    const contents = files.get(request.url);
+    if (!contents) {
+      reply.writeHead(404).end();
+      return;
+    }
+    reply.writeHead(200, { 'content-length': contents.length }).end(contents);
+  });
+  t.after(async () => {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const metadataDir = join(directory, 'cache');
+  const stagingParent = join(directory, 'staging');
+  await Promise.all([mkdir(metadataDir), mkdir(stagingParent)]);
+
+  const initial = keyPair();
+  const rotated = keyPair();
+  const root = (version, key, signatures) => signed('root', version, {
+    consistent_snapshot: false,
+    keys: { [key.id]: key.model },
+    roles: Object.fromEntries(['root', 'targets', 'snapshot', 'timestamp'].map(role =>
+      [role, { keyids: [key.id], threshold: 1 }])),
+  }, signatures);
+  await writeFile(join(metadataDir, 'root.json'), root(1, initial, [initial]));
+  const installed = { platform: 'linux', arch: 'x86_64', channel: 'stable',
+    buildNumber: 41, bootstrapVersion: 1, stateVersion: 1 };
+  const baseRelease = {
+    schemaVersion: 'link-release/1', product: 'agent-link', displayVersion: '0.2.1',
+    releaseId: 'link-42', platform: 'linux', arch: 'x86_64', channel: 'stable',
+    buildNumber: 42, availability: 'published',
+    compatibility: { bootstrapMinVersion: 1, stateReadVersions: [1], stateWriteVersion: 1 },
+    artifact: { path: artifactPath, length: archive.length, sha256: digest(archive) },
+  };
+  return {
+    files, installed, requests, stagingParent,
+    publish({ version = 1, release = {}, expired = false, rotate = false } = {}) {
+      const key = rotate ? rotated : initial;
+      if (rotate) files.set('/metadata/2.root.json', root(2, rotated, [initial, rotated]));
+      const record = Buffer.from(JSON.stringify({ ...baseRelease, ...release }));
+      const targets = signed('targets', version, {
+        targets: { [recordPath]: describe(record), [artifactPath]: describe(archive) },
+      }, [key]);
+      const snapshot = signed('snapshot', version, {
+        meta: { 'targets.json': { version, ...describe(targets) } },
+      }, [key]);
+      const timestamp = signed('timestamp', version, {
+        meta: { 'snapshot.json': { version, ...describe(snapshot) } },
+        ...(expired ? { expires: '2000-01-01T00:00:00Z' } : {}),
+      }, [key]);
+      files.set('/metadata/targets.json', targets);
+      files.set('/metadata/snapshot.json', snapshot);
+      files.set('/metadata/timestamp.json', timestamp);
+      files.set('/targets/' + recordPath, record);
+      files.set('/targets/' + artifactPath, archive);
+    },
+    stage(current = installed) {
+      return stageVerifiedRelease({
+        metadataDir, metadataBaseUrl: origin + '/metadata/', targetBaseUrl: origin + '/targets/',
+        releaseRecordPath: recordPath, installed: current, stagingParent,
+      });
+    },
+  };
+}
+
+test('rotates trusted root and stages verified archive for each desktop platform', async t => {
+  const repo = await repository(t);
+  for (const [version, platform] of ['macos', 'windows', 'linux'].entries()) {
+    repo.publish({ version: version + 1, rotate: true, release: { platform } });
+    const result = await repo.stage({ ...repo.installed, platform });
+    assert.equal(result.release.buildNumber, 42);
+    assert.equal(result.release.platform, platform);
+    assert.deepEqual(await readFile(result.archivePath), archive);
+  }
+});
+
+test('refuses expired and replayed metadata', async t => {
+  const repo = await repository(t);
+  repo.publish({ expired: true });
+  await assert.rejects(repo.stage());
+  repo.publish({ version: 3 });
+  await repo.stage();
+  repo.publish({ version: 1 });
+  await assert.rejects(repo.stage());
+});
+
+test('keeps ineligible releases away from the archive download', async t => {
+  const repo = await repository(t);
+  const cases = [
+    [{ platform: 'macos' }, /platform/],
+    [{ arch: 'arm64' }, /architecture/],
+    [{ channel: 'preview' }, /channel/],
+    [{ availability: 'withdrawn' }, /unavailable/],
+    [{ buildNumber: 41 }, /newer/],
+    [{ compatibility: { bootstrapMinVersion: 2, stateReadVersions: [1], stateWriteVersion: 1 } }, /bootstrap/],
+    [{ artifact: { path: '../archive', length: archive.length, sha256: digest(archive) } }, /descriptor/],
+    [{ releaseId: 'different-release' }, /descriptor/],
+    [{ artifact: { path: artifactPath, length: archive.length, sha256: '1'.repeat(64) } }, /disagree/],
+  ];
+  for (const [version, [release, expected]] of cases.entries()) {
+    repo.publish({ version: version + 1, release });
+    await assert.rejects(repo.stage(), expected);
+  }
+  assert.ok(!repo.requests.includes('/targets/' + artifactPath));
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+});
+
+test('removes staging data when the archive differs from its verified metadata', async t => {
+  const repo = await repository(t);
+  repo.publish();
+  repo.files.set('/targets/' + artifactPath, Buffer.alloc(archive.length, 8));
+  await assert.rejects(repo.stage());
+  assert.deepEqual(await readdir(repo.stagingParent), []);
+});
