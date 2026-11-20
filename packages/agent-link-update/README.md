@@ -138,9 +138,10 @@ following fields.
 
 - `qualifiedUpdateSha256` is the SHA-256 recorded by the archive qualification.
 - `qualifiedInstallerSha256` is the SHA-256 recorded by the installer
-  qualification. On Mac and Linux this matches the update archive.
-- `installer` is the path to the qualified MSI on Windows only. The desktop
-  updater continues to use the ZIP archive.
+  qualification. On Linux this matches the update archive.
+- `installer` is the path to the qualified DMG on Mac or MSI on Windows.
+  The desktop updater continues to use the ZIP archive. Existing Mac ZIP
+  downloads remain compatible with the catalog.
 - `publishedAt` is a UTC date and time in `YYYY-MM-DDTHH:mm:ssZ` format.
 - `releaseNotes` and `installation` are public plain text.
 

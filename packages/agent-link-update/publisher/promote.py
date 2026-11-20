@@ -155,12 +155,15 @@ class Storage:
 
 
 def content_type(key):
+    key = key.lower()
     if key.endswith(".json"):
         return "application/json"
     if key.endswith(".zip"):
         return "application/zip"
     if key.endswith(".tar.gz"):
         return "application/gzip"
+    if key.endswith(".dmg"):
+        return "application/x-apple-diskimage"
     return "application/octet-stream"
 
 
