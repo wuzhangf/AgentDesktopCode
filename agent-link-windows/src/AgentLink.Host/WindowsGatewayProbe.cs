@@ -6,20 +6,25 @@ namespace AgentLink;
 /// <summary>Starts only the bundled gateway, over the stopped Host's private snapshot.</summary>
 internal static class WindowsGatewayProbe
 {
-    internal static async Task<bool> RunAsync(string operationId)
+    internal static async Task<bool> RunAsync(string operationId, bool seed)
     {
         if (!LinkUpdateTransition.Matches(operationId)) return false;
         var snapshot = LinkUpdateTransition.SnapshotPath(operationId);
         CheckSnapshot(snapshot);
         var gatewayData = Path.Combine(snapshot, "gateway");
-        if (!File.Exists(Path.Combine(gatewayData, "device-gateway.db"))) return false;
-        using var receiptFile = File.OpenRead(LinkUpdateTransition.StoppedReceipt);
-        if (receiptFile.Length > 16 * 1024) return false;
-        var receipt = JsonSerializer.Deserialize<LinkUpdateHandoff>(receiptFile, LinkProtocol.Json);
-        if (receipt is null || receipt.OperationId != operationId || receipt.GatewayBootId is not { Length: > 0 } ||
-            receipt.Identity is not { PersonalHostId.Length: > 0, StoreId.Length: > 0, DeviceCount: >= 0 })
-            return false;
-        var identity = LinkIdentity.Load(snapshot, requireExisting: true);
+        LinkUpdateHandoff? receipt = null;
+        if (!seed)
+        {
+            if (!File.Exists(Path.Combine(gatewayData, "device-gateway.db"))) return false;
+            using var receiptFile = File.OpenRead(LinkUpdateTransition.StoppedReceipt);
+            if (receiptFile.Length > 16 * 1024) return false;
+            receipt = JsonSerializer.Deserialize<LinkUpdateHandoff>(receiptFile, LinkProtocol.Json);
+            if (receipt is null || receipt.OperationId != operationId || receipt.GatewayBootId is not { Length: > 0 } ||
+                receipt.Identity is not { PersonalHostId.Length: > 0, StoreId.Length: > 0, DeviceCount: >= 0 })
+                return false;
+        }
+        var identity = LinkIdentity.Load(snapshot, requireExisting: !seed);
+        Directory.CreateDirectory(gatewayData);
         var installRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
         var node = LinkHost.ProcessInfo(Path.Combine(installRoot, "runtime", "gateway-node.exe"), gatewayData);
         node.ArgumentList.Add("--import");
@@ -59,7 +64,7 @@ internal static class WindowsGatewayProbe
         try
         {
             ready = await GatewayProbeClient.CheckAsync(http, ports.Owner, identity.OwnerToken, identity.ClientToken,
-                receipt, () => !job.Process.HasExited, deadline.Token);
+                operationId, receipt, () => !job.Process.HasExited, deadline.Token);
         }
         finally
         {

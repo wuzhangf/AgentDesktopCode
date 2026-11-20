@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -6,9 +7,11 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { canonicalize } from '@tufjs/canonical-json';
 import { stageVerifiedRelease } from '../src/verify-release.mjs';
 import { confirmSparkleCandidate, startSparkleSession } from '../src/sparkle-session.mjs';
+import { selectWindowsRelease } from '../src/windows-release.mjs';
 
 const recordPath = 'channels/stable.json';
 const artifactPath = 'agent-link/releases/link-42/Agent-Link.zip';
@@ -122,6 +125,44 @@ test('rotates trusted root and stages verified archive for each desktop platform
     assert.deepEqual(await readFile(result.archivePath), archive);
   }
 });
+
+test('Windows verifier stages signed archives, checks rollout and rechecks withdrawal before commitment', async t => {
+  const repo = await repository(t);
+  const options = { ...repo.options({ ...repo.installed, platform: 'windows' }), cohort: '12'.repeat(16) };
+  const release = { platform: 'windows', minOS: 'windows-11', withdrawnBuilds: [],
+    rollout: { cohortSeed: 'windows-test', percentage: 100 } };
+  repo.publish({ release });
+  const bundled = process.env.AGENT_LINK_WINDOWS_TEST_VERIFIER;
+  const result = bundled
+    ? await callWindowsVerifier(bundled, options)
+    : await selectWindowsRelease(options);
+  assert.equal(result.state, 'candidate');
+  assert.deepEqual(result.target, { buildNumber: 42, archiveLength: archive.length, archiveSha256: digest(archive) });
+  assert.deepEqual(await readFile(result.archivePath), archive);
+  const firstDownloadCount = repo.requests.filter(path => path === '/targets/' + artifactPath).length;
+  const confirmed = await selectWindowsRelease(options, true);
+  assert.deepEqual(confirmed, { state: 'candidate', withdrawn: [], target: result.target });
+  assert.equal(repo.requests.filter(path => path === '/targets/' + artifactPath).length, firstDownloadCount);
+
+  repo.publish({ version: 2, release: { ...release, rollout: { ...release.rollout, percentage: 0 } } });
+  assert.deepEqual(await selectWindowsRelease(options), { state: 'deferred', withdrawn: [] });
+  repo.publish({ version: 3, release: { ...release, withdrawnBuilds: [41] } });
+  assert.deepEqual(await selectWindowsRelease(options, true), { state: 'repair', withdrawn: [41] });
+  repo.publish({ version: 4, release: { ...release, withdrawnBuilds: [42] } });
+  assert.deepEqual(await selectWindowsRelease({ ...options, installed: { ...options.installed, buildNumber: 42 } }),
+    { state: 'repair', withdrawn: [42] });
+  assert.equal(repo.requests.filter(path => path === '/targets/' + artifactPath).length, firstDownloadCount);
+  repo.publish({ version: 5, release: { ...release, withdrawnBuilds: [40] } });
+  repo.files.set('/targets/' + artifactPath, Buffer.alloc(archive.length, 0x2a));
+  assert.deepEqual(await selectWindowsRelease(options), { state: 'deferred', withdrawn: [40] });
+});
+
+async function callWindowsVerifier(bundle, options) {
+  const request = join(options.stagingParent, 'windows-verification.json');
+  await writeFile(request, JSON.stringify(options));
+  const { stdout } = await promisify(execFile)(process.execPath, [bundle, request]);
+  return JSON.parse(stdout);
+}
 
 test('refuses expired and replayed metadata', async t => {
   const repo = await repository(t);

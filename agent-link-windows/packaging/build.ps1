@@ -5,6 +5,16 @@ param(
     [string]$ConnectorPackage,
     [string]$LinkFilesWorker,
     [string]$CliBridge,
+    [switch]$VersionedPayload,
+    [string]$SignTool,
+    [string]$CertificateThumbprint,
+    [string]$TimestampUrl,
+    [string]$TufRoot,
+    [string]$TufMetadataUrl,
+    [string]$TufTargetUrl,
+    [string]$TufRecordPath,
+    [ValidateSet('stable', 'preview')][string]$TufChannel = 'stable',
+    [ValidateRange(1, 2147483647)][int]$BootstrapVersion = 1,
     [string]$OutputRoot = '.local/agent-link-windows-release'
 )
 $ErrorActionPreference = 'Stop'
@@ -28,6 +38,29 @@ if ($requestedBuild -notmatch '\A[1-9][0-9]*\z' -or ![long]::TryParse($requested
     throw 'AGENT_LINK_BUILD_NUMBER must be a positive decimal integer representable in the release record.'
 }
 $versionArgs = @("-p:Version=$version", "-p:FileVersion=$expectedFileVersion")
+$tufConfigured = $TufRoot -or $TufMetadataUrl -or $TufTargetUrl -or $TufRecordPath
+if ($tufConfigured -and (!$VersionedPayload -or !$TufRoot -or !$TufMetadataUrl -or !$TufTargetUrl -or !$TufRecordPath)) {
+    throw 'Windows update configuration requires the versioned bootstrap and all TUF inputs.'
+}
+if ($VersionedPayload) {
+    if ($parsedVersion -le [version]'0.1.11') {
+        throw 'The bridge MSI must use a higher product version than the installed 0.1.11 preview.'
+    }
+    if (!$SignTool -or !$TimestampUrl -or $CertificateThumbprint -notmatch '\A[0-9a-fA-F]{40}\z') {
+        throw 'A versioned MSI requires SignTool, a current-user signing certificate and an RFC 3161 timestamp URL.'
+    }
+    $signing = Get-Item -LiteralPath "Cert:\CurrentUser\My\$CertificateThumbprint"
+    if (!$signing.HasPrivateKey) { throw 'The selected signing certificate has no available private key.' }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $publisher = ([BitConverter]::ToString($hash.ComputeHash($signing.GetPublicKey()))).Replace('-', '') }
+    finally { $hash.Dispose() }
+}
+function Sign-LinkFile([string]$Path) {
+    & $SignTool sign /fd SHA256 /sha1 $CertificateThumbprint /tr $TimestampUrl /td SHA256 $Path
+    if ($LASTEXITCODE) { throw 'Windows release signing failed.' }
+    & $SignTool verify /pa $Path
+    if ($LASTEXITCODE) { throw 'Windows release signature verification failed.' }
+}
 if (Test-Path -LiteralPath $out) { throw 'Choose a fresh output directory.' }
 $payload = Join-Path $out 'payload'
 $hostOutput = Join-Path $payload 'host'
@@ -110,6 +143,10 @@ if ($LinkFilesWorker) {
     $filesOutput = (New-Item -ItemType Directory -Path (Join-Path $payload 'components/files')).FullName
     Copy-Item -LiteralPath $LinkFilesWorker -Destination (Join-Path $filesOutput 'agent-link-files.exe')
 }
+if ($VersionedPayload) {
+    Sign-LinkFile (Join-Path $payload 'AgentLink.exe')
+    Sign-LinkFile (Join-Path $hostOutput 'AgentLink.Host.exe')
+}
 $manifest = [ordered]@{
     schemaVersion = 1
     product = 'Agent Link'
@@ -129,11 +166,58 @@ $manifest = [ordered]@{
     })
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payload 'release-manifest.json') -Encoding utf8
-$msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
-$icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
-& $Wix build -arch x64 -d "Payload=$payload" -d "IconFile=$icon" -d "LinkProductVersion=$version" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
-if ($LASTEXITCODE) { throw 'MSI build failed.' }
 $payloadArchive = Join-Path $out "Agent-Link-$version-build-$buildNumber-win-x64.zip"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($payload, $payloadArchive)
+$msiTree = $payload
+if ($VersionedPayload) {
+    $msiTree = (New-Item -ItemType Directory -Path (Join-Path $out 'bootstrap')).FullName
+    $channel = $null
+    $bootstrapArgs = @()
+    if ($tufConfigured) {
+        $updater = Join-Path $repo 'packages/agent-link-update'
+        & npm.cmd --prefix $updater ci --ignore-scripts --no-audit
+        if ($LASTEXITCODE) { throw 'Windows verifier dependency preparation failed.' }
+        $esbuild = Join-Path $gateway 'node_modules/.bin/esbuild.cmd'
+        $verifier = Join-Path $msiTree 'verify-windows.cjs'
+        & $esbuild (Join-Path $updater 'src/windows-cli.mjs') --bundle --platform=node --format=cjs --target=node24 "--outfile=$verifier"
+        if ($LASTEXITCODE) { throw 'Windows verifier bundling failed.' }
+        Copy-Item -LiteralPath $Node -Destination (Join-Path $msiTree 'update-node.exe')
+        Copy-Item -LiteralPath $license -Destination (Join-Path $msiTree 'NODE-LICENSE.txt')
+        $channel = [ordered]@{
+            metadataBaseUrl = $TufMetadataUrl
+            targetBaseUrl = $TufTargetUrl
+            releaseRecordPath = $TufRecordPath
+            channel = $TufChannel
+            nodeSha256 = (Get-FileHash -LiteralPath (Join-Path $msiTree 'update-node.exe')).Hash
+            verifierSha256 = (Get-FileHash -LiteralPath $verifier).Hash
+        }
+        $bootstrapArgs += "-p:LinkTufRoot=$((Resolve-Path -LiteralPath $TufRoot).Path)"
+    }
+    $config = [ordered]@{
+        publisherKey = $publisher
+        bootstrapVersion = $BootstrapVersion
+        channel = $channel
+        seed = [ordered]@{
+            buildNumber = $buildNumber
+            archiveLength = (Get-Item -LiteralPath $payloadArchive).Length
+            archiveSha256 = (Get-FileHash -LiteralPath $payloadArchive).Hash.ToLowerInvariant()
+        }
+    }
+    $configPath = Join-Path $out 'bootstrap-config.json'
+    [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    & $Dotnet publish (Join-Path $product 'src/AgentLink.Launcher') -c Release -r win-x64 --self-contained -o $msiTree @versionArgs @bootstrapArgs "-p:LinkBootstrapConfig=$configPath" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+    if ($LASTEXITCODE) { throw 'Launcher build failed.' }
+    $launcher = Join-Path $msiTree 'AgentLink.exe'
+    if ([version](Get-Item -LiteralPath $launcher).VersionInfo.FileVersion -ne [version]$expectedFileVersion) {
+        throw 'The Launcher PE version differs from the MSI version.'
+    }
+    Sign-LinkFile $launcher
+    Copy-Item -LiteralPath $payloadArchive -Destination (Join-Path $msiTree 'seed.zip')
+}
+$msi = Join-Path $out "Agent-Link-$version-win-x64.msi"
+$icon = Join-Path $product 'src/AgentLink.App/Assets/AgentLink.ico'
+& $Wix build -arch x64 -d "Payload=$msiTree" -d "IconFile=$icon" -d "LinkProductVersion=$version" (Join-Path $PSScriptRoot 'AgentLink.wxs') -o $msi
+if ($LASTEXITCODE) { throw 'MSI build failed.' }
+if ($VersionedPayload) { Sign-LinkFile $msi }
 Get-FileHash -LiteralPath $msi, $payloadArchive -Algorithm SHA256

@@ -107,9 +107,11 @@ try
         try
         {
             async Task<bool> CheckCandidate(LinkUpdateHandoff expected) =>
-                await GatewayProbeClient.CheckAsync(http, ownerPort, ownerToken, clientToken, expected,
-                    () => !candidate.HasExited, deadline.Token);
+                await GatewayProbeClient.CheckAsync(http, ownerPort, ownerToken, clientToken, expected.OperationId,
+                    expected, () => !candidate.HasExited, deadline.Token);
             Check(await CheckCandidate(handoff), "candidate did not preserve the fenced identity");
+            Check(await GatewayProbeClient.CheckAsync(http, ownerPort, ownerToken, clientToken, operation,
+                null, () => !candidate.HasExited, deadline.Token), "a bridged seed could not verify the gated snapshot");
             Check(!await CheckCandidate(handoff with { OperationId = "other-operation" }), "stale operation was accepted");
             Check(!await CheckCandidate(handoff with { Identity = handoff.Identity with
                 { DeviceCount = handoff.Identity.DeviceCount + 1 } }), "different device count was accepted");

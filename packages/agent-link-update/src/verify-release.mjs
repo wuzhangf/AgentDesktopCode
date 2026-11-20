@@ -53,7 +53,7 @@ function checkRelease(release, installed) {
 /** Verify and stage a full archive using a provisioned TUF metadata cache. */
 export async function stageVerifiedRelease({
   metadataDir, metadataBaseUrl, targetBaseUrl, releaseRecordPath, installed,
-  stagingParent = tmpdir(), metadataOnly = false, authorizeArchive, archiveCache,
+  stagingParent = tmpdir(), metadataOnly = false, allowCurrent = false, authorizeArchive, archiveCache,
 }) {
   if (typeof releaseRecordPath !== 'string' || !SAFE_TARGET_PATH.test(releaseRecordPath)) {
     throw new Error('Invalid release record target path');
@@ -83,8 +83,10 @@ export async function stageVerifiedRelease({
     if (!target || artifact.length !== target.length || artifact.sha256 !== target.hashes.sha256) {
       throw new Error('Release artifact and trusted target metadata disagree');
     }
-    if (release.buildNumber === installed.buildNumber) throw new CurrentBuildError('Release build number must be newer');
+    const current = release.buildNumber === installed.buildNumber;
+    if (current && !allowCurrent) throw new CurrentBuildError('Release build number must be newer');
     await authorizeArchive?.(release);
+    if (current && !metadataOnly) throw new CurrentBuildError('Release build number must be newer');
     if (metadataOnly) {
       await rm(stagingDir, { recursive: true, force: true });
       return { release };

@@ -62,4 +62,10 @@ The launcher supplies a private copy of `identity.dpapi` and the `gateway` direc
 
 Run the Host update protocol smoke suite with `dotnet run --project agent-link-windows/tests/AgentLink.Update.Smoke -- <node> <bundled-gateway.mjs> <await-parent.mjs>`. It uses local synthetic state and an actual gateway process.
 
+### Versioned Windows 11 x64 MSI
+
+For the signed bridge layout, use the same build script with `-VersionedPayload -SignTool <signtool.exe> -CertificateThumbprint <current-user thumbprint> -TimestampUrl <RFC3161 URL>`. Use a product version higher than preview 0.1.11. The MSI installs the signed launcher and a seed ZIP. The launcher checks its own publisher, the seed digest, and the payload executables. Exit the old preview before installing the bridge. Its identity and gateway directory are read from the same per-user state root.
+
+Add `-TufRoot <root.json> -TufMetadataUrl <url> -TufTargetUrl <url> -TufRecordPath <target>` to enable the signed update channel. Optional `-TufChannel preview` selects preview. The tray then offers **检查 Agent Link 更新**. The launcher also accepts `--check-update`. It verifies the release twice, coordinates shutdown, probes the isolated snapshot and resumes the selected payload. The launch status records the bootstrap version and active build separately.
+
 The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

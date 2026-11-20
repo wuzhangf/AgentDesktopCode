@@ -101,6 +101,9 @@ internal static class Program
                     new(TrayMenuEntryKind.Item, "打开手机连接面板", Action: "open", Icon: "open"),
                     .. TrayMenuModel.Build(menuSnapshot).Where(entry => entry.Icon is "phone" or "member" or "pair"),
                     new(TrayMenuEntryKind.Item, "登录自启设置", Action: "openSettings", Icon: "settings"),
+                    .. StartupEntry.UpdatesAvailable
+                        ? new TrayMenuEntry[] { new(TrayMenuEntryKind.Item, "检查 Agent Link 更新", Action: "linkUpdate") }
+                        : [],
                 ]),
         ];
 
@@ -210,6 +213,19 @@ internal static class Program
                     await RefreshMenuAsync();
                     break;
                 case "refresh": await RefreshMenuAsync(resetNavigation: true); break;
+                case "linkUpdate" when StartupEntry.UpdatesAvailable && StartupEntry.LauncherPath is { } bootstrap:
+                    try
+                    {
+                        menu?.SetFeedback("正在检查 Agent Link 更新");
+                        var start = new ProcessStartInfo(bootstrap) { UseShellExecute = false };
+                        start.ArgumentList.Add("--check-update");
+                        using var update = Process.Start(start) ?? throw new IOException("Launcher did not start.");
+                        await update.WaitForExitAsync();
+                        menu?.SetFeedback(update.ExitCode == 0 ? "更新检查已结束" : "更新检查暂未完成");
+                    }
+                    catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception)
+                    { menu?.SetFeedback("无法启动更新检查"); }
+                    break;
                 case "usage":
                     try
                     {
@@ -362,7 +378,7 @@ internal static class Program
             finally { checking = false; }
         };
         StartHost();
-        _ = ListenForActivationAsync(app.Dispatcher, () => _ = ShowMainAsync(), stopping.Token);
+        _ = ListenForActivationAsync(app.Dispatcher, () => _ = ShowMainAsync(), app.Shutdown, stopping.Token);
         if (!background) _ = ShowMainAsync();
         health.Start();
         app.Run();
@@ -372,7 +388,8 @@ internal static class Program
         return 0;
     }
 
-    private static async Task ListenForActivationAsync(Dispatcher dispatcher, Action show, CancellationToken cancellation)
+    private static async Task ListenForActivationAsync(Dispatcher dispatcher, Action show, Action close,
+        CancellationToken cancellation)
     {
         try
         {
@@ -386,11 +403,17 @@ internal static class Program
                 var signal = new byte[1];
                 try
                 {
-                    if (await pipe.ReadAsync(signal, deadline.Token) == 1 && signal[0] == 1)
-                        await dispatcher.InvokeAsync(show);
+                    if (await pipe.ReadAsync(signal, deadline.Token) != 1) continue;
+                    if (signal[0] == 1) await dispatcher.InvokeAsync(show);
+                    if (signal[0] == 2)
+                    {
+                        var operationId = await LinkProtocol.ReadAsync<string>(pipe, deadline.Token);
+                        if (LinkUpdateTransition.Matches(operationId)) await dispatcher.InvokeAsync(close);
+                    }
                 }
                 catch (OperationCanceledException) { }
                 catch (IOException) { }
+                catch (JsonException) { }
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }

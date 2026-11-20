@@ -59,6 +59,11 @@ try
     var store = new PayloadActivation(state, targets.Contains);
     var business = Path.Combine(scratch, "user-state.db");
     File.WriteAllText(business, "unchanged");
+    var unverifiedPublisher = new PayloadActivation(state, targets.Contains,
+        _ => throw new CryptographicException("Unexpected test publisher."));
+    await ExpectAsync<CryptographicException>(() => unverifiedPublisher.ActivateAsync(first.Target, first.Path,
+        _ => throw new InvalidOperationException("An unverified publisher reached quiescing."), Healthy));
+    Check(unverifiedPublisher.Recover() is null, "publisher rejection created a runnable selection");
     Check(store.Recover() is null, "an empty store has no runnable version");
     var installed = await store.ActivateAsync(first.Target, first.Path, Pause, Healthy);
     Check(installed.Status == ActivationStatus.Committed && installed.Current?.Release == first.Target, "seed commit");

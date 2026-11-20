@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>AgentLink</AssemblyName>
+    <ApplicationIcon>../AgentLink.App/Assets/AgentLink.ico</ApplicationIcon>
+    <ApplicationManifest>../AgentLink.App/app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentLink.Contracts/AgentLink.Contracts.csproj" />
+    <ProjectReference Include="../AgentLink.Payload/AgentLink.Payload.csproj" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <EmbeddedResource Include="$(LinkBootstrapConfig)" LogicalName="AgentLink.Launcher.config"
+                      Condition="'$(LinkBootstrapConfig)' != ''" />
+    <EmbeddedResource Include="$(LinkTufRoot)" LogicalName="AgentLink.Launcher.root"
+                      Condition="'$(LinkTufRoot)' != ''" />
+  </ItemGroup>
+</Project>

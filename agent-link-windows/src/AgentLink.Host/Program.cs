@@ -15,9 +15,9 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args is ["--probe-update", var operationId])
+        if (args is ["--probe-update" or "--probe-seed", var operationId])
         {
-            try { return WindowsGatewayProbe.RunAsync(operationId).GetAwaiter().GetResult() ? 0 : 1; }
+            try { return WindowsGatewayProbe.RunAsync(operationId, seed: args[0] == "--probe-seed").GetAwaiter().GetResult() ? 0 : 1; }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
                 or System.Security.Cryptography.CryptographicException or JsonException or Win32Exception
                 or HttpRequestException or OperationCanceledException or InvalidOperationException) { return 1; }

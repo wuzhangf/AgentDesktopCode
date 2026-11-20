@@ -21,7 +21,8 @@ public enum ActivationStatus { Committed, Current, Busy, Rejected }
 public sealed record PayloadActivationResult(ActivationStatus Status, InstalledPayload? Current);
 
 /// <summary>Selects the runnable payload. The caller supplies trust evidence and an isolated health check.</summary>
-public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> isTrusted)
+public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> isTrusted,
+    Action<InstalledPayload>? verifyPublisher = null)
 {
     private const int JournalLimit = 16 * 1024;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -153,7 +154,9 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
         PathSafety.DirectoryTree(slot);
         var payload = Path.Combine(slot, "payload");
         PayloadArchive.Verify(Path.Combine(slot, "archive.zip"), payload, release);
-        return new(release, payload);
+        var selected = new InstalledPayload(release, payload);
+        verifyPublisher?.Invoke(selected);
+        return selected;
     }
 
     private InstalledPayload? Select(State state) => state.Current is { } release ? Open(release) : null;
@@ -177,6 +180,7 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
                 output.Flush(flushToDisk: true);
             }
             PayloadArchive.Extract(saved, Path.Combine(staging, "payload"), release);
+            verifyPublisher?.Invoke(new InstalledPayload(release, Path.Combine(staging, "payload")));
             Directory.Move(staging, slot);
             return new(release, Path.Combine(slot, "payload"));
         }
