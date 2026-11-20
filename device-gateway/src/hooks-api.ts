@@ -28,6 +28,7 @@ export const handleHooksRoute = async (
   let finish: (() => void) | undefined;
   try {
     if (!constantEqual(req.accessToken, hooksToken)) fail('ACCESS_UNAUTHORIZED', 401);
+    if (ctx.startupUpdate) fail('UPDATE_IN_PROGRESS', 503);
     const approvals = ctx.approvals;
     if (approvals === undefined) fail('APPROVALS_NOT_CONFIGURED', 503);
     const path = req.path;

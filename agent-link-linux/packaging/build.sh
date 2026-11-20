@@ -73,15 +73,19 @@ if [ -d "$(dirname "$WORKER_BRIDGE")/adapters" ]; then
 fi
 cp "$GATEWAY/hooks/agent_pre_tool.py" "$GATEWAY/hooks/install.py" "$OUT/payload/hooks/"
 cp "$PRODUCT/install.sh" "$PRODUCT/uninstall.sh" "$OUT/payload/"
+cp "$PRODUCT/install.mjs" "$PRODUCT/launch.sh" "$PRODUCT/slots.mjs" "$OUT/payload/"
 cp "$PRODUCT/systemd/agent-link.service" "$OUT/payload/systemd/agent-link.service"
 cp "$PRODUCT/README.md" "$OUT/payload/README.md" 2>/dev/null || true
-chmod +x "$OUT/payload/install.sh" "$OUT/payload/uninstall.sh"
+chmod +x "$OUT/payload/install.sh" "$OUT/payload/uninstall.sh" "$OUT/payload/launch.sh"
 
 GATEWAY_SHA=$(git -C "$REPO" rev-parse HEAD)
 DIRTY=$(git -C "$REPO" status --porcelain -- device-gateway agent-link-linux | wc -l | tr -d ' ')
-node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$BUILD_NUMBER" "$GATEWAY_SHA" "$DIRTY" "$NODE_VERSION" <<'EOF'
+WORKER_DIR=$(dirname "$WORKER_BRIDGE")
+WORKER_SHA=$(git -C "$WORKER_DIR" rev-parse HEAD 2>/dev/null || true)
+WORKER_DIRTY=$(git -C "$WORKER_DIR" status --porcelain -- "$(basename "$WORKER_BRIDGE")" adapters 2>/dev/null | wc -l | tr -d ' ')
+node - "$OUT/payload" "$OUT/payload/release-manifest.json" "$VERSION" "$BUILD_NUMBER" "$GATEWAY_SHA" "$DIRTY" "$NODE_VERSION" "$WORKER_SHA" "$WORKER_DIRTY" <<'EOF'
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const [root, out, version, buildNumber, sha, dirty, nodeVersion] = process.argv.slice(2);
+const [root, out, version, buildNumber, sha, dirty, nodeVersion, workerSha, workerDirty] = process.argv.slice(2);
 const files = [];
 const walk = (dir) => {
   for (const name of fs.readdirSync(dir).sort()) {
@@ -98,6 +102,7 @@ fs.writeFileSync(out, JSON.stringify({
   schemaVersion: 1, product: 'Agent Link', version, buildNumber: Number(buildNumber),
   build: 'linux-user-service', gatewayBaseRevision: sha,
   gatewayWorkingTree: dirty !== '0', platform: 'linux', arch: 'x64', nodeVersion, nodeRequirement: '>=24.18.0',
+  workerBaseRevision: workerSha || null, workerWorkingTree: workerSha ? workerDirty !== '0' : null,
   files,
 }, null, 2) + '\n');
 EOF

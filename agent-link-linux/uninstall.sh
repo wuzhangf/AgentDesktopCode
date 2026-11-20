@@ -20,11 +20,40 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+PREFIX=$(realpath -m -- "$PREFIX")
+UNIT_DIR=$(realpath -m -- "$UNIT_DIR")
+if [ -d "$UNIT_DIR" ]; then
+    exec 9>"$UNIT_DIR/.agent-link.install.lock"
+    flock -n 9 || { echo 'agent-link uninstall: installation in progress' >&2; exit 1; }
+fi
+if [ -L "$PREFIX/program" ]; then
+    echo 'agent-link uninstall: program directory is not local to the prefix' >&2
+    exit 1
+fi
+if [ -f "$PREFIX/program/pending" ] || [ -f "$PREFIX/program/transaction.json" ]; then
+    echo 'agent-link uninstall: an interrupted installation requires recovery' >&2
+    exit 1
+fi
+if [ -f "$UNIT_DIR/agent-link.service" ] && ! grep -Fq -- "$PREFIX/" "$UNIT_DIR/agent-link.service"; then
+    echo 'agent-link uninstall: the user service belongs to a different prefix' >&2
+    exit 1
+fi
 if command -v systemctl >/dev/null 2>&1; then
+    loaded=$(systemctl --user show agent-link.service --property=FragmentPath --value 2>/dev/null || true)
+    if [ -n "$loaded" ] && [ "$(realpath -m -- "$loaded")" != "$UNIT_DIR/agent-link.service" ]; then
+        echo 'agent-link uninstall: the user service belongs to a different installation' >&2
+        exit 1
+    fi
     systemctl --user disable --now agent-link.service 2>/dev/null || true
 fi
 rm -f "$UNIT_DIR/agent-link.service"
 command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload || true
+if [ -d "$PREFIX/program/versions" ]; then
+    rm -f "$PREFIX/program/current" "$PREFIX/program/previous"
+    rm -f "$PREFIX/program/last-failed-build"
+    rm -rf "$PREFIX/program/versions"
+    rmdir "$PREFIX/program" 2>/dev/null || true
+fi
 rm -f "$PREFIX/device-gateway.mjs" "$PREFIX/cli-bridge.mjs" "$PREFIX/release-manifest.json"
 rm -f "$PREFIX/runtime/node" "$PREFIX/runtime/node-LICENSE"
 rmdir "$PREFIX/runtime" 2>/dev/null || true

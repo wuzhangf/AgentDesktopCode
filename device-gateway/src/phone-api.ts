@@ -399,6 +399,7 @@ import { requiresCommercialAccess, requiresMembershipIngress } from './commercia
 export async function handlePhoneRoute(ctx: GatewayContext, req: HttpRequest): Promise<HttpResponse> {
   let finish: (() => void) | undefined;
   try {
+    if (ctx.startupUpdate) fail('UPDATE_IN_PROGRESS', 503);
     if (req.method !== 'GET') finish = ctx.updatePreparation?.admit();
     const out = await route(ctx, req);
     logRequest(req, out);

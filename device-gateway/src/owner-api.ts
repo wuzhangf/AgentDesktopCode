@@ -207,6 +207,10 @@ export async function handleOwnerRoute(
   let finish: (() => void) | undefined;
   try {
     if (!isLoopback(req.clientIp)) fail('LOCAL_OWNER_REQUIRED', 403);
+    const startup = ctx.startupUpdate;
+    if (startup && (req.method !== 'GET' || req.path !== `${ROOT}/update-preparation`)) {
+      fail('UPDATE_IN_PROGRESS', 503);
+    }
     // xagt read RPC — its own reader credential domain, reached by the local
     // MCP stdio adapter without owner auth. Loopback-only by position in the
     // gate (the same route on the phone listener serves peer Links).
@@ -221,6 +225,7 @@ export async function handleOwnerRoute(
     const { path, method } = req;
     const parts = javaSplit(path);
     if (ctx.updatePreparation && path === `${ROOT}/update-preparation` && method === 'GET') {
+      if (startup) return { status: 200, body: { state: 'starting', ...startup, bootId: ctx.config.bootId } };
       return { status: 200, body: ctx.updatePreparation.status() };
     }
     if (ctx.updatePreparation && method === 'POST' &&

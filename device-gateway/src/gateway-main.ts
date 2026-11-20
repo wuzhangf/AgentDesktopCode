@@ -855,9 +855,28 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
+  const updateMarker = env('DEVICE_GATEWAY_STARTUP_UPDATE_FILE');
+  const readUpdateMarker = (): string | undefined => {
+    if (!updateMarker) return undefined;
+    try {
+      return readFileSync(updateMarker, 'utf8').trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+  };
+  const operationId = readUpdateMarker();
+  if (operationId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) {
+    configError('CONFIG_INVALID', 'invalid installation operation marker');
+  }
   const opts = readEnvConfig();
   mkdirSync(opts.dataDir, { recursive: true });
   const built = buildContext(opts);
+  const startup = operationId === undefined ? undefined : { operationId, ready: false };
+  if (startup) {
+    if (!built.ctx.updatePreparation) configError('CONFIG_INVALID', 'installation check requires a local gateway');
+    built.ctx.startupUpdate = startup;
+  }
 
   const phoneServer = createGatewayListener({
     tls: { key: opts.tls.key, cert: opts.tls.cert, ...(opts.tls.ca !== undefined ? { ca: opts.tls.ca } : {}) },
@@ -912,6 +931,19 @@ export async function main(): Promise<void> {
     })));
     built.store.close();
     throw error;
+  }
+
+  if (startup && updateMarker) {
+    // All required listeners are bound. Keep requests and background work
+    // fenced until the installer commits the program and state transaction.
+    startup.ready = true;
+    for (let marker = readUpdateMarker(); marker !== undefined; marker = readUpdateMarker()) {
+      if (marker !== startup.operationId) {
+        configError('CONFIG_INVALID', 'installation operation changed during startup');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    delete built.ctx.startupUpdate;
   }
 
   // Master connect switch: the owner can close the phone listener without

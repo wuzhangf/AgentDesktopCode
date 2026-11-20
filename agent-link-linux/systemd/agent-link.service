@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=@ENV_FILE@
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart="@NODE@" "@PREFIX@/device-gateway.mjs"
+ExecStart=@START@
 Restart=on-failure
 RestartSec=3
 # The gateway keeps owner/hooks surfaces loopback-only; the phone listener
@@ -16,7 +16,7 @@ RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths="@PREFIX@" "@CONFIG@" "@PROJECT@"
+ReadWritePaths=@DATA@ @CONFIG@ @PROJECT@
 PrivateTmp=true
 
 [Install]

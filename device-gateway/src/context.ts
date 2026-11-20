@@ -451,6 +451,7 @@ export interface GatewayXagt {
 export interface GatewayContext {
   commercial?: import('./commercial.js').CommercialAccess;
   updatePreparation?: import('./update-preparation.js').UpdatePreparation;
+  startupUpdate?: { operationId: string; ready: boolean };
   auth: GatewayAuth;
   /** Undefined → worker registration routes fail OPERATION_NOT_ALLOWED. */
   workers?: GatewayWorkers;

@@ -105,6 +105,21 @@ it('reserves idle workers and gates owner, phone, relay and hook intake', async 
 
     const operation = { operationId: 'update-run' };
     expect((await local(owner, root, 'fixture-owner', operation)).status).toBe(401);
+    gateway.ctx.startupUpdate = { operationId: operation.operationId, ready: false };
+    expect((await local(owner, root, 'fixture-owner')).status).toBe(401);
+    expect(await control(root)).toMatchObject({
+      status: 200, body: { state: 'starting', operationId: operation.operationId, ready: false },
+    });
+    gateway.ctx.startupUpdate.ready = true;
+    expect((await control(root)).body.ready).toBe(true);
+    expect((await control(root + '/release', operation)).status).toBe(503);
+    expect((await control('/api/v2/personal-access/link-state')).status).toBe(503);
+    expect((await local(hooks, '/hooks/v1/enabled', 'fixture-hooks')).status).toBe(503);
+    for (const ingress of [phone, relay]) {
+      expect((await callPhone(ingress, '/personal/v1/host')).status).toBe(503);
+    }
+    delete gateway.ctx.startupUpdate;
+
     const requestApproval = { approvalId: 'fixture-approval', agent: 'codex', toolName: 'apply_patch', question: 'Proceed?' };
     expect((await local(hooks, '/hooks/v1/approvals', 'fixture-hooks', requestApproval)).status).toBe(201);
     expect((await control(root, operation)).body.reason).toBe('PENDING_APPROVAL');

@@ -38,8 +38,14 @@ sh install.sh
 - First install writes `~/.config/agent-link/env` (mode 600) with generated
   owner tokens and kernel-probed free ports, then enables and starts
   `agent-link.service`.
-- Re-running over an existing install is an upgrade: payload is replaced,
-  env/data are kept; missing LOCAL_CLI profile lines are appended.
+- Run the installer from an unpacked release you trust. It checks the
+  manifest and stages the program in `program/versions/<build>` under the
+  prefix. Existing credentials and state stay in their original directories.
+- A running gateway must confirm that its workers are safe to stop. The
+  installer snapshots state, atomically selects the candidate and waits
+  for its listeners to start before admitting work. A failed startup
+  restores the previous program and its state. Rerunning the installer
+  recovers an interrupted switch before attempting another installation.
 - `DEVICE_GATEWAY_BIND` defaults to `0.0.0.0` so phones on the LAN can reach
   the gateway; use `--bind` to pin an interface. Owner and hooks surfaces stay
   loopback-only.
