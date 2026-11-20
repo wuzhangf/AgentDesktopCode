@@ -84,6 +84,8 @@ import { MaterialStore } from './xagt/materials.js';
 import { SourceReader } from './xagt/source-reader.js';
 import { XagtReadService } from './xagt/read-service.js';
 import { XagtInteractService } from './xagt/interact.js';
+import { OfflineOrigin } from './xagt/offline-origin.js';
+import { OfflineTargetService } from './xagt/offline-target.js';
 import { createXagtHandlers } from './xagt/rpc.js';
 import { MemberCluster } from './member-cluster.js';
 
@@ -495,6 +497,8 @@ export interface BuiltGateway {
   cliSupervisor?: CliSupervisor;
   cloudLaunch?: WindowsCloudLaunch;
   memberCluster?: MemberCluster;
+  xagtOfflineOrigin?: OfflineOrigin;
+  xagtOfflineTarget?: OfflineTargetService;
 }
 
 export function buildContext(opts: GatewayBootstrapOptions): BuiltGateway {
@@ -887,7 +891,12 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
   }
   if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;
-  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch, memberCluster };
+  if (memberCluster && ctx.xagt) {
+    ctx.xagtOfflineOrigin = new OfflineOrigin(store, transport, memberCluster);
+    ctx.xagtOfflineTarget = new OfflineTargetService({ store, transport, memberCluster });
+  }
+  return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch, memberCluster,
+    xagtOfflineOrigin: ctx.xagtOfflineOrigin, xagtOfflineTarget: ctx.xagtOfflineTarget };
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +979,8 @@ export async function main(): Promise<void> {
       server.close(() => resolveClose());
     })));
     built.cloudLaunch?.stop();
+    built.xagtOfflineOrigin?.stop();
+    built.xagtOfflineTarget?.stop();
     built.memberCluster?.stop();
     built.store.close();
     throw error;
@@ -1092,6 +1103,8 @@ export async function main(): Promise<void> {
     void built.cliSupervisor.start();
   }
   built.cloudLaunch?.start();
+  built.xagtOfflineOrigin?.start();
+  built.xagtOfflineTarget?.start();
   built.memberCluster?.start();
   const handoffProgress = built.ctx.nativeLocalHandoffs ? setInterval(() => {
     if (built.ctx.updatePreparation?.preparing) return;
@@ -1162,6 +1175,8 @@ export async function main(): Promise<void> {
     clearInterval(refreshAlternates);
     if (handoffProgress) clearInterval(handoffProgress);
     built.cloudLaunch?.stop();
+    built.xagtOfflineOrigin?.stop();
+    built.xagtOfflineTarget?.stop();
     built.memberCluster?.stop();
     mdns.stop();
     let pending = listeners.length;

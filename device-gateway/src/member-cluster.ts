@@ -3,7 +3,9 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { fail, GatewayError, isRecord } from './protocol.js';
 
 type Json = Record<string, unknown>;
-const route = '/api/daily/v1/member/link/v2/cluster';
+type MemberMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+const linkRoute = '/api/daily/v1/member/link/v2';
+const route = `${linkRoute}/cluster`;
 const selfRoute = `${route}/self`;
 const identifier = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(value);
 
@@ -76,17 +78,17 @@ export class MemberCluster {
         current.bearer !== identity.bearer) fail('MEMBER_SESSION_CHANGED', 409);
   }
 
-  private async request(identity: MemberClusterIdentity, method: 'GET' | 'PUT', body?: Json): Promise<Json> {
+  private async request(identity: MemberClusterIdentity, method: MemberMethod, path: string, body?: Json): Promise<Json> {
     this.assertCurrent(identity);
     try {
-      const response = await this.fetcher(identity.origin + (method === 'PUT' ? selfRoute : route), {
+      const response = await this.fetcher(identity.origin + path, {
         method,
         redirect: 'error',
         signal: AbortSignal.any([AbortSignal.timeout(8000), this.shutdown.signal]),
         headers: { Authorization: `Bearer ${identity.bearer}`, 'Content-Type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      const value: unknown = await response.json();
+      const value: unknown = response.status === 204 ? {} : await response.json();
       if (!response.ok || !isRecord(value)) fail(isRecord(value) && typeof value.code === 'string' ? value.code : 'MEMBER_CLUSTER_UNAVAILABLE', response.status || 503);
       this.assertCurrent(identity);
       return value;
@@ -114,11 +116,24 @@ export class MemberCluster {
         }
         grouped.set(agentId, row);
       }
-      await this.request(identity, 'PUT', { displayName: this.displayName().slice(0, 80), agents: [...grouped.values()] });
+      await this.request(identity, 'PUT', selfRoute, { displayName: this.displayName().slice(0, 80), agents: [...grouped.values()] });
     } catch { /* best effort; reads remain fail-closed */ }
   }
   async directory(): Promise<Json> {
-    return this.request(this.identity(), 'GET');
+    return this.request(this.identity(), 'GET', route);
+  }
+
+  delegationIdentity(): string {
+    const identity = this.identity();
+    return createHash('sha256').update(JSON.stringify([
+      identity.origin, identity.memberId, identity.workspaceId, identity.instanceId,
+    ])).digest('hex');
+  }
+
+  async delegationRequest(method: MemberMethod, path: string, body?: Json): Promise<Json> {
+    if (!/^\/delegations(?:\/[A-Za-z0-9_.-]+)*(?:\?(?:after|limit)=\d+)?$/.test(path)
+      || /(?:^|\/)\.{1,2}(?:\/|\?|$)/.test(path)) fail('INVALID_REQUEST', 400);
+    return this.request(this.identity(), method, linkRoute + path, body);
   }
 
   async authorizeInteraction(callerInstanceId: string, expectedBinding?: string): Promise<string> {
@@ -127,7 +142,7 @@ export class MemberCluster {
       identity.origin, identity.memberId, identity.workspaceId, identity.instanceId, callerInstanceId,
     ])).digest('hex');
     if (expectedBinding !== undefined && expectedBinding !== binding) fail('MEMBER_SESSION_CHANGED', 409);
-    const directory = await this.request(identity, 'GET');
+    const directory = await this.request(identity, 'GET', route);
     if (directory.schemaVersion !== 'member-cluster/1' || !Array.isArray(directory.computers)) {
       fail('MEMBER_CLUSTER_UNAVAILABLE', 503);
     }

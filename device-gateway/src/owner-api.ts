@@ -222,6 +222,11 @@ export async function handleOwnerRoute(
       if (ctx.xagt === undefined) fail('OPERATION_NOT_ALLOWED', 403);
       return await ctx.xagt.interact(req, true);
     }
+    if (req.path === '/api/xagt/v1/delegations' && req.method === 'POST') {
+      if (!ctx.xagtOfflineOrigin) fail('OPERATION_NOT_ALLOWED', 403);
+      if ((req.rawBody?.length ?? 0) > 64 * 1024 || req.bodyError === 'BODY_TOO_LARGE') fail('INVALID_REQUEST', 413);
+      return { status: 200, body: await ctx.xagtOfflineOrigin.rpc(req.accessToken, jsonBody(req)) };
+    }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
     if (!secureEquals(creds.ownerClientToken, req.clientSessionHeader)) fail('UNAUTHORIZED', 401);
@@ -246,6 +251,24 @@ export async function handleOwnerRoute(
       return { status: 200, body };
     }
     if (method !== 'GET') finish = ctx.updatePreparation?.admit();
+    if (method === 'POST' && path === `${ROOT}/xagt-delegation-sources`) {
+      if (!ctx.xagtOfflineOrigin) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.xagtOfflineOrigin.create(jsonBody(req)) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'xagt-delegation-sources') {
+      if (!ctx.xagtOfflineOrigin) fail('OPERATION_NOT_ALLOWED', 403);
+      ctx.xagtOfflineOrigin.revoke(parts[5]);
+      return { status: 204, body: null };
+    }
+    if (method === 'POST' && path === `${ROOT}/mcp-offline-targets`) {
+      if (!ctx.xagtOfflineTarget) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.xagtOfflineTarget.create(jsonBody(req)) };
+    }
+    if (method === 'DELETE' && parts.length === 6 && parts[4] === 'mcp-offline-targets') {
+      if (!ctx.xagtOfflineTarget) fail('OPERATION_NOT_ALLOWED', 403);
+      await ctx.xagtOfflineTarget.revoke(parts[5]);
+      return { status: 204, body: null };
+    }
     if (method === 'GET' && path === `${ROOT}/work-handoffs/signing-key`) {
       if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 200, body: {

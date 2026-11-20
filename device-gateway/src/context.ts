@@ -9,6 +9,8 @@
  * as plain JSON, so handlers forward them without field-level adaptation.
  */
 import type { Device, LaunchScope, Resource, ScopeRecord, SourceRead } from './protocol';
+import type { OfflineOrigin } from './xagt/offline-origin.js';
+import type { OfflineTargetService } from './xagt/offline-target.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 export type JsonObject = Record<string, unknown>;
@@ -486,5 +488,7 @@ export interface GatewayContext {
   approvals?: GatewayApprovals;
   /** Undefined → POST /api/xagt/v1/read and xagt owner routes fail. */
   xagt?: GatewayXagt;
+  xagtOfflineOrigin?: OfflineOrigin;
+  xagtOfflineTarget?: OfflineTargetService;
   config: GatewayConfig;
 }
