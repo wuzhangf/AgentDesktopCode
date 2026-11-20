@@ -94,7 +94,8 @@ export async function stageVerifiedRelease({
     const archivePath = join(stagingDir, 'archive');
     if (archiveCache) {
       const cached = await lstat(archiveCache).catch(() => undefined);
-      if (cached?.isFile() && cached.uid === process.getuid() && cached.size === artifact.length) {
+      if (cached?.isFile() && (process.platform === 'win32' || cached.uid === process.getuid()) &&
+          cached.size === artifact.length) {
         const copied = await copyFile(archiveCache, archivePath, constants.COPYFILE_FICLONE)
           .then(() => true, () => false);
         if (copied && await updater.findCachedTarget(target, archivePath)) {

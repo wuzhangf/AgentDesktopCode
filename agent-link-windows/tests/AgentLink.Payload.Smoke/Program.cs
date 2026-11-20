@@ -70,6 +70,9 @@ try
     var busy = await store.ActivateAsync(next.Target, next.Path, _ => Task.FromResult<IAsyncDisposable?>(null),
         (_, _) => throw new InvalidOperationException("Busy application's probe was called."));
     Check(busy.Status == ActivationStatus.Busy && store.Recover()?.Release == first.Target, "busy leaves the seed running");
+    await ExpectAsync<IOException>(() => store.ActivateAsync(next.Target, next.Path, Pause, Healthy,
+        confirmCommit: _ => throw new IOException("Fresh signed metadata temporarily unavailable.")));
+    Check(store.Recover()?.Release == first.Target, "confirmation failure preserves current and permits the same candidate later");
     var succeeded = await store.ActivateAsync(next.Target, next.Path, Pause, (payload, cancellation) =>
     {
         Check(File.ReadAllText(Path.Combine(payload.Directory, "AgentLink.exe")) == "tray-42", "candidate path is version-specific");

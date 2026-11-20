@@ -19,6 +19,9 @@ internal static class StartupEntry
     internal static bool UpdatesAvailable => Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_UPDATE_AVAILABLE") == "1" &&
         LauncherPath is not null;
 
+    internal static bool ScheduledUpdatesAvailable => UpdatesAvailable &&
+        Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_SCHEDULE_AVAILABLE") == "1";
+
     internal static bool Registered()
     {
         using var key = Registry.CurrentUser.OpenSubKey(Key);

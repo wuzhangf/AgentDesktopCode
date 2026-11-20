@@ -44,7 +44,8 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
     /// <param name="probe">Uses only isolated state. The candidate must exit before the probe returns.</param>
     public async Task<PayloadActivationResult> ActivateAsync(PayloadRelease release, string archivePath,
         Func<CancellationToken, Task<IAsyncDisposable?>> quiesce,
-        Func<InstalledPayload, CancellationToken, Task<bool>> probe, CancellationToken cancellation = default)
+        Func<InstalledPayload, CancellationToken, Task<bool>> probe, CancellationToken cancellation = default,
+        Func<CancellationToken, Task>? confirmCommit = null)
     {
         using var locked = Lock();
         var state = RecoverState();
@@ -70,6 +71,15 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
         {
             Write(pending with { Pending = null, Rejected = release });
             return new(ActivationStatus.Rejected, Select(state));
+        }
+        try
+        {
+            if (confirmCommit is not null) await confirmCommit(cancellation);
+        }
+        catch
+        {
+            Write(state);
+            throw;
         }
         cancellation.ThrowIfCancellationRequested();
         // Recheck staged bytes and trust after the process exits, before opening business data.

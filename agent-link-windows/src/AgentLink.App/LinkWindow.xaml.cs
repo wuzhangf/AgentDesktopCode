@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -56,6 +57,17 @@ public partial class LinkWindow : Window
     internal void OpenSettings()
     {
         UpdateAutostart();
+        UpdateSettings.Visibility = StartupEntry.ScheduledUpdatesAvailable ? Visibility.Visible : Visibility.Collapsed;
+        if (StartupEntry.ScheduledUpdatesAvailable)
+        {
+            var preferences = new WindowsUpdateSchedule(LinkProtocol.Root).Preferences();
+            AutoUpdate.IsChecked = preferences.Enabled;
+            PauseMetered.IsChecked = preferences.PauseOnMetered;
+            UpdateWindowStart.Text = preferences.WindowStart?.ToString("HH:mm", CultureInfo.InvariantCulture) ?? "";
+            UpdateWindowEnd.Text = preferences.WindowEnd?.ToString("HH:mm", CultureInfo.InvariantCulture) ?? "";
+            UpdateNotice.Text = "";
+            RefreshUpdateStatus();
+        }
         Tabs.SelectedItem = Settings;
     }
 
@@ -88,6 +100,7 @@ public partial class LinkWindow : Window
     internal async Task RefreshAsync()
     {
         if (working) return;
+        if (Tabs.SelectedItem == Settings && StartupEntry.ScheduledUpdatesAvailable) RefreshUpdateStatus();
         working = true;
         try
         {
@@ -1215,6 +1228,60 @@ public partial class LinkWindow : Window
         StartupNotice.Text = StartupEntry.DisabledByWindows()
             ? "请在 Windows 的「启动应用」设置中启用 Agent Link。"
             : "登录后在托盘运行，关闭面板时后台继续连接。";
+    }
+
+    private void SaveUpdateSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var startText = UpdateWindowStart.Text.Trim();
+        var endText = UpdateWindowEnd.Text.Trim();
+        TimeOnly? start = null, end = null;
+        if (startText.Length != 0 || endText.Length != 0)
+        {
+            if (!TimeOnly.TryParseExact(startText, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) ||
+                !TimeOnly.TryParseExact(endText, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to) ||
+                from == to)
+            {
+                UpdateNotice.Text = "请填写不同的开始和结束时间（HH:mm），或同时留空。";
+                return;
+            }
+            (start, end) = (from, to);
+        }
+        try
+        {
+            new WindowsUpdateSchedule(LinkProtocol.Root).Save(new(AutoUpdate.IsChecked == true,
+                PauseMetered.IsChecked == true, start, end));
+            UpdateNotice.Text = "设置已保存";
+            RefreshUpdateStatus();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            UpdateNotice.Text = "无法保存更新设置";
+        }
+    }
+
+    private void RefreshUpdateStatus()
+    {
+        var schedule = new WindowsUpdateSchedule(LinkProtocol.Root);
+        if (!schedule.Preferences().Enabled)
+        {
+            UpdateStatus.Text = "自动更新已关闭，仍可从托盘手动检查。";
+            return;
+        }
+        var state = schedule.State();
+        var outcome = state?.Outcome switch
+        {
+            "waiting-window" => "更新已下载，等待安装时段。",
+            "waiting-network" => "等待不限流量的网络。",
+            "busy" => "等待当前任务完成。",
+            "checking" => "正在检查更新。若检查中断，将自动重试。",
+            "committed" => "已更新。",
+            "rejected" => "新版本未通过健康检查。",
+            "download-deferred" or "recovered" => "更新暂未完成，将自动重试。",
+            _ => "",
+        };
+        UpdateStatus.Text = state?.LastCheckUtc is { } last
+            ? $"最近检查 {last.ToLocalTime():MM-dd HH:mm} {outcome}".TrimEnd()
+            : outcome;
     }
 
     private static string? Text(JsonNode? node, string name) => node?[name]?.GetValue<string>();

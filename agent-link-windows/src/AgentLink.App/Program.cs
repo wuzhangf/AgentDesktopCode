@@ -19,7 +19,8 @@ internal static class Program
             return 0;
         }
         var background = args is ["--background"];
-        if (background && StartupEntry.DisabledByWindows()) return 0;
+        if (background && Environment.GetEnvironmentVariable("AGENT_LINK_WINDOWS_RESUMING_UPDATE") != "1" &&
+            StartupEntry.DisabledByWindows()) return 0;
         using var mutex = new Mutex(false, LinkProtocol.UiLock);
         var existing = false;
         try { existing = !mutex.WaitOne(0); }
@@ -381,7 +382,25 @@ internal static class Program
         _ = ListenForActivationAsync(app.Dispatcher, () => _ = ShowMainAsync(), app.Shutdown, stopping.Token);
         if (!background) _ = ShowMainAsync();
         health.Start();
+        var updates = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        if (StartupEntry.ScheduledUpdatesAvailable && StartupEntry.LauncherPath is { } updateLauncher)
+        {
+            var schedule = new WindowsUpdateSchedule(LinkProtocol.Root);
+            updates.Tick += (_, _) =>
+            {
+                if (!schedule.CanStart(DateTimeOffset.UtcNow)) return;
+                try
+                {
+                    var start = new ProcessStartInfo(updateLauncher) { UseShellExecute = false };
+                    start.ArgumentList.Add("--check-update-background");
+                    using var update = Process.Start(start);
+                }
+                catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception) { }
+            };
+            updates.Start();
+        }
         app.Run();
+        updates.Stop();
         health.Stop();
         stopping.Cancel();
         mutex.ReleaseMutex();

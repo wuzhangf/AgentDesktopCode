@@ -129,6 +129,7 @@ test('rotates trusted root and stages verified archive for each desktop platform
 test('Windows verifier stages signed archives, checks rollout and rechecks withdrawal before commitment', async t => {
   const repo = await repository(t);
   const options = { ...repo.options({ ...repo.installed, platform: 'windows' }), cohort: '12'.repeat(16) };
+  options.archiveCache = join(options.stagingParent, 'retained-windows.zip');
   const release = { platform: 'windows', minOS: 'windows-11', withdrawnBuilds: [],
     rollout: { cohortSeed: 'windows-test', percentage: 100 } };
   repo.publish({ release });
@@ -139,9 +140,16 @@ test('Windows verifier stages signed archives, checks rollout and rechecks withd
   assert.equal(result.state, 'candidate');
   assert.deepEqual(result.target, { buildNumber: 42, archiveLength: archive.length, archiveSha256: digest(archive) });
   assert.deepEqual(await readFile(result.archivePath), archive);
+  assert.deepEqual(await readFile(options.archiveCache), archive);
   const firstDownloadCount = repo.requests.filter(path => path === '/targets/' + artifactPath).length;
   const confirmed = await selectWindowsRelease(options, true);
   assert.deepEqual(confirmed, { state: 'candidate', withdrawn: [], target: result.target });
+  assert.equal(repo.requests.filter(path => path === '/targets/' + artifactPath).length, firstDownloadCount);
+
+  repo.files.delete('/targets/' + artifactPath);
+  const resumed = await selectWindowsRelease(options);
+  assert.equal(resumed.state, 'candidate');
+  assert.deepEqual(await readFile(resumed.archivePath), archive);
   assert.equal(repo.requests.filter(path => path === '/targets/' + artifactPath).length, firstDownloadCount);
 
   repo.publish({ version: 2, release: { ...release, rollout: { ...release.rollout, percentage: 0 } } });
@@ -153,8 +161,9 @@ test('Windows verifier stages signed archives, checks rollout and rechecks withd
     { state: 'repair', withdrawn: [42] });
   assert.equal(repo.requests.filter(path => path === '/targets/' + artifactPath).length, firstDownloadCount);
   repo.publish({ version: 5, release: { ...release, withdrawnBuilds: [40] } });
+  await writeFile(options.archiveCache, Buffer.alloc(archive.length, 0x31));
   repo.files.set('/targets/' + artifactPath, Buffer.alloc(archive.length, 0x2a));
-  assert.deepEqual(await selectWindowsRelease(options), { state: 'deferred', withdrawn: [40] });
+  assert.deepEqual(await selectWindowsRelease(options), { state: 'download-deferred', withdrawn: [40] });
 });
 
 async function callWindowsVerifier(bundle, options) {

@@ -68,4 +68,6 @@ For the signed bridge layout, use the same build script with `-VersionedPayload 
 
 Add `-TufRoot <root.json> -TufMetadataUrl <url> -TufTargetUrl <url> -TufRecordPath <target>` to enable the signed update channel. Optional `-TufChannel preview` selects preview. The tray then offers **检查 Agent Link 更新**. The launcher also accepts `--check-update`. It verifies the release twice, coordinates shutdown, probes the isolated snapshot and resumes the selected payload. The launch status records the bootstrap version and active build separately.
 
+While the tray is running, a signed update channel also checks daily with jitter. Under **设置**, users can turn automatic updates off, set an installation window in local time or choose whether to pause on metered networks. A verified download can wait for the window or for active tasks to finish. The tray check is still available for an immediate request, and the launcher applies the same task and signature checks.
+
 The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

@@ -5,10 +5,11 @@ using System.Text.Json;
 
 namespace AgentLink;
 
-internal sealed class WindowsReleaseSource(string install, string metadata, BootstrapConfig config, string cohort)
+internal sealed class WindowsReleaseSource(string install, string metadata, string archiveCache,
+    BootstrapConfig config, string cohort)
 {
     internal async Task<WindowsReleaseResult> SelectAsync(long currentBuild, string staging, bool confirm,
-        CancellationToken cancellation)
+        CancellationToken cancellation, Func<string?>? blocked = null)
     {
         if (config.Channel is not { } channel) throw new InvalidOperationException("Windows update channel is unavailable.");
         var node = Path.Combine(install, "update-node.exe");
@@ -30,7 +31,7 @@ internal sealed class WindowsReleaseSource(string install, string metadata, Boot
         var options = new
         {
             metadataDir = metadata, channel.MetadataBaseUrl, channel.TargetBaseUrl, channel.ReleaseRecordPath,
-            stagingParent = staging, cohort,
+            stagingParent = staging, cohort, archiveCache,
             installed = new { platform = "windows", arch = "x86_64", channel = channel.Channel, buildNumber = currentBuild,
                 bootstrapVersion = config.BootstrapVersion, stateVersion = 1 },
         };
@@ -46,6 +47,7 @@ internal sealed class WindowsReleaseSource(string install, string metadata, Boot
         start.ArgumentList.Add(script);
         start.ArgumentList.Add(request);
         if (confirm) start.ArgumentList.Add("confirm");
+        CheckPolicy(blocked);
         using var child = Process.Start(start) ?? throw new IOException("Windows verifier did not start.");
         try
         {
@@ -53,13 +55,22 @@ internal sealed class WindowsReleaseSource(string install, string metadata, Boot
             timeout.CancelAfter(TimeSpan.FromSeconds(confirm ? 30 : 180));
             var read = child.StandardOutput.ReadToEndAsync(timeout.Token);
             var errors = child.StandardError.BaseStream.CopyToAsync(Stream.Null, timeout.Token);
-            await child.WaitForExitAsync(timeout.Token);
+            var exited = child.WaitForExitAsync(timeout.Token);
+            if (blocked is not null)
+            {
+                while (!exited.IsCompleted)
+                {
+                    try { await exited.WaitAsync(TimeSpan.FromSeconds(1)); }
+                    catch (TimeoutException) { CheckPolicy(blocked); }
+                }
+            }
+            await exited;
             var output = await read;
             await errors;
             if (child.ExitCode != 0 || output.Length > 64 * 1024)
                 throw new InvalidDataException("Windows release verification did not complete.");
             var result = JsonSerializer.Deserialize<WindowsReleaseResult>(output, JsonSerializerOptions.Web);
-            if (result is null || result.State is not ("candidate" or "deferred" or "repair") ||
+            if (result is null || result.State is not ("candidate" or "deferred" or "download-deferred" or "repair") ||
                 result.State == "candidate" && (result.Target is null || !confirm && !StagedPath(staging, result.ArchivePath)))
                 throw new InvalidDataException("Invalid Windows verifier output.");
             return result;
@@ -72,6 +83,11 @@ internal sealed class WindowsReleaseSource(string install, string metadata, Boot
                 await child.WaitForExitAsync();
             }
         }
+    }
+
+    private static void CheckPolicy(Func<string?>? blocked)
+    {
+        if (blocked?.Invoke() is { } reason) throw new AutomaticUpdateDeferredException(reason);
     }
 
     private static bool StagedPath(string staging, string? path)

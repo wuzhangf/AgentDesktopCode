@@ -9,6 +9,7 @@ internal sealed class WindowsUpdateSession(string operationId, bool seed) : IAsy
     private readonly string snapshot = LinkUpdateTransition.SnapshotPath(operationId);
     private FileStream? transition;
     private bool ownsSnapshot;
+    internal bool ShutdownAccepted { get; private set; }
 
     internal async Task<IAsyncDisposable?> PrepareAsync(CancellationToken cancellation)
     {
@@ -25,6 +26,7 @@ internal sealed class WindowsUpdateSession(string operationId, bool seed) : IAsy
                 try { reply = await LinkProtocol.CallAsync(new("prepare-update", operationId), cancellation); }
                 catch (Exception error) when (error is IOException or TimeoutException) { return null; }
                 if (!reply.Ok) return null;
+                ShutdownAccepted = true;
                 var handedOff = reply.Data?.Deserialize<LinkUpdateHandoff>(LinkProtocol.Json);
                 if (handedOff?.OperationId != operationId || handedOff.HostPid <= 0 || handedOff.GatewayPid <= 0)
                     throw new InvalidDataException("Invalid Windows Host shutdown reply.");

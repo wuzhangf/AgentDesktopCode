@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { copyFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
 import { stageVerifiedRelease } from './verify-release.mjs';
 
 export async function selectWindowsRelease(options, confirmOnly = false) {
@@ -8,17 +11,26 @@ export async function selectWindowsRelease(options, confirmOnly = false) {
   }
   let selection;
   try {
-    const { archivePath } = await stageVerifiedRelease({
+    const { archivePath, stagingDir, fromCache } = await stageVerifiedRelease({
       ...options, metadataOnly: confirmOnly, allowCurrent: true,
       authorizeArchive(release) {
         selection = reviewRelease(release, options);
         if (selection.state !== 'candidate') throw new Error('Signed Windows release is deferred');
       },
     });
+    if (!confirmOnly && options.archiveCache && !fromCache) {
+      const retained = join(stagingDir, 'retained');
+      try {
+        await copyFile(archivePath, retained, constants.COPYFILE_EXCL);
+        await rename(retained, options.archiveCache);
+      } catch {
+        // The verified staging copy remains usable and the launcher removes the staging directory.
+      }
+    }
     return confirmOnly ? selection : { ...selection, archivePath };
   } catch (error) {
     if (!selection) throw error;
-    return selection.state === 'candidate' ? { state: 'deferred', withdrawn: selection.withdrawn } : selection;
+    return selection.state === 'candidate' ? { state: 'download-deferred', withdrawn: selection.withdrawn } : selection;
   }
 }
 
