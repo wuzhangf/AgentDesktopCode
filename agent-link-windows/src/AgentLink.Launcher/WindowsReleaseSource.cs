@@ -39,7 +39,7 @@ internal sealed class WindowsReleaseSource(string install, string metadata, stri
         var start = new ProcessStartInfo(node)
         {
             WorkingDirectory = install, UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         start.Environment.Clear();
         foreach (var name in new[] { "SystemRoot", "WINDIR", "TEMP", "TMP" })
@@ -47,6 +47,7 @@ internal sealed class WindowsReleaseSource(string install, string metadata, stri
         start.ArgumentList.Add(script);
         start.ArgumentList.Add(request);
         if (confirm) start.ArgumentList.Add("confirm");
+        start.ArgumentList.Add("--parent-stdin");
         CheckPolicy(blocked);
         using var child = Process.Start(start) ?? throw new IOException("Windows verifier did not start.");
         try

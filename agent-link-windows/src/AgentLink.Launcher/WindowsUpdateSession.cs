@@ -4,23 +4,39 @@ using System.Text.Json;
 
 namespace AgentLink;
 
-internal sealed class WindowsUpdateSession(string operationId, bool seed) : IAsyncDisposable
+internal sealed class WindowsUpdateSession(string operationId, bool seed, bool allowOffline = false) : IAsyncDisposable
 {
     private readonly string snapshot = LinkUpdateTransition.SnapshotPath(operationId);
     private FileStream? transition;
     private bool ownsSnapshot;
+    private bool offline;
     internal bool ShutdownAccepted { get; private set; }
+
+    // The launcher lock excludes other launchers. A detached probe has its own shorter deadline.
+    internal static void PruneProbeSnapshots()
+    {
+        var directory = Path.GetDirectoryName(LinkUpdateTransition.SnapshotPath("prune"))!;
+        var cutoff = DateTime.UtcNow.AddMinutes(-5);
+        try
+        {
+            if (!PathSafety.Exists(directory)) return;
+            PathSafety.DirectoryTree(directory);
+            foreach (var snapshot in Directory.EnumerateDirectories(directory, "operation-*"))
+                if (PathSafety.IsOperationDirectory(Path.GetFileName(snapshot), "operation-") &&
+                    Directory.GetLastWriteTimeUtc(snapshot) < cutoff)
+                    PathSafety.TryDeleteDirectory(snapshot);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+    }
 
     internal async Task<IAsyncDisposable?> PrepareAsync(CancellationToken cancellation)
     {
         transition = LinkUpdateTransition.Acquire(operationId);
         try
         {
-            if (seed)
-            {
-                if (!Idle(LinkProtocol.HostLock) || !Idle(LinkProtocol.UiLock)) return null;
-            }
-            else
+            offline = (seed || allowOffline) && Idle(LinkProtocol.HostLock) && Idle(LinkProtocol.UiLock);
+            if (seed && !offline) return null;
+            if (!offline)
             {
                 LinkReply reply;
                 try { reply = await LinkProtocol.CallAsync(new("prepare-update", operationId), cancellation); }
@@ -138,7 +154,8 @@ internal sealed class WindowsUpdateSession(string operationId, bool seed) : IAsy
     {
         var start = new ProcessStartInfo(Path.Combine(candidate.Directory, "host", "AgentLink.Host.exe"))
             { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = candidate.Directory };
-        start.ArgumentList.Add(seed ? "--probe-seed" : "--probe-update");
+        // Both first install and cold repair probe copied state without a live shutdown receipt.
+        start.ArgumentList.Add(offline ? "--probe-seed" : "--probe-update");
         start.ArgumentList.Add(operationId);
         using var process = Process.Start(start) ?? throw new IOException("Windows candidate probe did not start.");
         try
@@ -165,7 +182,7 @@ internal sealed class WindowsUpdateSession(string operationId, bool seed) : IAsy
             if (ownsSnapshot)
             {
                 ownsSnapshot = false;
-                Program.DeletePrivateDirectory(snapshot);
+                PathSafety.TryDeleteDirectory(snapshot);
             }
         }
         finally

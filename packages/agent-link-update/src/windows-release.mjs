@@ -39,10 +39,10 @@ function reviewRelease(release, options) {
   if (!Array.isArray(withdrawn) || withdrawn.some(build => !Number.isSafeInteger(build) || build <= 0)) {
     throw new Error('Invalid signed Windows withdrawal list');
   }
-  if (withdrawn.includes(options.installed.buildNumber)) return { state: 'repair', withdrawn };
+  const unavailable = { state: withdrawn.includes(options.installed.buildNumber) ? 'repair' : 'deferred', withdrawn };
   if (release.buildNumber === options.installed.buildNumber || withdrawn.includes(release.buildNumber) ||
       release.compatibility.stateWriteVersion !== options.installed.stateVersion || release.minOS !== 'windows-11') {
-    return { state: 'deferred', withdrawn };
+    return unavailable;
   }
   const { cohortSeed, percentage } = release.rollout ?? {};
   if (typeof cohortSeed !== 'string' || !cohortSeed || !Number.isInteger(percentage) || percentage < 0 || percentage > 100) {
@@ -50,7 +50,7 @@ function reviewRelease(release, options) {
   }
   const bucket = createHash('sha256').update(options.cohort).update('\0').update(cohortSeed)
     .digest().readUInt32BE() / 2 ** 32;
-  if (bucket >= percentage / 100) return { state: 'deferred', withdrawn };
+  if (bucket >= percentage / 100) return unavailable;
   const target = { buildNumber: release.buildNumber, archiveLength: release.artifact.length,
     archiveSha256: release.artifact.sha256 };
   return { state: 'candidate', withdrawn, target };

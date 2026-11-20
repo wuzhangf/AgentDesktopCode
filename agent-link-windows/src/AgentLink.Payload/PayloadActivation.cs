@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace AgentLink;
@@ -15,6 +17,8 @@ public sealed record PayloadRelease(long BuildNumber, long ArchiveLength, string
 }
 
 public sealed record InstalledPayload(PayloadRelease Release, string Directory);
+
+public sealed record PayloadSelection(PayloadRelease? Committed, InstalledPayload? Runnable);
 
 public enum ActivationStatus { Committed, Current, Busy, Rejected }
 
@@ -40,52 +44,75 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
         return Select(RecoverState());
     }
 
+    /// <summary>Retains the committed build as a repair floor even when its files cannot safely run.</summary>
+    public PayloadSelection Inspect()
+    {
+        using var locked = Lock();
+        var state = RecoverState();
+        Prune(state);
+        return new(state.Current, SelectForRepair(state));
+    }
+
     /// <param name="quiesce">Returns a lease after blocking intake and stopping the old Host and its children.</param>
     /// <param name="probe">Uses only isolated state. The candidate must exit before the probe returns.</param>
     public async Task<PayloadActivationResult> ActivateAsync(PayloadRelease release, string archivePath,
         Func<CancellationToken, Task<IAsyncDisposable?>> quiesce,
         Func<InstalledPayload, CancellationToken, Task<bool>> probe, CancellationToken cancellation = default,
-        Func<CancellationToken, Task>? confirmCommit = null)
+        Func<CancellationToken, Task>? confirmCommit = null, bool repair = false)
     {
         using var locked = Lock();
         var state = RecoverState();
-        var current = Select(state);
+        var current = repair ? SelectForRepair(state) : Select(state);
+        if (repair && (state.Current is null || confirmCommit is null))
+            throw new InvalidDataException("Windows repair requires a committed build and a fresh trust check.");
         RequireTrusted(release);
         if (current is not null && release == current.Release)
             return new(ActivationStatus.Current, current);
-        if (current is not null && release.BuildNumber <= current.Release.BuildNumber)
+        if (state.Current is { } committed && release.BuildNumber <= committed.BuildNumber)
             throw new InvalidDataException("Windows payload activation cannot decrease the current build.");
         if (state.Rejected?.BuildNumber == release.BuildNumber)
             return new(ActivationStatus.Rejected, current);
 
-        var candidate = Stage(release, archivePath);
-        cancellation.ThrowIfCancellationRequested();
-        await using var held = await quiesce(cancellation);
-        if (held is null) return new(ActivationStatus.Busy, Select(state));
-
-        RequireTrusted(release);
-        if (state.Current is { } previous) RequireTrusted(previous);
-        var pending = state with { Pending = release };
-        Write(pending);
-        if (!await probe(candidate, cancellation))
-        {
-            Write(pending with { Pending = null, Rejected = release });
-            return new(ActivationStatus.Rejected, Select(state));
-        }
+        Prune(state, retainCandidate: release);
         try
         {
-            if (confirmCommit is not null) await confirmCommit(cancellation);
+            var candidate = Stage(release, archivePath);
+            cancellation.ThrowIfCancellationRequested();
+            await using var held = await quiesce(cancellation);
+            if (held is null) return new(ActivationStatus.Busy, repair ? SelectForRepair(state) : Select(state));
+
+            RequireTrusted(release);
+            if (current is not null) RequireTrusted(current.Release);
+            var original = state;
+            Persist(state with { Pending = release });
+            if (!await probe(candidate, cancellation))
+            {
+                Persist(state with { Pending = null, Rejected = release });
+                return new(ActivationStatus.Rejected, repair ? SelectForRepair(state) : Select(state));
+            }
+            try
+            {
+                if (confirmCommit is not null) await confirmCommit(cancellation);
+            }
+            catch
+            {
+                Persist(original);
+                throw;
+            }
+            cancellation.ThrowIfCancellationRequested();
+            // Recheck staged bytes and trust after the process exits, before opening business data.
+            candidate = Open(release);
+            var previous = current is not null && isTrusted(current.Release) ? current.Release : null;
+            Persist(new(1, release, previous, null, null));
+            return new(ActivationStatus.Committed, candidate);
         }
-        catch
+        finally { Prune(state); }
+
+        void Persist(State next)
         {
-            Write(state);
-            throw;
+            Write(next);
+            state = next;
         }
-        cancellation.ThrowIfCancellationRequested();
-        // Recheck staged bytes and trust after the process exits, before opening business data.
-        candidate = Open(release);
-        Write(new(1, release, state.Current, null, null));
-        return new(ActivationStatus.Committed, candidate);
     }
 
     private State RecoverState()
@@ -135,21 +162,36 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
                 JsonSerializer.Serialize(file, state, Json);
                 file.Flush(flushToDisk: true);
             }
-            if (OperatingSystem.IsWindows())
-            {
-                const uint replaceExisting = 1;
-                const uint writeThrough = 8;
-                if (!MoveFileEx(temporary, Journal, replaceExisting | writeThrough))
-                    throw new IOException("Unable to replace the Windows activation journal.",
-                        new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()));
-            }
-            else File.Move(temporary, Journal, overwrite: true);
+            PathSafety.ReplaceFile(temporary, Journal);
         }
         finally { File.Delete(temporary); }
     }
 
-    private string Slot(PayloadRelease release) => Path.Combine(Slots,
-        release.BuildNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    private static string SlotName(PayloadRelease release) => release.BuildNumber.ToString(CultureInfo.InvariantCulture);
+
+    private string Slot(PayloadRelease release) => Path.Combine(Slots, SlotName(release));
+
+    private void Prune(State state, PayloadRelease? retainCandidate = null)
+    {
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        if (state.Current is { } current) keep.Add(SlotName(current));
+        if (state.Previous is { } previous && isTrusted(previous)) keep.Add(SlotName(previous));
+        if (state.Pending is { } pending) keep.Add(SlotName(pending));
+        if (retainCandidate is not null) keep.Add(SlotName(retainCandidate));
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(Slots))
+            {
+                var name = Path.GetFileName(directory);
+                if (keep.Contains(name)) continue;
+                var version = long.TryParse(name, NumberStyles.None, CultureInfo.InvariantCulture, out var build) &&
+                    build is > 0 and <= 9007199254740991 && name == build.ToString(CultureInfo.InvariantCulture);
+                if (version || PathSafety.IsOperationDirectory(name, ".staging-"))
+                    PathSafety.TryDeleteDirectory(directory);
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
 
     private void RequireTrusted(PayloadRelease release)
     {
@@ -170,6 +212,13 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
     }
 
     private InstalledPayload? Select(State state) => state.Current is { } release ? Open(release) : null;
+
+    private InstalledPayload? SelectForRepair(State state)
+    {
+        try { return Select(state); }
+        catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or
+            CryptographicException or JsonException) { return null; }
+    }
 
     private InstalledPayload Stage(PayloadRelease release, string archivePath)
     {
@@ -200,14 +249,39 @@ public sealed class PayloadActivation(string root, Func<PayloadRelease, bool> is
         }
     }
 
-    [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool MoveFileEx(string existing, string destination, uint flags);
 }
 
 internal static class PathSafety
 {
     internal static bool Exists(string path) => Attributes(path) is not null;
+
+    internal static bool IsOperationDirectory(string name, string prefix) =>
+        name.StartsWith(prefix, StringComparison.Ordinal) && Guid.TryParseExact(name.AsSpan(prefix.Length), "N", out _);
+
+    internal static void TryDeleteDirectory(string path)
+    {
+        // Directory.Delete removes reparse points without descending into their targets.
+        try { Directory.Delete(path, recursive: true); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    internal static void ReplaceFile(string temporary, string destination)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.Move(temporary, destination, overwrite: true);
+            return;
+        }
+        const uint replaceExisting = 1;
+        const uint writeThrough = 8;
+        if (!MoveFileEx(temporary, destination, replaceExisting | writeThrough))
+            throw new IOException("Unable to replace Windows update state.",
+                new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()));
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFileEx(string existing, string destination, uint flags);
 
     private static FileAttributes? Attributes(string path)
     {

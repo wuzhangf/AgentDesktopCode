@@ -93,7 +93,7 @@ internal sealed class ReleaseTrust
                 output.Write(ProtectedData.Protect(clear, entropy, DataProtectionScope.CurrentUser));
                 output.Flush(flushToDisk: true);
             }
-            File.Move(temp, path, overwrite: true);
+            PathSafety.ReplaceFile(temp, path);
         }
         finally
         {

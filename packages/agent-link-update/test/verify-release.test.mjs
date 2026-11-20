@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { canonicalize } from '@tufjs/canonical-json';
 import { stageVerifiedRelease } from '../src/verify-release.mjs';
@@ -155,7 +156,11 @@ test('Windows verifier stages signed archives, checks rollout and rechecks withd
   repo.publish({ version: 2, release: { ...release, rollout: { ...release.rollout, percentage: 0 } } });
   assert.deepEqual(await selectWindowsRelease(options), { state: 'deferred', withdrawn: [] });
   repo.publish({ version: 3, release: { ...release, withdrawnBuilds: [41] } });
-  assert.deepEqual(await selectWindowsRelease(options, true), { state: 'repair', withdrawn: [41] });
+  assert.deepEqual(await selectWindowsRelease(options, true),
+    { state: 'candidate', withdrawn: [41], target: result.target });
+  const repair = await selectWindowsRelease(options);
+  assert.deepEqual(await readFile(repair.archivePath), archive);
+  assert.deepEqual(repair.withdrawn, [41]);
   repo.publish({ version: 4, release: { ...release, withdrawnBuilds: [42] } });
   assert.deepEqual(await selectWindowsRelease({ ...options, installed: { ...options.installed, buildNumber: 42 } }),
     { state: 'repair', withdrawn: [42] });
@@ -164,14 +169,41 @@ test('Windows verifier stages signed archives, checks rollout and rechecks withd
   await writeFile(options.archiveCache, Buffer.alloc(archive.length, 0x31));
   repo.files.set('/targets/' + artifactPath, Buffer.alloc(archive.length, 0x2a));
   assert.deepEqual(await selectWindowsRelease(options), { state: 'download-deferred', withdrawn: [40] });
+  repo.publish({ version: 6, release: { ...release, withdrawnBuilds: [41],
+    rollout: { ...release.rollout, percentage: 0 } } });
+  assert.deepEqual(await selectWindowsRelease(options), { state: 'repair', withdrawn: [41] });
+  repo.publish({ version: 7, release: { ...release, buildNumber: 40, withdrawnBuilds: [41] } });
+  await assert.rejects(selectWindowsRelease(options), /build number must be newer/);
 });
 
 async function callWindowsVerifier(bundle, options) {
   const request = join(options.stagingParent, 'windows-verification.json');
   await writeFile(request, JSON.stringify(options));
-  const { stdout } = await promisify(execFile)(process.execPath, [bundle, request]);
+  const { stdout } = await promisify(execFile)(process.execPath, [bundle, request, '--parent-stdin'], { timeout: 5000 });
   return JSON.parse(stdout);
 }
+
+test('Windows verifier stops when the launcher pipe closes during metadata refresh', { timeout: 8000 }, async t => {
+  const repo = await repository(t);
+  const server = createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const options = { ...repo.options({ ...repo.installed, platform: 'windows' }), cohort: '12'.repeat(16),
+    metadataBaseUrl: 'http://127.0.0.1:' + server.address().port + '/metadata/' };
+  const request = join(repo.stagingParent, 'windows-orphan.json');
+  await writeFile(request, JSON.stringify(options));
+  const verifier = process.env.AGENT_LINK_WINDOWS_TEST_VERIFIER ??
+    fileURLToPath(new URL('../src/windows-cli.mjs', import.meta.url));
+  const child = spawn(process.execPath, [verifier, request, '--parent-stdin'], { stdio: ['pipe', 'ignore', 'ignore'] });
+  const exited = once(child, 'exit');
+  const fetching = once(server, 'request');
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  const first = await Promise.race([fetching.then(() => 'fetching'), exited.then(() => 'exited')]);
+  assert.equal(first, 'fetching');
+  child.stdin.end();
+  assert.deepEqual(await exited, [1, null]);
+});
 
 test('refuses expired and replayed metadata', async t => {
   const repo = await repository(t);

@@ -222,7 +222,12 @@ internal static class Program
                         start.ArgumentList.Add("--check-update");
                         using var update = Process.Start(start) ?? throw new IOException("Launcher did not start.");
                         await update.WaitForExitAsync();
-                        menu?.SetFeedback(update.ExitCode == 0 ? "更新检查已结束" : "更新检查暂未完成");
+                        menu?.SetFeedback(update.ExitCode switch
+                        {
+                            0 => "更新检查已结束",
+                            3 => "已安装版本需要签名修复，请在任务空闲时重试。",
+                            _ => "更新检查暂未完成",
+                        });
                     }
                     catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception)
                     { menu?.SetFeedback("无法启动更新检查"); }

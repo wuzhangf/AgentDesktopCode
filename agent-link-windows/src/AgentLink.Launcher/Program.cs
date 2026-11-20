@@ -10,7 +10,7 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         var automatic = args is ["--check-update-background"];
-        var check = automatic || args is ["--check-update"];
+        var check = automatic || args is ["--check-update" or "--repair"];
         if (!check && args is not ([] or ["--background"] or ["--autostart-on"] or ["--autostart-off"])) return 2;
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return 2;
         var install = AppContext.BaseDirectory;
@@ -47,10 +47,12 @@ internal static class Program
             var publisher = new PublisherTrust(config.PublisherKey);
             var launcher = Environment.ProcessPath ?? throw new IOException("Missing Windows launcher executable.");
             publisher.Verify(launcher);
+            WindowsUpdateSession.PruneProbeSnapshots();
             var trust = new ReleaseTrust(root, config);
             var store = new PayloadActivation(root, trust.Allows, publisher.Verify);
-            var selected = store.Recover();
-            if (selected is null)
+            var selection = store.Inspect();
+            var selected = selection.Runnable;
+            if (selection.Committed is null)
             {
                 await using var seed = new WindowsUpdateSession(Guid.NewGuid().ToString("N"), seed: true);
                 var installed = await store.ActivateAsync(config.Seed, Path.Combine(install, "seed.zip"),
@@ -64,15 +66,24 @@ internal static class Program
             }
             result = "active";
             var relaunch = true;
-            if (check && config.Channel is not null)
+            if (config.Channel is not null && (check || selected is null))
             {
-                (selected, result, relaunch) = await CheckAsync(install, root, config, trust, store, selected, policy);
-                RecordSchedule(schedule, checkedAt, result);
+                var committed = selection.Committed ?? selected!.Release;
+                if (!check && args is ["--background"]) policy = new AutomaticUpdatePolicy(schedule);
+                (selected, result, relaunch) = await CheckAsync(install, root, config, trust, store, committed, selected,
+                    policy, allowOffline: !automatic);
+                RecordSchedule(schedule, checkedAt, selected is null && result is not ("busy" or "waiting-window" or
+                    "waiting-network" or "disabled" or "download-deferred") ? "repair-required" : result);
             }
             else if (config.Channel is not null)
             {
                 try { schedule.Initialize(checkedAt, Random.Shared.Next(1, 61)); }
                 catch (Exception error) when (Expected(error)) { }
+            }
+            if (selected is null)
+            {
+                result = "repair-required";
+                return 3;
             }
             active = selected.Release.BuildNumber;
             if (automatic && !relaunch) return 0;
@@ -134,14 +145,16 @@ internal static class Program
         catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33) { return null; }
     }
 
-    private static async Task<(InstalledPayload, string, bool)> CheckAsync(string install, string root,
-        BootstrapConfig config, ReleaseTrust trust, PayloadActivation store, InstalledPayload current,
-        AutomaticUpdatePolicy? policy)
+    private static async Task<(InstalledPayload?, string, bool)> CheckAsync(string install, string root,
+        BootstrapConfig config, ReleaseTrust trust, PayloadActivation store, PayloadRelease committed,
+        InstalledPayload? current, AutomaticUpdatePolicy? policy, bool allowOffline)
     {
+        PruneWorkDirectories(root);
         var staging = Path.Combine(root, ".update-" + Guid.NewGuid().ToString("N"));
         var archiveCache = Path.Combine(root, "cached-windows-payload.zip");
         Directory.CreateDirectory(staging);
-        await using var upgrade = new WindowsUpdateSession(Guid.NewGuid().ToString("N"), seed: false);
+        await using var upgrade = new WindowsUpdateSession(Guid.NewGuid().ToString("N"), seed: false,
+            allowOffline: allowOffline);
 
         string? DownloadBlock() => policy?.Block(installation: false);
         void RequireInstallWindow()
@@ -153,13 +166,14 @@ internal static class Program
         {
             var verifier = new WindowsReleaseSource(install, Path.Combine(root, "metadata"),
                 archiveCache, config, trust.Cohort);
-            var selected = await verifier.SelectAsync(current.Release.BuildNumber, staging, confirm: false, default,
+            var selected = await verifier.SelectAsync(committed.BuildNumber, staging, confirm: false, default,
                 policy is null ? null : DownloadBlock);
             trust.Observe(selected);
-            if (!trust.Allows(current.Release)) throw new InvalidDataException("The running release was withdrawn.");
+            if (!trust.Allows(committed)) current = null;
             if (selected is not { State: "candidate", Target: { } candidate, ArchivePath: { } archive })
                 return (current, selected.State, false);
             RequireInstallWindow();
+            var repair = current is null;
 
             var installed = await store.ActivateAsync(candidate, archive, cancellation =>
             {
@@ -168,35 +182,38 @@ internal static class Program
             }, upgrade.ProbeAsync, confirmCommit: async cancellation =>
             {
                 RequireInstallWindow();
-                var fresh = await verifier.SelectAsync(current.Release.BuildNumber, staging, confirm: true, cancellation,
+                var fresh = await verifier.SelectAsync(committed.BuildNumber, staging, confirm: true, cancellation,
                     policy is null ? null : DownloadBlock);
                 trust.Observe(fresh);
                 if (fresh.State != "candidate" || fresh.Target != candidate ||
-                    !trust.Allows(current.Release) || !trust.Allows(candidate))
+                    (!repair && !trust.Allows(committed)) || !trust.Allows(candidate))
                     throw new InvalidDataException("The Windows release changed during installation.");
                 RequireInstallWindow();
-            });
+            }, repair: repair);
             if (installed.Status == ActivationStatus.Committed)
             {
                 try { File.Delete(archiveCache); }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             }
-            return (installed.Current ?? throw new InvalidDataException("No trusted release after Windows update."),
-                installed.Status.ToString().ToLowerInvariant(),
+            return (installed.Current, installed.Status.ToString().ToLowerInvariant(),
                 upgrade.ShutdownAccepted || installed.Status == ActivationStatus.Committed);
         }
         catch (Exception error) when (Expected(error))
         {
             var outcome = error is AutomaticUpdateDeferredException deferred ? deferred.Outcome : "recovered";
-            return (store.Recover() ?? throw new InvalidDataException("No trusted Windows update recovery."),
-                outcome, upgrade.ShutdownAccepted);
+            return (store.Inspect().Runnable, outcome, upgrade.ShutdownAccepted);
         }
-        finally { DeletePrivateDirectory(staging); }
+        finally { PathSafety.TryDeleteDirectory(staging); }
     }
 
-    internal static void DeletePrivateDirectory(string path)
+    private static void PruneWorkDirectories(string root)
     {
-        try { Directory.Delete(path, recursive: true); }
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(root, ".update-*"))
+                if (PathSafety.IsOperationDirectory(Path.GetFileName(directory), ".update-"))
+                    PathSafety.TryDeleteDirectory(directory);
+        }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 

@@ -70,4 +70,6 @@ Add `-TufRoot <root.json> -TufMetadataUrl <url> -TufTargetUrl <url> -TufRecordPa
 
 While the tray is running, a signed update channel also checks daily with jitter. Under **设置**, users can turn automatic updates off, set an installation window in local time or choose whether to pause on metered networks. A verified download can wait for the window or for active tasks to finish. The tray check is still available for an immediate request, and the launcher applies the same task and signature checks.
 
+If the committed build is withdrawn or its payload is damaged, the launcher can repair it from the configured channel. Open Agent Link again or run the installed launcher with `--repair`. Repair requires a higher eligible signed build, and checks a copy of the local state before selecting it. If no eligible repair is available, the launch status shows `repair-required`. The launcher retains the current and previous trusted payloads and cleans abandoned extraction directories. Pairings, projects and gateway data stay in the per-user state root.
+
 The preview supports an explicitly attached Worker, direct connectivity, and — in connector builds — the member relay lane. Managed CLI configuration, firewall setup, and release signing are tracked in the Windows Agent Link design and handoff in EnterpriseDevopsAI.

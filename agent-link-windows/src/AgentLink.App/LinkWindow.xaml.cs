@@ -1276,6 +1276,7 @@ public partial class LinkWindow : Window
             "checking" => "正在检查更新。若检查中断，将自动重试。",
             "committed" => "已更新。",
             "rejected" => "新版本未通过健康检查。",
+            "repair-required" => "已安装版本需要签名修复。",
             "download-deferred" or "recovered" => "更新暂未完成，将自动重试。",
             _ => "",
         };

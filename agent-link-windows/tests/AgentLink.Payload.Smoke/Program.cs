@@ -70,6 +70,7 @@ try
     var busy = await store.ActivateAsync(next.Target, next.Path, _ => Task.FromResult<IAsyncDisposable?>(null),
         (_, _) => throw new InvalidOperationException("Busy application's probe was called."));
     Check(busy.Status == ActivationStatus.Busy && store.Recover()?.Release == first.Target, "busy leaves the seed running");
+    Check(!Directory.Exists(Path.Combine(state, "versions", "42")), "a deferred update keeps no third installed slot");
     await ExpectAsync<IOException>(() => store.ActivateAsync(next.Target, next.Path, Pause, Healthy,
         confirmCommit: _ => throw new IOException("Fresh signed metadata temporarily unavailable.")));
     Check(store.Recover()?.Release == first.Target, "confirmation failure preserves current and permits the same candidate later");
@@ -110,6 +111,8 @@ try
         }
     }
     Check(store.Recover()?.Release == next.Target, "fresh recovery resumes the last committed version");
+    Check(store.Inspect().Runnable?.Release == next.Target &&
+        !Directory.Exists(Path.Combine(state, "versions", "44")), "recovery prunes the interrupted candidate slot");
     Check(File.ReadAllText(business) == "unchanged", "activation never opens the business-state directory");
     Console.WriteLine("PASS: force-killed activation released its lock and recovered the previous committed build.");
 
@@ -154,6 +157,61 @@ try
         }));
     Expect<InvalidDataException>(() => store.Recover());
     Console.WriteLine("PASS: untrusted archives, redirected paths, hash changes, extra files and revoked current builds fail closed.");
+
+    Check(store.Inspect() is { Runnable: null } selection && selection.Committed == next.Target,
+        "withdrawal preserves the repair floor and cannot make the old slot runnable");
+    await ExpectAsync<InvalidDataException>(() => store.ActivateAsync(first.Target, first.Path,
+        _ => throw new InvalidOperationException("Repair attempted a downgrade."), Healthy,
+        confirmCommit: _ => Task.CompletedTask, repair: true));
+    await ExpectAsync<InvalidDataException>(() => store.ActivateAsync(unknown.Target, unknown.Path,
+        _ => throw new InvalidOperationException("Repair attempted an unsigned target."), Healthy,
+        confirmCommit: _ => Task.CompletedTask, repair: true));
+    var repair = CreatePayload(scratch, 57);
+    targets.Add(repair.Target);
+    await ExpectAsync<InvalidDataException>(() => store.ActivateAsync(repair.Target, repair.Path,
+        _ => throw new InvalidOperationException("Repair proceeded without reconfirmation."), Healthy, repair: true));
+    var busyRepair = await store.ActivateAsync(repair.Target, repair.Path, _ => Task.FromResult<IAsyncDisposable?>(null),
+        (_, _) => throw new InvalidOperationException("Busy repair started a probe."),
+        confirmCommit: _ => Task.CompletedTask, repair: true);
+    Check(busyRepair is { Status: ActivationStatus.Busy, Current: null }, "repair still requires a quiesce lease");
+    await ExpectAsync<IOException>(() => store.ActivateAsync(repair.Target, repair.Path, Pause, Healthy,
+        confirmCommit: _ => throw new IOException("Repair candidate could not be reconfirmed."), repair: true));
+    Check(store.Inspect() is { Runnable: null } afterFailure && afterFailure.Committed == next.Target,
+        "a transient recovery failure does not reset the floor or reactivate the withdrawn release");
+
+    var versions = Path.Combine(state, "versions");
+    var abandoned = Directory.CreateDirectory(Path.Combine(versions, ".staging-" + Guid.NewGuid().ToString("N"))).FullName;
+    var unknownDirectory = Directory.CreateDirectory(Path.Combine(versions, "00040")).FullName;
+    if (!OperatingSystem.IsWindows())
+    {
+        // Creating a symlink on native Windows may require developer mode.
+        Directory.CreateSymbolicLink(Path.Combine(abandoned, "linked"), scratch);
+        Directory.CreateSymbolicLink(Path.Combine(versions, "40"), scratch);
+    }
+    var repaired = await store.ActivateAsync(repair.Target, repair.Path, Pause, Healthy,
+        confirmCommit: _ => Task.CompletedTask, repair: true);
+    Check(repaired.Status == ActivationStatus.Committed && store.Recover()?.Release == repair.Target,
+        "a higher repair build can be selected after an isolated probe");
+    Check(!Directory.Exists(abandoned) && !Directory.Exists(Path.Combine(versions, "42")) &&
+        !Directory.Exists(Path.Combine(versions, "41")) && !Directory.Exists(Path.Combine(versions, "40")) &&
+        Directory.Exists(unknownDirectory) && File.ReadAllText(business) == "unchanged",
+        "slot cleanup preserves business files, does not follow links and removes retired and staging slots");
+    var subsequent = CreatePayload(scratch, 58);
+    var newest = CreatePayload(scratch, 59);
+    targets.UnionWith([subsequent.Target, newest.Target]);
+    await store.ActivateAsync(subsequent.Target, subsequent.Path, Pause, Healthy);
+    await store.ActivateAsync(newest.Target, newest.Path, Pause, Healthy);
+    Check(store.Recover()?.Release == newest.Target && Directory.Exists(Path.Combine(versions, "58")) &&
+        !Directory.Exists(Path.Combine(versions, "57")), "steady state keeps only the current and previous trusted build");
+    File.AppendAllText(Path.Combine(versions, "59", "payload", "AgentLink.exe"), "corrupted installed files");
+    Check(store.Inspect() is { Runnable: null } damaged && damaged.Committed == newest.Target,
+        "damaged installed bytes preserve the same version floor");
+    var coldRepair = CreatePayload(scratch, 64);
+    targets.Add(coldRepair.Target);
+    Check((await store.ActivateAsync(coldRepair.Target, coldRepair.Path, Pause, Healthy,
+        confirmCommit: _ => Task.CompletedTask, repair: true)).Current?.Release == coldRepair.Target,
+        "higher signed repair also replaces corrupt, unwithdrawn bytes");
+    Console.WriteLine("PASS: repair keeps its version floor, requires quiescence and fresh trust, and bounds owned slots.");
 }
 finally { Directory.Delete(scratch, recursive: true); }
 
