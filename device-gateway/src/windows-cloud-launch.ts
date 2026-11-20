@@ -554,11 +554,20 @@ export class WindowsCloudLaunch {
       && (parameters.creationScopeRef === undefined || parameters.creationScopeRef === project);
   }
 
-  private assertAcsGrant(session: Session, row: Delivery, deadline?: number): void {
-    const grant = this.grant(session);
+  private assertAcsScope(session: Session, row: Delivery): void {
     if (this.abort.signal.aborted || this.session()?.scope !== session.scope ||
-        grant?.revision !== row.grantRevision || row.target.backendId !== this.acs?.backendId ||
-        !grant.scopes.some(scope => this.matches(scope, row.target))) fail('CLOUD_SCOPE_CHANGED', 403);
+        row.target.backendId !== this.acs?.backendId) fail('CLOUD_SCOPE_CHANGED', 403);
+  }
+
+  private hasAcsGrant(session: Session, row: Delivery): boolean {
+    const grant = this.grant(session);
+    return !this.recoveryOnly && grant?.revision === row.grantRevision
+      && grant.scopes.some(scope => this.matches(scope, row.target));
+  }
+
+  private assertAcsGrant(session: Session, row: Delivery, deadline?: number): void {
+    this.assertAcsScope(session, row);
+    if (!this.hasAcsGrant(session, row)) fail('CLOUD_SCOPE_CHANGED', 403);
     if (deadline !== undefined && !(Date.now() < deadline)) fail('CLOUD_DISPATCH_EXPIRED', 409);
   }
 
@@ -579,11 +588,12 @@ export class WindowsCloudLaunch {
   private async resumeAcs(session: Session, row: Delivery): Promise<void> {
     const intent = row.acs;
     if (!intent || !this.acs) return;
-    this.assertAcsGrant(session, row);
+    const checkScope = () => this.assertAcsScope(session, row);
+    checkScope();
     if (!intent.sessionId) {
       const key = `cloud-create-${row.id}`;
       const receipt = await this.acs.call(session.scope, 'POST', '/api/v2/operations/lookup-created-session',
-        { idempotencyKey: key }, key);
+        { idempotencyKey: key }, key, checkScope);
       if (receipt.status !== 200 || !isRecord(receipt.body) || receipt.body.operation !== 'session.create' ||
           !identifier(receipt.body.resourceId)) return;
       intent.sessionId = receipt.body.resourceId;
@@ -593,29 +603,28 @@ export class WindowsCloudLaunch {
     const key = `cloud-message-${row.id}`;
     if (intent.message || intent.lookupOnly) {
       const receipt = await this.acs.call(session.scope, 'POST', '/api/v2/operations/lookup',
-        { operation: 'session.message', resourceId: sid, idempotencyKey: key }, key);
+        { operation: 'session.message', resourceId: sid, idempotencyKey: key }, key, checkScope);
       if (receipt.status === 200 && isRecord(receipt.body) && receipt.body.operation === 'session.message' &&
           receipt.body.resourceId === sid && isRecord(receipt.body.result)) {
         this.acceptAcsMessage(row, receipt.body.result);
-        return;
       }
-      if (receipt.status !== 404) return;
-    }
-    if (!(Date.now() < intent.dispatchBefore)) {
-      if (!intent.message && !intent.lookupOnly) {
-        row.outcome = 'not_accepted';
-        row.phase = 'receipt';
-        this.save(row);
-      }
+      // A prepared message may already have reached ACS. A missing receipt
+      // is inconclusive even if the original dispatch window is still open.
       return;
     }
-    if (!intent.message) {
-      const summary = await this.acs.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`);
-      if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid ||
-          !Number.isSafeInteger(summary.body.sessionVersion)) return;
-      intent.message = { clientMessageId: key, content: intent.content, expectedSessionVersion: summary.body.sessionVersion };
+    if (!this.hasAcsGrant(session, row) || !(Date.now() < intent.dispatchBefore)) {
+      row.outcome = 'not_accepted';
+      row.phase = 'receipt';
       this.save(row);
+      return;
     }
+    const summary = await this.acs.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`, undefined,
+      undefined, () => this.assertAcsGrant(session, row, intent.dispatchBefore));
+    if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid ||
+        !Number.isSafeInteger(summary.body.sessionVersion)) return;
+    this.assertAcsGrant(session, row, intent.dispatchBefore);
+    intent.message = { clientMessageId: key, content: intent.content, expectedSessionVersion: summary.body.sessionVersion };
+    this.save(row);
     const result = await this.acs.call(session.scope, 'POST', `/api/v2/sessions/${sid}/messages`,
       intent.message, key, () => this.assertAcsGrant(session, row, intent.dispatchBefore));
     if (result.status >= 200 && result.status < 300 && isRecord(result.body)) {
@@ -743,12 +752,19 @@ export class WindowsCloudLaunch {
 
   private async observeAcs(session: Session, row: Delivery, sid: string): Promise<void> {
     if (!row.pendingObservation) {
-      this.assertAcsGrant(session, row);
-      const summary = await this.acs!.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`);
-      if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid) return;
-      const run = identifier(summary.body.activeRunId) ? summary.body.activeRunId : row.activeRunId;
+      this.assertAcsScope(session, row);
+      let run = row.activeRunId;
+      if (this.hasAcsGrant(session, row)) {
+        const summary = await this.acs!.call(session.scope, 'GET', `/api/v2/sessions/${sid}/summary`,
+          undefined, undefined, () => this.assertAcsGrant(session, row));
+        if (summary.status !== 200 || !isRecord(summary.body) || summary.body.sessionId !== sid) return;
+        if (this.hasAcsGrant(session, row) && identifier(summary.body.activeRunId)) run = summary.body.activeRunId;
+      }
       if (!run) return;
-      const detail = await this.acs!.call(session.scope, 'GET', `/api/v2/runs/${run}`);
+      const detail = await this.acs!.call(session.scope, 'GET', `/api/v2/runs/${run}`, undefined, undefined, () => {
+        this.assertAcsScope(session, row);
+        if (run !== row.activeRunId) this.assertAcsGrant(session, row);
+      });
       if (detail.status !== 200 || !isRecord(detail.body) || detail.body.sessionId !== sid ||
           typeof detail.body.state !== 'string') return;
       const sourceState = detail.body.state;

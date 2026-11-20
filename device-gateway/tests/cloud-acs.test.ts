@@ -13,7 +13,7 @@ import { WindowsCloudLaunch } from '../src/windows-cloud-launch';
 const realOrigin = process.env.WA_TEST_ACS_ORIGIN;
 const realToken = process.env.WA_TEST_ACS_TOKEN;
 
-it('reconciles the original ACS session and first message after both replies are lost', async () => {
+it.each(['session', 'message'] as const)('reconciles an ACS %s response after withdrawing the local grant', async stopAfter => {
   const dir = mkdtempSync(join(tmpdir(), 'windows-acs-cloud-test-'));
   const origin = 'https://hosted.test';
   const session = join(dir, 'connector.env');
@@ -30,10 +30,19 @@ it('reconciles the original ACS session and first message after both replies are
   let creates = 0;
   let messages = 0;
   let sessionId = 'sid';
+  let revoked = false;
+  let delayMessageReceipt = true;
+  const callsAfterRevocation: string[] = [];
   const realAcs = realOrigin && realToken ? createAcsClient({ origin: realOrigin, ownerToken: realToken }) : undefined;
   const bindingContext = { acs: realAcs } as GatewayContext;
   const acs = new CloudAcs('acs-store', {
     call: async (device, method, path, body, key, before) => {
+      if (revoked) callsAfterRevocation.push(`${method} ${path}`);
+      if (path === '/api/v2/operations/lookup' && delayMessageReceipt) {
+        await before?.();
+        expect(key).toBe(messageKey);
+        return { status: 404, body: {} };
+      }
       if (realAcs) {
         const binding = await bindingFor(bindingContext, device);
         await before?.();
@@ -101,8 +110,11 @@ it('reconciles the original ACS session and first message after both replies are
     switch (`${init?.method} ${path}`) {
       case 'GET /instances/instance/targets': return Response.json({ revision: 0 });
       case 'PUT /instances/instance/targets':
-        [target] = body.targets;
-        expect(target).toMatchObject({ sourceKind: 'ACS', backendId: 'acs-store', projectId: project });
+        if (revoked) expect(body.targets).toEqual([]);
+        else {
+          [target] = body.targets;
+          expect(target).toMatchObject({ sourceKind: 'ACS', backendId: 'acs-store', projectId: project });
+        }
         return Response.json({});
       case 'GET /task-claims':
         return Response.json({ commands: receipt ? [] : [{ commandId: 'delivery', workId: 'work',
@@ -137,19 +149,42 @@ it('reconciles the original ACS session and first message after both replies are
     await expect(build().ownerGrant({ ...grantRequest, expectedScope: 'other-member' }))
       .rejects.toMatchObject({ code: 'CLOUD_SESSION_CHANGED' });
     await expect(build().ownerGrant(grantRequest)).resolves.toMatchObject({ revision: 1 });
+    const restart = () => {
+      store.close();
+      store = new GatewayStore(dir);
+      return build();
+    };
     await build().tick();
-    store.close();
-    store = new GatewayStore(dir);
-    await build().tick();
-    await build().tick();
-    if (realAcs) {
+    if (stopAfter === 'message') {
+      await restart().tick();
+      await build().tick();
+      expect(messages).toBe(1);
+      expect(receipt).toBeUndefined();
+    }
+    await expect(build().ownerGrant({ ...grantRequest, expectedRevision: 1, launchScopes: [] }))
+      .resolves.toMatchObject({ revision: 2, launchScopes: [] });
+    revoked = true;
+    delayMessageReceipt = false;
+    await restart().tick();
+    if (realAcs && stopAfter === 'message') {
       for (let attempt = 0; attempt < 40 && !result; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         await build().tick();
       }
     }
     expect(creates).toBe(1);
+    if (stopAfter === 'session') {
+      expect(messages).toBe(0);
+      expect(receipt).toMatchObject({ outcome: 'not_accepted' });
+      expect(callsAfterRevocation).toEqual(['POST /api/v2/operations/lookup-created-session']);
+      expect(events).toEqual([]);
+      return;
+    }
     expect(messages).toBe(1);
+    expect(callsAfterRevocation[0]).toBe('POST /api/v2/operations/lookup');
+    expect(callsAfterRevocation.slice(1)).toEqual(
+      callsAfterRevocation.slice(1).filter(call => call.startsWith('GET /api/v2/runs/')),
+    );
     expect(receipt).toMatchObject({ outcome: 'accepted', sessionId, nativeTaskId: sessionId });
     expect(events.at(-1)).toMatchObject({ sessionId, activeRunId: expect.any(String), state: 'succeeded' });
     expect(result).toMatchObject({ refs: [{ ref: `acs://acs-store/sessions/${sessionId}` }] });
