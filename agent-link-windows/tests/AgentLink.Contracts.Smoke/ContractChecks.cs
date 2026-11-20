@@ -13,9 +13,42 @@ internal static class ContractChecks
             case "contract-menu-model": MenuModel(); break;
             case "contract-quick-configuration": QuickConfiguration(); break;
             case "contract-update-schedule": WindowsUpdateScheduleCheck.Run(); break;
+            case "contract-member-logout": MemberLogoutCheck(); break;
             default: throw new ArgumentException("Unknown contract case.");
         }
         Console.WriteLine($"PASS: {mode}.");
+    }
+
+    private static void MemberLogoutCheck()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "Agent Link logout smoke", Guid.NewGuid().ToString("N"));
+        var env = Path.Combine(dir, "protected", "pac-relay.env");
+        var grant = Path.Combine(dir, "gateway", "windows-cloud-launch.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(grant)!);
+        try
+        {
+            var logout = new MemberLogoutFiles(env, grant);
+            if (logout.Pending) throw new InvalidOperationException("New state has a pending logout.");
+            logout.Begin();
+            File.WriteAllText(env, "rotated fixture credential");
+            File.WriteAllText(env + ".dpapi", "sealed fixture credential");
+            Directory.CreateDirectory(grant);
+
+            // Recover using the on-disk marker after an interrupted cleanup.
+            var restarted = new MemberLogoutFiles(env, grant);
+            if (!restarted.Pending) throw new InvalidOperationException("Logout did not persist.");
+            try { restarted.Complete(); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            if (!restarted.Pending || File.Exists(env) || File.Exists(env + ".dpapi"))
+                throw new InvalidOperationException("Partial cleanup lost the marker or retained credentials.");
+
+            Directory.Delete(grant);
+            File.WriteAllText(grant, "prior grant");
+            restarted.Complete();
+            if (restarted.Pending || File.Exists(grant))
+                throw new InvalidOperationException("Retry did not clear the old grant and marker.");
+        }
+        finally { Directory.Delete(dir, recursive: true); }
     }
 
     private static void QuickConfiguration()

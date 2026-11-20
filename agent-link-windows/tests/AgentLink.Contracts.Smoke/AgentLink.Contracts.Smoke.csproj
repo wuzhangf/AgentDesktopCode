@@ -4,5 +4,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/AgentLink.Contracts/AgentLink.Contracts.csproj"/>
+    <Compile Include="../../src/AgentLink.Host/MemberLogoutFiles.cs" Link="MemberLogoutFiles.cs"/>
   </ItemGroup>
 </Project>

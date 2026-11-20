@@ -139,12 +139,23 @@ export class WindowsCloudLaunch {
     }
   }
 
+  private windowsLogoutPending(): boolean {
+    if (this.ownerGrantStorage !== 'file') return false;
+    try {
+      lstatSync(this.sessionFile + '.logout');
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+  }
+
   private session(): Session | undefined {
     if (this.linuxMember) {
       const identity = this.linuxMember.current();
       return identity && { ...identity, scope: sessionScope(identity) };
     }
     try {
+      if (this.windowsLogoutPending()) return;
       if (this.ownerGrantStorage === 'store') {
         const file = lstatSync(this.sessionFile);
         if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o077) !== 0 || file.size > 65536) return;
@@ -158,7 +169,8 @@ export class WindowsCloudLaunch {
       const workspaceId = values.get('WORKSPACE_ID');
       const instanceId = values.get('AGENT_INSTANCE_ID');
       if (!bearer || !identifier(memberId) || !identifier(workspaceId) || !identifier(instanceId)
-          || values.get('MEMBER_ORIGIN') !== this.origin || values.get('CLIENT_ID') !== 'agent-link') return;
+          || values.get('MEMBER_ORIGIN') !== this.origin || values.get('CLIENT_ID') !== 'agent-link'
+          || this.windowsLogoutPending()) return;
       const identity = { origin: this.origin, bearer, memberId, workspaceId, instanceId };
       return { ...identity, scope: sessionScope(identity) };
     } catch { return; }

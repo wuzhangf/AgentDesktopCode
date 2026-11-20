@@ -48,6 +48,7 @@ internal sealed class ConnectorSupervisor : IDisposable
     private string? userCode;
     private bool wantLink;
     private bool linkActive;
+    private bool cancelLink;
     private bool browserOpened;
     private int failures;
     private DateTimeOffset nextAttempt = DateTimeOffset.MinValue;
@@ -92,14 +93,16 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     internal bool PackagePresent => packagePresent;
 
-    internal bool LoginPending { get { lock (gate) return wantLink || linkActive; } }
+    internal bool LoginPending
+    {
+        get { lock (gate) return wantLink || linkActive || cancelLink || MemberCredentials.LogoutPending; }
+    }
 
     internal async Task StopForUpdateAsync()
     {
         OwnedProcess? process;
-        lock (gate) { process = owned; owned = null; }
-        if (process is null) return;
-        using (process) await process.StopForUpdateAsync(requireCleanExit: false);
+        lock (gate) process = owned;
+        if (process is not null) await StopOwnedAsync(process);
     }
 
     internal Task RunAsync(CancellationToken cancellation) =>
@@ -109,10 +112,9 @@ internal sealed class ConnectorSupervisor : IDisposable
     {
         // A stored session only needs a plain restart; --link is for the
         // first approval or an explicit re-link after logout.
-        var hasSession = MemberCredentials.HasSession();
         lock (gate)
         {
-            wantLink = !hasSession;
+            wantLink = !MemberCredentials.HasSession();
             failures = 0;
             nextAttempt = DateTimeOffset.MinValue;
             if (phase == Phase.Failed) phase = Phase.Off;
@@ -123,31 +125,28 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     internal void RequestCancel()
     {
-        OwnedProcess? stop = null;
         lock (gate)
         {
             wantLink = false;
             if (phase == Phase.Linking)
             {
                 linkActive = false;
-                if (owned is not null) { stop = owned; owned = null; }
+                cancelLink = true;
                 phase = Phase.Off;
                 userCode = null;
             }
         }
-        if (stop is not null) _ = StopOwnedAsync(stop);
         Kick();
     }
 
     internal void RequestLogout()
     {
-        OwnedProcess? stop = null;
         lock (gate)
         {
+            MemberCredentials.BeginLogout();
             wantLink = false;
             linkActive = false;
-            stop = owned;
-            owned = null;
+            cancelLink = false;
             phase = Phase.Off;
             route = null;
             userCode = null;
@@ -155,8 +154,6 @@ internal sealed class ConnectorSupervisor : IDisposable
             failures = 0;
             nextAttempt = DateTimeOffset.MinValue;
         }
-        MemberCredentials.Clear();
-        if (stop is not null) _ = StopOwnedAsync(stop);
         Kick();
     }
 
@@ -164,6 +161,8 @@ internal sealed class ConnectorSupervisor : IDisposable
     {
         lock (gate)
         {
+            if (MemberCredentials.LogoutPending || cancelLink)
+                return new(Phase.Off, null, null, null, packagePresent);
             var alive = owned is { Process.HasExited: false };
             return new(phase, detail, alive ? route : null, alive ? userCode : null, packagePresent);
         }
@@ -180,9 +179,8 @@ internal sealed class ConnectorSupervisor : IDisposable
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
             catch (Exception) { }
-            var delay = Task.Delay(1500, cancellation);
-            var kick = signal.WaitAsync(cancellation);
-            await Task.WhenAny(delay, kick);
+            try { await signal.WaitAsync(TimeSpan.FromMilliseconds(1500), cancellation); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
         }
     }
 
@@ -193,68 +191,62 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     private async Task EvaluateAsync(CancellationToken cancellation)
     {
-        lock (gate) { if (disposed) return; }
-        var active = ports();
-        var session = MemberCredentials.HasSession();
-        var desired = packagePresent && active is not null && enabled() && (session || wantLink);
-
         OwnedProcess? stop = null;
         Ports? spawnPorts = null;
         var spawnLink = false;
+        var exited = false;
         lock (gate)
         {
-            if (!desired)
+            if (disposed) return;
+            var active = ports();
+            if (MemberCredentials.LogoutPending)
             {
-                wantLink = false;
+                stop = owned;
+            }
+            else if (cancelLink || !packagePresent || active is null || !enabled()
+                || !(wantLink || MemberCredentials.HasSession()))
+            {
+                if (!cancelLink) wantLink = false;
                 linkActive = false;
                 browserOpened = false;
-                if (owned is not null) { stop = owned; owned = null; }
-                if (phase != Phase.Off || route is not null || userCode is not null || detail is not null)
-                {
-                    phase = Phase.Off;
-                    route = null;
-                    userCode = null;
-                    detail = null;
-                }
+                stop = owned;
+                phase = Phase.Off;
+                route = null;
+                userCode = null;
+                detail = null;
                 failures = 0;
                 nextAttempt = DateTimeOffset.MinValue;
             }
-            else
+            else if (owned is { } process)
             {
-                if (owned is { Process.HasExited: false })
-                {
-                    if (activePacOrigin != PacOrigin(active!))
-                    {
-                        // The gateway moved to different ports; the connector's
-                        // pinned loopback target is stale — respawn it.
-                        stop = owned;
-                        owned = null;
-                    }
-                }
-                else if (owned is not null)
-                {
-                    owned = null;
-                    HandleExit();
-                }
-                if (owned is null && DateTimeOffset.UtcNow >= nextAttempt)
-                {
-                    spawnPorts = active;
-                    spawnLink = wantLink;
-                }
+                exited = process.Process.HasExited;
+                // A connector's pinned loopback target can change on gateway restart.
+                if (exited || activePacOrigin != PacOrigin(active)) stop = process;
+            }
+            else if (DateTimeOffset.UtcNow >= nextAttempt)
+            {
+                spawnPorts = active;
+                spawnLink = wantLink;
             }
         }
         if (stop is not null) await StopOwnedAsync(stop);
-        if (spawnPorts is not null)
+        lock (gate)
         {
-            await SpawnAsync(spawnPorts, spawnLink, cancellation);
+            if (MemberCredentials.LogoutPending)
+            {
+                if (owned is null) MemberCredentials.CompleteLogout();
+                return;
+            }
+            if (cancelLink)
+            {
+                if (owned is null) cancelLink = false;
+                return;
+            }
+            if (exited) HandleExit();
+            // Seal credentials when idle so the next connector restores them.
+            if (owned is null && spawnPorts is null) MemberCredentials.Collect();
         }
-        else
-        {
-            // No connector process and none starting: seal the credential
-            // env file so member secrets only sit plaintext while a
-            // connector session actually exists. The next spawn restores it.
-            lock (gate) { if (owned is null) MemberCredentials.Collect(); }
-        }
+        if (spawnPorts is not null) await SpawnAsync(spawnPorts, spawnLink, cancellation);
     }
 
     private void HandleExit()
@@ -296,7 +288,6 @@ internal sealed class ConnectorSupervisor : IDisposable
             lock (gate) nextAttempt = DateTimeOffset.UtcNow.AddSeconds(5);
             return;
         }
-        MemberCredentials.EnsureMaterialized();
         var info = LinkHost.ProcessInfo(pythonPath, workDir);
         info.ArgumentList.Add("-I");
         info.ArgumentList.Add("-B");
@@ -320,25 +311,23 @@ internal sealed class ConnectorSupervisor : IDisposable
         foreach (var name in ProxyVariables)
             if (Environment.GetEnvironmentVariable(name) is { } value) info.Environment[name] = value;
 
-        OwnedProcess? proc;
-        try { proc = new OwnedProcess(info, signalStart: false); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception
-            or InvalidOperationException)
+        OwnedProcess proc;
+        lock (gate)
         {
-            lock (gate)
+            // A sign-out or cancellation can arrive while the descriptor is fetched.
+            if (disposed || MemberCredentials.LogoutPending || cancelLink || link != wantLink) return;
+            MemberCredentials.EnsureMaterialized();
+            try { proc = new OwnedProcess(info, signalStart: false); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception
+                or InvalidOperationException)
             {
                 failures++;
                 phase = failures >= 5 ? Phase.Failed : Phase.Starting;
                 detail = phase == Phase.Failed ? "会员连接组件无法启动" : null;
                 var delay = failures switch { 1 => 1, 2 => 2, 3 => 5, 4 => 10, _ => 30 };
                 nextAttempt = DateTimeOffset.UtcNow.AddSeconds(delay);
+                return;
             }
-            return;
-        }
-
-        lock (gate)
-        {
-            if (disposed) { proc.Dispose(); return; }
             owned = proc;
             activePacOrigin = PacOrigin(active);
             startedAt = DateTimeOffset.UtcNow;
@@ -346,15 +335,16 @@ internal sealed class ConnectorSupervisor : IDisposable
             browserOpened = false;
             errorTail.Clear();
             phase = link ? Phase.Linking : Phase.Starting;
+            route = null;
             detail = null;
             userCode = null;
         }
         readers.Clear();
-        readers.Add(ReadOutputAsync(proc.Process.StandardOutput, Path.Combine(logDir, "connector.out.log"), true));
-        readers.Add(ReadOutputAsync(proc.Process.StandardError, Path.Combine(logDir, "connector.err.log"), false));
+        readers.Add(ReadOutputAsync(proc, proc.Process.StandardOutput, Path.Combine(logDir, "connector.out.log"), true));
+        readers.Add(ReadOutputAsync(proc, proc.Process.StandardError, Path.Combine(logDir, "connector.err.log"), false));
     }
 
-    private async Task ReadOutputAsync(StreamReader reader, string logFile, bool stdout)
+    private async Task ReadOutputAsync(OwnedProcess process, StreamReader reader, string logFile, bool stdout)
     {
         try
         {
@@ -362,8 +352,12 @@ internal sealed class ConnectorSupervisor : IDisposable
             while ((line = await reader.ReadLineAsync()) is not null)
             {
                 try { await File.AppendAllTextAsync(logFile, line + "\n"); } catch (Exception) { }
-                if (stdout) HandleStdoutLine(line.Trim());
-                else lock (gate) AppendError(line);
+                lock (gate)
+                {
+                    if (owned != process || cancelLink || MemberCredentials.LogoutPending) continue;
+                    if (stdout) HandleStdoutLine(line.Trim());
+                    else AppendError(line);
+                }
             }
         }
         catch (Exception) { }
@@ -373,30 +367,23 @@ internal sealed class ConnectorSupervisor : IDisposable
     {
         if (RelayContract.TryParseRouteLine(line, out var parsed) && parsed is not null)
         {
-            lock (gate)
-            {
-                route = parsed;
-                phase = Phase.Ready;
-                wantLink = false;
-                linkActive = false;
-                userCode = null;
-                detail = null;
-                failures = 0;
-                nextAttempt = DateTimeOffset.MinValue;
-            }
+            route = parsed;
+            phase = Phase.Ready;
+            wantLink = false;
+            linkActive = false;
+            userCode = null;
+            detail = null;
+            failures = 0;
+            nextAttempt = DateTimeOffset.MinValue;
             return;
         }
         if (RelayContract.TryParseApprovalLine(line, out var uri, out var code)
             && uri is not null && Uri.TryCreate(uri, UriKind.Absolute, out var target))
         {
-            var first = false;
-            lock (gate)
-            {
-                first = !browserOpened;
-                browserOpened = true;
-                phase = Phase.Linking;
-                userCode = code;
-            }
+            var first = !browserOpened;
+            browserOpened = true;
+            phase = Phase.Linking;
+            userCode = code;
             if (first)
             {
                 try { openBrowser(target); } catch (Exception) { }
@@ -427,10 +414,13 @@ internal sealed class ConnectorSupervisor : IDisposable
 
     private async Task StopOwnedAsync(OwnedProcess proc)
     {
-        using var activity = updateActivity.Enter();
-        try { await proc.StopForUpdateAsync(requireCleanExit: false); }
-        catch (Exception) { updateActivity.MarkUnconfirmed(); }
-        finally { proc.Dispose(); }
+        // Keep ownership on failure so the next poll can confirm the job has stopped.
+        await proc.StopForUpdateAsync(requireCleanExit: false);
+        lock (gate)
+        {
+            owned = null;
+            proc.Dispose();
+        }
     }
 
     public void Dispose()

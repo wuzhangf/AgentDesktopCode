@@ -46,13 +46,13 @@ State-root startup regression checks run without opening a UI or touching user d
 
 ```powershell
 dotnet build agent-link-windows/tests/AgentLink.Contracts.Smoke
-foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines','contract-relay-invite','contract-launch-scopes') {
+foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines','contract-relay-invite','contract-launch-scopes','contract-member-logout') {
     dotnet run --no-build --project agent-link-windows/tests/AgentLink.Contracts.Smoke -- $case
     if ($LASTEXITCODE) { throw "Smoke case failed: $case" }
 }
 ```
 
-The contract cases cover the connector's `pac-relay/1` route and approval lines, the invite relay-injection guard (host/store/certificate match), and availability-filtered launch-scope expansion.
+The contract cases cover the connector's `pac-relay/1` route and approval lines, the invite relay-injection guard (host/store/certificate match), availability-filtered launch scopes, and retrying interrupted member logout cleanup.
 
 The versioned payload contract runs separately with `dotnet run --project agent-link-windows/tests/AgentLink.Payload.Smoke`. It exercises archive and manifest verification, busy deferral, version selection after the health callback, and recovery after termination of the selecting process.
 

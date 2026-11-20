@@ -16,6 +16,12 @@ internal static class MemberCredentials
     private static string DirectoryPath => Path.Combine(LinkProtocol.Root, "protected");
     internal static string EnvFilePath => Path.Combine(DirectoryPath, "pac-relay.env");
     private static string ProtectedPath => EnvFilePath + ".dpapi";
+    private static readonly MemberLogoutFiles Logout = new(EnvFilePath,
+        Path.Combine(LinkProtocol.Root, "gateway", "windows-cloud-launch.json"));
+
+    internal static bool LogoutPending => Logout.Pending;
+    internal static void BeginLogout() => Logout.Begin();
+    internal static void CompleteLogout() => Logout.Complete();
 
     private static readonly string[] RequiredKeys =
     [
@@ -26,7 +32,7 @@ internal static class MemberCredentials
 
     internal static void EnsureMaterialized()
     {
-        if (File.Exists(EnvFilePath) || !File.Exists(ProtectedPath)) return;
+        if (LogoutPending || File.Exists(EnvFilePath) || !File.Exists(ProtectedPath)) return;
         var sealedBytes = ProtectedData.Unprotect(File.ReadAllBytes(ProtectedPath), null,
             DataProtectionScope.CurrentUser);
         try
@@ -41,7 +47,7 @@ internal static class MemberCredentials
     /// connector stops so rotated refresh tokens are not lost.
     internal static void Collect()
     {
-        if (!File.Exists(EnvFilePath)) return;
+        if (LogoutPending || !File.Exists(EnvFilePath)) return;
         var plain = File.ReadAllBytes(EnvFilePath);
         try
         {
@@ -53,17 +59,12 @@ internal static class MemberCredentials
         File.Delete(EnvFilePath);
     }
 
-    internal static void Clear()
-    {
-        File.Delete(EnvFilePath);
-        File.Delete(ProtectedPath);
-    }
-
     /// Presence check only — secret values never leave the stores and the
     /// protected copy is read in memory, so polling status does not keep a
     /// plaintext env file alive while no connector runs.
     internal static bool HasSession()
     {
+        if (LogoutPending) return false;
         string? text;
         if (File.Exists(EnvFilePath))
         {
@@ -93,7 +94,7 @@ internal static class MemberCredentials
 
     internal static (string Bearer, string Scope)? FileSession(bool requireCloudProfile = false)
     {
-        if (!File.Exists(EnvFilePath)) return null;
+        if (LogoutPending || !File.Exists(EnvFilePath)) return null;
         var names = new[] { "AGENT_ACCESS_TOKEN", "MEMBER_ID", "WORKSPACE_ID", "AGENT_INSTANCE_ID" };
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var line in File.ReadLines(EnvFilePath, Encoding.UTF8))
@@ -103,7 +104,7 @@ internal static class MemberCredentials
             var name = line["PAC_RELAY_".Length..split];
             if (names.Contains(name) || name == "CLIENT_ID") values[name] = line[(split + 1)..].Trim();
         }
-        if (!names.All(name => values.TryGetValue(name, out var value) && value.Length > 0)) return null;
+        if (LogoutPending || !names.All(name => values.TryGetValue(name, out var value) && value.Length > 0)) return null;
         if (requireCloudProfile && values.GetValueOrDefault("CLIENT_ID") != "agent-link") return null;
         return (values[names[0]], string.Join('\n', names.Skip(1).Select(name => values[name])));
     }

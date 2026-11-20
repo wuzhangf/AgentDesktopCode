@@ -704,6 +704,13 @@ internal sealed class LinkHost : IDisposable
         {
             if (request.Operation == "managedAgents")
                 return new(true, Data: JsonSerializer.SerializeToNode(managed.List(), LinkProtocol.Json));
+            if (request.Operation == "memberLogout")
+            {
+                connector.RequestLogout();
+                status = status with { MemberState = "NONE", MemberInfo = connector.PackagePresent
+                    ? null : "此安装不包含会员连接组件" };
+                return new(true);
+            }
             if (!status.Ready || ports is null) return new(false, "后台网关暂未就绪");
             if (request.Operation == "prepare-update") return await PrepareUpdateAsync(request.Id, cancellation);
             switch (request.Operation)
@@ -875,9 +882,6 @@ internal sealed class LinkHost : IDisposable
                     }, LinkProtocol.Json));
                 case "memberCancel":
                     connector.RequestCancel();
-                    return new(true);
-                case "memberLogout":
-                    connector.RequestLogout();
                     return new(true);
                 default:
                     return new(false, "操作当前不可用");

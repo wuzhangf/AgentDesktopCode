@@ -35,8 +35,9 @@ it('uses the Windows grant file through the local owner route and fences a stale
   vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
     projects: [{ projectId: 'project' }], engines: [{ engineId: 'pi' }] });
   const hosted = vi.fn<typeof fetch>().mockImplementation(() => Promise.reject(Error('Cloud must not be called')));
-  const launch = new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grantFile,
+  const boot = () => new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grantFile,
     hosted, false, undefined, 'file');
+  let launch = boot();
   const ctx = { cloudLaunchGrant: request => launch.ownerGrant(request) } as GatewayContext;
   const server = createOwnerListener({ ctx, ownerToken: 'fixture-owner', ownerClientToken: 'fixture-client',
     bind: '127.0.0.1', port: 0 });
@@ -73,7 +74,29 @@ it('uses the Windows grant file through the local owner route and fences a stale
     expect(JSON.parse(readFileSync(grantFile, 'utf8'))).toEqual({
       ...fixtureGrant, revision: 6, controls: false, approvals: false, launchScopes: [],
     });
+
+    // A connector draining at logout may recreate the old credential file.
+    // Both the live gateway and a restarted gateway must decline to use it.
+    writeFileSync(grantFile, JSON.stringify(fixtureGrant));
+    writeFileSync(session + '.logout', Buffer.from([1]));
+    rmSync(session);
+    writeSession('member');
+    const signingOut = await fetch(path, { headers });
+    expect(signingOut.status).toBe(409);
+    expect(await signingOut.json()).toMatchObject({ code: 'CLOUD_SESSION_REQUIRED' });
+    expect(await (await put(update)).json()).toMatchObject({ code: 'CLOUD_SESSION_REQUIRED' });
+    await launch.tick();
+    launch = boot();
+    expect(await (await fetch(path, { headers })).json()).toMatchObject({ code: 'CLOUD_SESSION_REQUIRED' });
+    await launch.tick();
     expect(hosted).not.toHaveBeenCalled();
+
+    rmSync(session);
+    rmSync(grantFile);
+    rmSync(session + '.logout');
+    expect(await (await fetch(path, { headers })).json()).toMatchObject({ code: 'CLOUD_SESSION_REQUIRED' });
+    writeSession('member');
+    expect(await (await fetch(path, { headers })).json()).toMatchObject({ revision: 0, launchScopes: [] });
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     store.close();
