@@ -384,6 +384,171 @@ it('publishes only owner-approved targets and recovers both replies across resta
   }
 });
 
+it.each(typeof process.getuid === 'function' ? ['file', 'store'] as const : ['file'] as const)(
+  'recovers one proven unstarted authorization after revoking a %s grant', async storage => {
+    const dir = mkdtempSync(join(tmpdir(), 'link-unstarted-'));
+    const origin = 'https://hosted.test';
+    const session = join(dir, 'member.env');
+    writeFileSync(session, [
+      `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+      'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+      'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+    ].join('\n'), { mode: 0o600 });
+    const target = { sourceKind: 'NATIVE', backendId: 'store', projectId: 'project', engineId: 'pi' };
+    const command = { commandId: 'original', kind: 'link.task.launch.v2', workId: 'work', deliveryGeneration: 1,
+      payload: { target: { ...target, instanceId: 'instance' }, nativeRequestKey: 'original-key',
+        payloadDigest: 'digest', instruction: { text: 'Fixture' }, parameters: {}, attachments: [] } };
+    const connection = { connectionId: 'backend', kind: 'WORKER_LOCAL' };
+    const raw = vi.fn<LocalTransportLike['raw']>().mockResolvedValue({ status: 200,
+      data: { optionsRevision: 'options' } });
+    const transport: LocalTransportLike = { workerLocal: () => connection, workerLocalRows: () => [connection],
+      identity: async () => 'store', rawBytes: async () => { throw Error('not used'); }, raw };
+    let store = new GatewayStore(dir);
+    const grantFile = join(dir, 'grant.json');
+    const calls: string[] = [];
+    let recorded: string | null = null;
+    let proof: string | null = 'another-attempt';
+    let committed = false;
+    const hosted: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const path = url.pathname.replace('/api/daily/v1/member/link/v2', '');
+      const request = `${init?.method} ${path}`;
+      calls.push(request);
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+      switch (request) {
+        case 'GET /instances/instance/targets': return Response.json({ revision: 1 });
+        case 'PUT /instances/instance/targets': return Response.json({});
+        case 'GET /task-claims': return Response.json({ commands: [command] });
+        case 'POST /task-claims/original/authorize':
+          recorded = url.searchParams.get('authorizationAttemptId');
+          expect(recorded).toMatch(/^[\da-f-]{36}$/i);
+          throw Error('lost original authorization response');
+        case 'GET /task-claims/original':
+          return Response.json({ ...command, state: committed ? 'acknowledged' : 'claimed',
+            deliveryGeneration: committed ? 2 : 1,
+            result: { dispatch: 'authorized', authorizationAttemptId: proof,
+              ...(committed ? { outcome: 'not_accepted' } : {}) } });
+        case 'POST /task-claims/original/recover':
+          expect(body).toEqual({ authorizationAttemptId: recorded });
+          return Response.json({ deliveryGeneration: 2 });
+        case 'POST /task-claims/original/reconcile':
+          expect(url.searchParams.get('authorizationAttemptId')).toBe(recorded);
+          expect(body.outcome).toBe('not_accepted');
+          if (body.deliveryGeneration === 1) return Response.json({ code: 'STALE_COMMAND_CLAIM' }, { status: 409 });
+          expect(body.deliveryGeneration).toBe(2);
+          committed = true;
+          throw Error('lost reconciliation response');
+        default: throw Error(`Unexpected Hosted call ${request}`);
+      }
+    };
+    const boot = () => {
+      const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
+      vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
+        projects: [{ projectId: 'project' }], engines: [{ engineId: 'pi' }] });
+      return new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grantFile,
+        hosted, false, undefined, storage);
+    };
+    try {
+      let launch = boot();
+      const { scope } = await launch.ownerGrant();
+      await launch.ownerGrant({ expectedScope: scope, expectedRevision: 0, controls: false, approvals: false,
+        launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }] });
+      await launch.tick();
+      expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'claimed', authorizationAttemptId: recorded }]);
+      await launch.ownerGrant({ expectedScope: scope, expectedRevision: 1, controls: false, approvals: false,
+        launchScopes: [] });
+      store.close();
+      store = new GatewayStore(dir);
+      launch = boot();
+      calls.length = 0;
+      await launch.tick();
+      proof = null;
+      await launch.tick();
+      expect(calls.some(call => call.endsWith('/reconcile'))).toBe(false);
+      proof = recorded;
+      await launch.tick();
+      expect(committed).toBe(true);
+      expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'claimed' }]);
+      store.close();
+      store = new GatewayStore(dir);
+      await boot().tick();
+      expect(calls.filter(call => call.endsWith('/reconcile'))).toHaveLength(2);
+      expect(calls).not.toContain('GET /task-claims');
+      expect(calls).not.toContain('POST /task-claims/original/authorize');
+      expect(raw.mock.calls.map(([, method, tail]) => `${method} ${tail}`)).toEqual(['POST /task-preflights']);
+      expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'closed', outcome: 'not_accepted', generation: 2 }]);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+it('keeps an ambiguous lookup pending when the authorization belongs to another attempt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'link-unbound-lookup-'));
+  const origin = 'https://hosted.test';
+  const session = join(dir, 'member.env');
+  const grantFile = join(dir, 'grant.json');
+  writeFileSync(session, [
+    `PAC_RELAY_MEMBER_ORIGIN=${origin}`, 'PAC_RELAY_CLIENT_ID=agent-link',
+    'PAC_RELAY_AGENT_ACCESS_TOKEN=fixture', 'PAC_RELAY_MEMBER_ID=member',
+    'PAC_RELAY_WORKSPACE_ID=workspace', 'PAC_RELAY_AGENT_INSTANCE_ID=instance',
+  ].join('\n'));
+  writeFileSync(grantFile, JSON.stringify({ schemaVersion: 'windows-cloud-launch-grant/1',
+    memberId: 'member', workspaceId: 'workspace', instanceId: 'instance', revision: 1,
+    launchScopes: [{ backendStoreId: 'store', projectId: 'project', engineId: 'pi' }] }));
+  const target = { sourceKind: 'NATIVE', backendId: 'store', projectId: 'project', engineId: 'pi' };
+  const command = { commandId: 'original', kind: 'link.task.launch.v2', workId: 'work', deliveryGeneration: 1,
+    payload: { target: { ...target, instanceId: 'instance' }, nativeRequestKey: 'original-key',
+      payloadDigest: 'digest', instruction: { text: 'Fixture' }, parameters: {}, attachments: [] } };
+  const connection = { connectionId: 'backend', kind: 'WORKER_LOCAL' };
+  const raw = vi.fn<LocalTransportLike['raw']>(async (_, method, tail) =>
+    method === 'POST' && tail === '/task-preflights'
+      ? { status: 200, data: { optionsRevision: 'options' } }
+      : { status: 404, data: { code: 'NOT_FOUND' } });
+  const transport: LocalTransportLike = { workerLocal: () => connection, workerLocalRows: () => [connection],
+    identity: async () => 'store', rawBytes: async () => { throw Error('not used'); }, raw };
+  let store = new GatewayStore(dir);
+  let first = true;
+  const posted: string[] = [];
+  const hosted: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace('/api/daily/v1/member/link/v2', '');
+    if (path.endsWith('/targets')) return Response.json({ revision: 1 });
+    if (path === '/task-claims') return Response.json({ commands: [command] });
+    if (init?.method === 'POST') posted.push(path);
+    if (path.endsWith('/authorize')) {
+      if (first) throw Error('lost response');
+      return Response.json({ action: 'lookup', requestKey: 'original-key', authorizationAttemptId: 'older-attempt' });
+    }
+    if (path === '/task-claims/original') {
+      return Response.json({ ...command, state: 'claimed',
+        result: { dispatch: 'authorized', authorizationAttemptId: 'older-attempt' } });
+    }
+    throw Error(`Unexpected Hosted call ${path}`);
+  };
+  const boot = () => {
+    const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
+    vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
+      projects: [{ projectId: 'project' }], engines: [{ engineId: 'pi' }] });
+    return new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grantFile, hosted);
+  };
+  try {
+    await boot().tick();
+    expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'claimed' }]);
+    first = false;
+    store.close();
+    store = new GatewayStore(dir);
+    await boot().tick();
+    expect(posted).toEqual(['/task-claims/original/authorize', '/task-claims/original/authorize']);
+    expect(raw.mock.calls.every(([, method, tail]) => method !== 'POST' || tail === '/task-preflights')).toBe(true);
+    expect(store.list('windows-cloud-launch')).toMatchObject([{ phase: 'submitting' }]);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it('ignores malformed session files and clears targets when the session rotates', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'windows-cloud-test-'));
   const session = join(dir, 'connector.env');

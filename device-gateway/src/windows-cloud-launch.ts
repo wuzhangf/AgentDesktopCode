@@ -63,6 +63,8 @@ interface Action {
 
 interface Delivery {
   id: string;
+  commandId?: string;
+  authorizationAttemptId?: string;
   workId: string;
   generation: number;
   digest: string;
@@ -96,6 +98,7 @@ interface Delivery {
 export class WindowsCloudLaunch {
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = true;
+  private ticking = false;
   private backoff = 3000;
   private readonly abort = new AbortController();
 
@@ -277,10 +280,14 @@ export class WindowsCloudLaunch {
   private save(row: Delivery): void { this.store.put(journal, row.id, row); }
 
   async tick(): Promise<void> {
-    if (this.updatePreparation?.preparing) return;
+    if (this.ticking || this.updatePreparation?.preparing) return;
     const finish = this.updatePreparation?.admit();
+    this.ticking = true;
     try { await this.deliver(); }
-    finally { finish?.(); }
+    finally {
+      this.ticking = false;
+      finish?.();
+    }
   }
 
   private async deliver(): Promise<void> {
@@ -293,8 +300,11 @@ export class WindowsCloudLaunch {
     // Existing receipts and observations keep moving when publication or
     // claiming hits a temporary endpoint error.
     for (const row of this.store.list<Delivery>(journal)) {
-      if (row.scope !== session.scope || row.phase === 'closed' || row.phase === 'claimed') continue;
-      try { await this.resume(session, row); } catch { /* the original journal entry remains */ }
+      if (row.scope !== session.scope || row.phase === 'closed') continue;
+      try {
+        if (row.phase === 'claimed') await this.recoverUnstarted(session, row);
+        else await this.resume(session, row);
+      } catch { /* the original journal entry remains */ }
     }
     for (const action of this.store.list<Action>(actions)) {
       if (action.scope !== session.scope || action.closed) continue;
@@ -394,7 +404,7 @@ export class WindowsCloudLaunch {
       id, scope: session.scope, workId: command.workId, digest: payload.payloadDigest,
       nativeKey: payload.nativeRequestKey, target: payload.target,
       grantRevision: grant.revision, phase: 'claimed',
-    }), generation: command.deliveryGeneration };
+    }), commandId: command.commandId, generation: command.deliveryGeneration };
     this.save(row);
     if (row.phase !== 'claimed') return this.resume(session, row);
     const target = row.target;
@@ -427,19 +437,18 @@ export class WindowsCloudLaunch {
       }
     }
     if (this.grant(session)?.revision !== grant.revision) return;
-    const authorization = await this.hosted(session, 'POST', `${path}/authorize`, { deliveryGeneration: row.generation });
+    const attempt = row.authorizationAttemptId ?? randomUUID();
+    row.authorizationAttemptId = attempt;
+    this.save(row);
+    const authorization = await this.hosted(session, 'POST',
+      `${path}/authorize?authorizationAttemptId=${attempt}`, { deliveryGeneration: row.generation });
     if (authorization.requestKey !== row.nativeKey) fail('CLOUD_REQUEST_CONFLICT', 409);
     if (authorization.action === 'lookup') {
-      if (old?.phase === 'claimed') {
-        // Dispatches always cross the persisted submitting boundary first.
-        // A surviving claimed row proves the source call did not start.
-        row.phase = 'receipt';
-        row.outcome = 'not_accepted';
-      } else {
-        // The prior gateway's journal may be unavailable. Never replay.
-        row.phase = 'submitting';
-        if (acs) row.acs = { content: '', create: {}, dispatchBefore: 0, lookupOnly: true };
-      }
+      if (authorization.authorizationAttemptId === attempt) return this.recoverUnstarted(session, row);
+      // A claimed row from a different attempt cannot prove that the prior
+      // gateway never submitted. Look up the original request key.
+      row.phase = 'submitting';
+      if (acs) row.acs = { content: '', create: {}, dispatchBefore: 0, lookupOnly: true };
       this.save(row);
       return this.resume(session, row);
     }
@@ -481,6 +490,40 @@ export class WindowsCloudLaunch {
     }
     this.save(row);
     await this.resume(session, row);
+  }
+
+  private async recoverUnstarted(session: Session, row: Delivery): Promise<void> {
+    const { commandId, authorizationAttemptId: attempt } = row;
+    if (row.phase !== 'claimed' || !identifier(commandId) || !identifier(attempt)) return;
+    const path = `/task-claims/${commandId}`;
+    const claim = await this.hosted(session, 'GET', path);
+    const { payload, result } = claim;
+    if (claim.kind !== kind || claim.workId !== row.workId ||
+        !isRecord(payload) || payload.nativeRequestKey !== row.nativeKey || payload.payloadDigest !== row.digest ||
+        !isRecord(result) || result.dispatch !== 'authorized' || result.authorizationAttemptId !== attempt ||
+        typeof claim.deliveryGeneration !== 'number' || !Number.isSafeInteger(claim.deliveryGeneration)) return;
+
+    let generation = claim.deliveryGeneration;
+    if (claim.state === 'acknowledged') {
+      if (result.outcome !== 'not_accepted') return;
+    } else {
+      const reconcile = (value: number) => this.hosted(session, 'POST',
+        `${path}/reconcile?authorizationAttemptId=${attempt}`, {
+          deliveryGeneration: value, outcome: 'not_accepted', detail: 'authorization_response_lost_before_submit',
+        });
+      try { await reconcile(generation); }
+      catch (error) {
+        if (!(error instanceof GatewayError) || error.code !== 'STALE_COMMAND_CLAIM') throw error;
+        const renewed = await this.hosted(session, 'POST', `${path}/recover`, { authorizationAttemptId: attempt });
+        if (typeof renewed.deliveryGeneration !== 'number' || !Number.isSafeInteger(renewed.deliveryGeneration)) return;
+        generation = renewed.deliveryGeneration;
+        await reconcile(generation);
+      }
+    }
+    row.outcome = 'not_accepted';
+    row.generation = generation;
+    row.phase = 'closed';
+    this.save(row);
   }
 
   private attachment(payload: Json, target: Json): Json | null | undefined {
