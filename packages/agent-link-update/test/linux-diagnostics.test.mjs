@@ -56,10 +56,15 @@ test('projects bounded diagnostics from the selected Linux installation', async 
     writeFile(join(f.updateRoot, 'withdrawn-builds.json'), '[74]'),
     writeFile(join(f.units, service), `[Service]\nExecStart="${f.prefix}/program/current/launch.sh"\n`),
     writeFile(join(f.units, 'agent-link-update.service'), `[Service]\nExecStart="${f.prefix}/program/updater/node"\n`),
+    writeFile(join(f.units, 'agent-link-update.timer'), '[Timer]\nOnBootSec=60\n'),
   ]);
+  const registered = join(f.directory, 'registered-units');
+  await mkdir(registered);
+  await Promise.all([service, 'agent-link-update.timer'].map(name =>
+    symlink(join(f.units, name), join(registered, name))));
   const report = collectDiagnostics(f.source, f.prefix, name => ({
     LoadState: 'loaded', ActiveState: name === service ? 'failed' : 'active',
-    Result: 'exit-code', ExecMainStatus: '78', FragmentPath: join(f.units, name),
+    Result: 'exit-code', ExecMainStatus: '78', FragmentPath: join(registered, name),
     UnitFileState: 'enabled', ExecStart: privateDetails,
   }));
   assert.equal(report.schemaVersion, 'agent-link-diagnostics/1');

@@ -75,6 +75,14 @@ function queryUnit(name) {
   return Object.fromEntries(Array.from(result.stdout.matchAll(/^([A-Za-z]+)=(.*)$/gm), match => [match[1], match[2]]));
 }
 
+function ownsFragment(fragment, expected) {
+  try {
+    return typeof fragment === 'string' && realpathSync(fragment) === expected;
+  } catch {
+    return false;
+  }
+}
+
 function unitStatus(name, paths, query) {
   const properties = query(name);
   if (!properties) return { state: 'unavailable' };
@@ -83,7 +91,7 @@ function unitStatus(name, paths, query) {
   // The timer has no ExecStart. Its associated update service carries the prefix.
   const owner = name === timer ? join(paths.unitDir, 'agent-link-update.service') : unit;
   const command = readSmall(owner, data => data.split('\n').find(line => line.startsWith('ExecStart=')));
-  if (properties.FragmentPath !== unit || command.state !== 'read' ||
+  if (!ownsFragment(properties.FragmentPath, unit) || command.state !== 'read' ||
       !unitUsesPrefix(command.value, paths.prefix)) return { state: 'different-installation' };
   const state = activeStates.includes(properties.ActiveState) ? properties.ActiveState : 'unknown';
   if (name === timer) {
