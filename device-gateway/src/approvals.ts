@@ -146,7 +146,7 @@ export class GatewayApprovals {
   }
 
   /** Loopback surfaces (Agent Link popover, diagnostics): live pending only. */
-  pending(): JsonObject {
+  pending(): { schemaVersion: string; items: JsonObject[] } {
     return this.store.transaction(() => {
       const items = this.store.list<Approval>(APPROVAL_KIND)
         .map((r) => this.settle(r))

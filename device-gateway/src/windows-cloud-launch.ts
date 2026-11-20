@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
 import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
+import type { UpdatePreparation } from './update-preparation.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -88,6 +89,7 @@ export class WindowsCloudLaunch {
     private readonly grantFile: string,
     private readonly fetcher: typeof fetch = fetch,
     private readonly recoveryOnly = false,
+    private readonly updatePreparation?: UpdatePreparation,
   ) {}
 
   start(): void {
@@ -167,6 +169,13 @@ export class WindowsCloudLaunch {
   private save(row: Delivery): void { this.store.put(journal, row.id, row); }
 
   async tick(): Promise<void> {
+    if (this.updatePreparation?.preparing) return;
+    const finish = this.updatePreparation?.admit();
+    try { await this.deliver(); }
+    finally { finish?.(); }
+  }
+
+  private async deliver(): Promise<void> {
     const session = this.session();
     if (!session) return;
     const grant = this.grant(session);

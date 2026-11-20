@@ -397,7 +397,9 @@ const phoneProblem = (path: string, error: unknown): HttpResponse => {
 import { requiresCommercialAccess, requiresMembershipIngress } from './commercial.js';
 
 export async function handlePhoneRoute(ctx: GatewayContext, req: HttpRequest): Promise<HttpResponse> {
+  let finish: (() => void) | undefined;
   try {
+    if (req.method !== 'GET') finish = ctx.updatePreparation?.admit();
     const out = await route(ctx, req);
     logRequest(req, out);
     return out;
@@ -405,6 +407,8 @@ export async function handlePhoneRoute(ctx: GatewayContext, req: HttpRequest): P
     const out = phoneProblem(req.path, error);
     logRequest(req, out);
     return out;
+  } finally {
+    finish?.();
   }
 }
 
@@ -529,6 +533,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
   if (path === '/personal/v1/host' && method === 'GET') {
     const view = await ctx.auth.host(device, ctx.config.bootId);
     view.platform = process.platform;
+    if (ctx.updatePreparation?.preparing) view.maintenance = 'INSTALLING_UPDATE';
     view.commercial = {required:ctx.config.allowUnlicensedDevelopment !== true && ctx.config.localCliOnly !== true,
       lanes:{lan:'free',relay:'member',voice:'member'},
       dailyOrigin:ctx.commercial?.dailyOrigin ?? null};

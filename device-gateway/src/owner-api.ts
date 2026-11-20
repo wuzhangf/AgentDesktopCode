@@ -204,6 +204,7 @@ export async function handleOwnerRoute(
   req: HttpRequest,
   creds: OwnerCredentials,
 ): Promise<HttpResponse> {
+  let finish: (() => void) | undefined;
   try {
     if (!isLoopback(req.clientIp)) fail('LOCAL_OWNER_REQUIRED', 403);
     // xagt read RPC — its own reader credential domain, reached by the local
@@ -219,6 +220,17 @@ export async function handleOwnerRoute(
 
     const { path, method } = req;
     const parts = javaSplit(path);
+    if (ctx.updatePreparation && path === `${ROOT}/update-preparation` && method === 'GET') {
+      return { status: 200, body: ctx.updatePreparation.status() };
+    }
+    if (ctx.updatePreparation && method === 'POST' &&
+        (path === `${ROOT}/update-preparation` || path === `${ROOT}/update-preparation/release`)) {
+      const operationId = text(jsonBody(req), 'operationId');
+      const body = path.endsWith('/release') ? await ctx.updatePreparation.release(operationId)
+        : await ctx.updatePreparation.prepare(operationId);
+      return { status: 200, body };
+    }
+    if (method !== 'GET') finish = ctx.updatePreparation?.admit();
     if (method === 'GET' && path === `${ROOT}/work-handoffs/signing-key`) {
       if ((!ctx.nativeLocalHandoffs && !ctx.acsHandoffBridge) || !ctx.workHandoffs) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 200, body: {
@@ -487,7 +499,7 @@ export async function handleOwnerRoute(
       return { status: 204, body: null };
     }
 
-    fail('NOT_FOUND', 404);
+    return fail('NOT_FOUND', 404);
   } catch (error) {
     if (error instanceof GatewayError) {
       const detail = 'detail' in error && typeof (error as { detail?: unknown }).detail === 'string'
@@ -497,5 +509,7 @@ export async function handleOwnerRoute(
     // Java ownerHandler: unexpected Exception → PERSONAL_ACCESS_FAILURE 503.
     console.error('device-gateway: unexpected owner-api error:', error);
     return { status: 503, body: { code: 'PERSONAL_ACCESS_FAILURE', detail: 'PERSONAL_ACCESS_FAILURE' } };
+  } finally {
+    finish?.();
   }
 }

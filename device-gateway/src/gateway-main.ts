@@ -64,6 +64,7 @@ import { Devices } from './devices.js';
 import { GatewayApprovals } from './approvals.js';
 import { LocalTaskAccess } from './local-tasks.js';
 import { WindowsCloudLaunch } from './windows-cloud-launch.js';
+import { UpdatePreparation } from './update-preparation.js';
 import { PersonalInbox, type InboxSourceReader } from './inbox.js';
 import { LocalTransport, type ConnectionRowLite } from './local-transport.js';
 import { createAcsClient } from './acs.js';
@@ -804,9 +805,14 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     { storeId: host.storeId, refresher: (task) => queueMicrotask(task) },
   );
   ctx.inbox = inbox;
-  ctx.approvals = new GatewayApprovals(store, opts.localCliOnly ? {
+  const approvals = new GatewayApprovals(store, opts.localCliOnly ? {
     activeDevices: () => devices.activeDevices().filter((device) => device.actions?.includes('APPROVE')),
   } : devices);
+  ctx.approvals = approvals;
+  if (opts.localCliOnly) {
+    ctx.updatePreparation = new UpdatePreparation(config.bootId, transport, () =>
+      approvals.pending().items.length > 0);
+  }
 
   // xagt read-only surface — reader grants + peer records + explicit material
   // entries live in the same store; the cursor key is derived from the store
@@ -839,7 +845,8 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ?? env('DEVICE_GATEWAY_WINDOWS_CLOUD_SESSION');
   const cloudLaunch = cloudOrigin && /^https:\/\/[a-z0-9.:-]+$/i.test(cloudOrigin) && cloudSession && localTasks
     ? new WindowsCloudLaunch(store, localTasks, transport, host.id, cloudOrigin, cloudSession,
-      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1') : undefined;
+      join(opts.dataDir, 'windows-cloud-launch.json'), fetch, env('DEVICE_GATEWAY_CLOUD_RECOVERY_ONLY') === '1',
+      ctx.updatePreparation) : undefined;
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch };
 }
 
@@ -983,9 +990,11 @@ export async function main(): Promise<void> {
   }
   built.cloudLaunch?.start();
   const handoffProgress = built.ctx.nativeLocalHandoffs ? setInterval(() => {
-    void built.ctx.workHandoffs?.advanceConfirmedLocalHandoffs?.().catch(() => {
+    if (built.ctx.updatePreparation?.preparing) return;
+    const finish = built.ctx.updatePreparation?.admit();
+    void Promise.resolve(built.ctx.workHandoffs?.advanceConfirmedLocalHandoffs?.()).catch(() => {
       console.error(JSON.stringify({ listener: 'device-gateway', action: 'handoff-background', state: 'ERROR' }));
-    });
+    }).finally(() => finish?.());
   }, 1000) : undefined;
   handoffProgress?.unref();
 

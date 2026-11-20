@@ -6,6 +6,7 @@ import { GatewayStore } from '../src/store';
 import { LocalTaskAccess, type LocalAuthLike, type LocalTransportLike } from '../src/local-tasks';
 import { LocalTransportError } from '../src/local-transport';
 import { WindowsCloudLaunch } from '../src/windows-cloud-launch';
+import { UpdatePreparation } from '../src/update-preparation';
 
 it('publishes only owner-approved targets and recovers both replies across restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'windows-cloud-test-'));
@@ -157,13 +158,19 @@ it('publishes only owner-approved targets and recovers both replies across resta
   };
 
   let store = new GatewayStore(dir);
+  const update = new UpdatePreparation('test-boot', { ...transport, workerLocalRows: () => [] }, () => false);
   const build = () => {
     const catalog = new LocalTaskAccess({} as LocalAuthLike, transport, store);
     vi.spyOn(catalog, 'ownerCatalog').mockResolvedValue({ backendStoreId: 'store',
       projects: [{ projectId: 'project' }, { projectId: 'another-project' }], engines: [{ engineId: 'pi' }] });
-    return new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted);
+    return new WindowsCloudLaunch(store, catalog, transport, 'host', origin, session, grant, hosted, false, update);
   };
   try {
+    expect((await update.prepare('test-update')).state).toBe('held');
+    await build().tick();
+    expect(publications).toHaveLength(0);
+    expect(launches).toBe(0);
+    await update.release('test-update');
     await build().tick();
     expect(publications).toEqual([[target]]);
     expect(launches).toBe(1);
