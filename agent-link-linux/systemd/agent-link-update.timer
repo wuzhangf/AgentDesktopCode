@@ -1,10 +1,11 @@
 [Unit]
-Description=Check daily for an Agent Link update
+Description=Wake the Agent Link automatic update schedule
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=30m
+OnCalendar=*-*-* *:*:00
+AccuracySec=15s
 Persistent=true
+Unit=agent-link-update-scheduled.service
 
 [Install]
 WantedBy=timers.target

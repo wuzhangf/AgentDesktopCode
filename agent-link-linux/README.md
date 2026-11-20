@@ -59,7 +59,7 @@ sh install.sh
 ## Automatic updates
 
 An installation with a configured channel enables `agent-link-update.timer`.
-It checks daily with a randomized delay. When the systemd user manager
+It checks the channel daily with a randomized delay. When the systemd user manager
 stops at logout, the next logged-in session resumes scheduled checks.
 
 The updater downloads Linux targets for Ubuntu 24.04 x86_64. Its signed
@@ -69,9 +69,20 @@ rollback. An empty list allows recovery to the installed build. A
 withdrawn current build requires repair from a verified package.
 
 Use `systemctl --user disable --now agent-link-update.timer` to disable
-automatic checks. Use `systemctl --user start agent-link-update.service`
-to check and install an eligible update now. Results are available in
-`journalctl --user -u agent-link-update.service`.
+automatic checks. To turn them back on, run
+`systemctl --user enable --now "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-link-update.timer"`.
+Use `systemctl --user start agent-link-update.service`
+for an immediate check. Both paths require the gateway to reach a safe stop point.
+To limit automatic installation to local hours, create
+`${XDG_CONFIG_HOME:-$HOME/.config}/agent-link/update-policy.json` with
+`{"start":"23:30","end":"02:00"}`. Remove that file to allow installation at any time.
+Automatic checks can download outside the window and retain one verified archive
+while waiting for the configured hours or for active work to finish. The updater
+checks fresh signed metadata before reusing the archive and before stopping the gateway.
+See the schedule in `PREFIX/updates/automatic.json` and the logs in
+`journalctl --user -u agent-link-update-scheduled.service -u agent-link-update.service`.
+On older bridge installations, rerun the installer from this verified package
+to upgrade the scheduler. Existing channel trust and timer enablement are preserved.
 
 ## What the phone can do (free LAN tier)
 

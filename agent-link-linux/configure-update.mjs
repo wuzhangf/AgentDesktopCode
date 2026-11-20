@@ -6,6 +6,8 @@ import { readSlot, syncPath, writeAtomic } from './slots.mjs';
 
 const timer = 'agent-link-update.timer';
 const service = 'agent-link-update.service';
+const scheduled = 'agent-link-update-scheduled.service';
+const revision = '2\n';
 
 const quoted = (value, exec = true) => {
   const path = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%');
@@ -23,7 +25,9 @@ export function configureUpdater(requestedPrefix) {
 
   const bootstrap = join(program, 'updater');
   const installed = join(bootstrap, 'configured');
-  if (existsSync(installed)) return;
+  const configured = existsSync(installed);
+  if (configured && readFileSync(installed, 'utf8') === revision) return;
+  const timerWasActive = configured && systemctl('show', timer, '--property=ActiveState', '--value') === 'active';
   for (const directory of [updateRoot, bootstrap, join(updateRoot, 'metadata')]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (realpathSync(directory) !== directory) throw new Error('Update directories must be local to the installation');
@@ -50,17 +54,19 @@ export function configureUpdater(requestedPrefix) {
     '@UPDATER@': quoted(updater),
     '@PREFIX@': quoted(prefix),
   };
-  for (const name of [service, timer]) {
-    const template = readFileSync(join(slot, 'systemd', name), 'utf8');
+  for (const name of [service, scheduled, timer]) {
+    let template = readFileSync(join(slot, 'systemd', name === scheduled ? service : name), 'utf8');
+    if (name === scheduled) template = template.replace(/^ExecStart=.+$/m, '$& --scheduled');
     writeAtomic(join(unitDir, name), template.replace(/@[A-Z_]+@/g, token => values[token]), 0o644);
   }
   systemctl('daemon-reload');
-  if (!systemctl('show', service, '--property=FragmentPath', '--value')) {
-    systemctl('link', join(unitDir, service));
+  for (const name of [service, scheduled]) {
+    if (!systemctl('show', name, '--property=FragmentPath', '--value')) systemctl('link', join(unitDir, name));
   }
   // An absolute timer path works when the installed XDG config differs
   // from the environment that originally started the user manager.
-  systemctl('enable', '--now', join(unitDir, timer));
-  writeAtomic(installed, '1\n');
-  console.log('Agent Link daily update checks enabled');
+  if (!configured) systemctl('enable', '--now', join(unitDir, timer));
+  else if (timerWasActive) systemctl('restart', timer);
+  writeAtomic(installed, revision);
+  console.log('Agent Link update scheduler configured');
 }

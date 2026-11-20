@@ -47,7 +47,9 @@ if command -v systemctl >/dev/null 2>&1; then
     if [ -d "$PREFIX/program/updater" ]; then
         systemctl --user disable --now agent-link-update.timer 2>/dev/null || true
         systemctl --user disable --now agent-link-update.service 2>/dev/null || true
-        rm -f "$UNIT_DIR/agent-link-update.timer" "$UNIT_DIR/agent-link-update.service"
+        systemctl --user disable --now agent-link-update-scheduled.service 2>/dev/null || true
+        rm -f "$UNIT_DIR/agent-link-update.timer" "$UNIT_DIR/agent-link-update.service" \
+            "$UNIT_DIR/agent-link-update-scheduled.service"
     fi
     systemctl --user disable --now agent-link.service 2>/dev/null || true
 fi

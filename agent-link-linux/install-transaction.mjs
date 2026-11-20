@@ -192,7 +192,7 @@ export function installationPaths(requestedPrefix) {
   return { home, prefix, xdgConfig, config, unitDir, program: join(prefix, 'program'), updateRoot: join(prefix, 'updates') };
 }
 
-export async function install({ source, args, release, confirmCandidate, recoverOnly = false }) {
+export async function install({ source, args, release, confirmCandidate, authorizeStop, recoverOnly = false }) {
   const { home, prefix, config, unitDir, program, updateRoot } = installationPaths(args.prefix);
   const marker = join(program, 'pending');
   const journal = join(program, 'transaction.json');
@@ -242,7 +242,7 @@ export async function install({ source, args, release, confirmCandidate, recover
     }
     rmSync(journal);
     syncPath(program);
-    return install({ source, args, release, confirmCandidate, recoverOnly });
+    return install({ source, args, release, confirmCandidate, authorizeStop, recoverOnly });
   }
   // The marker is created before the journal and before touching live files.
   if (existsSync(marker)) {
@@ -279,6 +279,7 @@ export async function install({ source, args, release, confirmCandidate, recover
     try {
       if (active) {
         await reserve(desired, operationId);
+        authorizeStop?.();
         systemctl('stop', service);
         stopped = true;
       }
