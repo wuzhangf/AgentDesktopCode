@@ -20,6 +20,16 @@ For a Windows Host launched with a configured local ACS, set `DEVICE_GATEWAY_ACS
 
 **跨设备文件** opens the signed-in member's device and transfer lists. Choose a recipient before selecting a file, or choose a received file and save it to a location you control. File transfers use the member service and its encrypted object storage. Windows protects the device identity with DPAPI. The file window can resume an admitted upload and manage hosted retention.
 
+## Local scheduled tasks
+
+The Windows Host exposes the native Worker scheduler at the authenticated
+loopback owner path `/api/v2/personal-access/local-schedules`. It works in
+the CLI profile and with a configured ACS when a native Worker is available.
+Choose the native target from the owner capabilities catalog. Configure
+daily, weekly or interval rules and read their `/occurrences` for task IDs
+and states. Rules run locally while the Host is running, without member
+sign-in. ACS sessions use the existing ACS execution flow.
+
 ## Build
 
 Install gateway build dependencies with `npm --prefix device-gateway ci` at the repository root. Use the .NET 10 SDK, WiX 6, and the official [Node.js 26.13.1 Windows x64 ZIP](https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-x64.zip). Extract `node.exe` and `LICENSE` to the same directory. The packaging script verifies the binary against the pinned SHA-256 before copying it into the gateway and versioned update bootstrap.

@@ -884,7 +884,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.ownerCloudAcsTargets = () => cloudAcs.catalog('owner');
   }
   const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
-  if (linuxProfile && localTasks) {
+  if (localTasks && (opts.localCliOnly || ctx.acsHandoffBridge)) {
     ctx.localSchedules = new LocalSchedules(store, host.id, localTasks, ctx.updatePreparation);
   }
   const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly

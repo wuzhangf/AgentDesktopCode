@@ -86,3 +86,39 @@ describe('owner capabilities over HTTP', () => {
     },
   );
 });
+
+it.each(['local-cli', 'windows-acs', 'ordinary-acs'] as const)(
+  'exposes the native schedule owner endpoint for the %s profile only when it belongs to Link',
+  async profile => {
+    const root = mkdtempSync(join(tmpdir(), 'gateway-local-schedule-capability-'));
+    let built: BuiltGateway | undefined;
+    let owner: Server | undefined;
+    try {
+      const opts = profile === 'local-cli' ? { localCliOnly: true } : {
+        acsUrl: 'http://127.0.0.1:1',
+        acsHandoffBridge: profile === 'windows-acs',
+        acsOwnerToken: 'isolated-acs-token',
+      };
+      built = buildContext({ dataDir: join(root, 'store'), storeKey: randomBytes(32),
+        tls: provisionTlsMaterial(join(root, 'tls'), { commonName: 'localhost' }),
+        bind: '127.0.0.1', port: 9443, ownerBind: '127.0.0.1', ownerPort: 0,
+        ownerToken: 'fixture-owner-token', ownerClientToken: 'fixture-client-token', ...opts });
+      owner = createOwnerListener({ ctx: built.ctx, ownerToken: 'fixture-owner-token',
+        ownerClientToken: 'fixture-client-token', bind: '127.0.0.1', port: 0 });
+      await new Promise<void>(resolve => owner!.listen(0, '127.0.0.1', resolve));
+      const base = `http://127.0.0.1:${(owner.address() as AddressInfo).port}/api/v2/personal-access`;
+      const headers = { Authorization: 'Bearer fixture-owner-token', 'X-CodeAgent-Client-Token': 'fixture-client-token' };
+      const enabled = profile !== 'ordinary-acs';
+      const capabilities = await fetch(base + '/capabilities', { headers });
+      expect(await capabilities.json()).toMatchObject({ localSchedules: enabled });
+      expect((await fetch(base + '/local-schedules')).status).toBe(401);
+      const rules = await fetch(base + '/local-schedules', { headers });
+      expect(rules.status).toBe(enabled ? 200 : 404);
+      if (enabled) expect(await rules.json()).toMatchObject({ items: [] });
+    } finally {
+      if (owner) await close(owner);
+      built?.store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
