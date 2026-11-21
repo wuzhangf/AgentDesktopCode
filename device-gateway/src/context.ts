@@ -13,6 +13,7 @@ import type { OfflineOrigin } from './xagt/offline-origin.js';
 import type { OfflineTargetService } from './xagt/offline-target.js';
 import type { ImportedOrigin, OriginGrants } from './xagt/origin-grants.js';
 import type { HandoffMcp } from './xagt/handoff-mcp.js';
+import type { ControlMcp } from './xagt/control.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 export type JsonObject = Record<string, unknown>;
@@ -496,5 +497,6 @@ export interface GatewayContext {
   xagtOfflineTarget?: OfflineTargetService;
   xagtOrigins?: OriginGrants;
   xagtHandoff?: HandoffMcp;
+  xagtControl?: ControlMcp;
   config: GatewayConfig;
 }

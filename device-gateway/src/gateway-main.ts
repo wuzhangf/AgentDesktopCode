@@ -90,6 +90,7 @@ import { OfflineOrigin } from './xagt/offline-origin.js';
 import { OfflineTargetService } from './xagt/offline-target.js';
 import { OriginGrants } from './xagt/origin-grants.js';
 import { HandoffMcp } from './xagt/handoff-mcp.js';
+import { ControlMcp } from './xagt/control.js';
 import { createXagtHandlers } from './xagt/rpc.js';
 import { MemberCluster } from './member-cluster.js';
 
@@ -906,6 +907,8 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   if (memberCluster && ctx.xagt) {
     ctx.xagtOfflineOrigin = new OfflineOrigin(store, transport, memberCluster);
     ctx.xagtOfflineTarget = new OfflineTargetService({ store, transport, memberCluster });
+    if (localTasks) ctx.xagtControl = new ControlMcp({ store, local: localTasks, auth: devices,
+      membership: () => memberCluster.delegationIdentity(), storeKey: () => opts.storeKey });
     if (ctx.workHandoffs && localTasks) {
       memberCluster.handoffSigningKey(host.id, () => ctx.workHandoffs!.publicSigningKey());
       const handoffUpstream = ctx.acsHandoffBridge ? agentUpstream : undefined;

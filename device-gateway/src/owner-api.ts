@@ -234,6 +234,10 @@ export async function handleOwnerRoute(
       if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 200, body: await ctx.xagtHandoff.rpc(req.accessToken, jsonBody(req)) };
     }
+    if (req.path === '/api/xagt/v1/control' && req.method === 'POST') {
+      if (!ctx.xagtControl) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 200, body: await ctx.xagtControl.rpc(req.accessToken, jsonBody(req)) };
+    }
     if (!secureEquals(`Bearer ${creds.ownerToken}`, req.authorization)) fail('UNAUTHORIZED', 401);
     // Java registry.validateTokenWithRemainingTtl(LOCAL_OWNER_PRINCIPAL, ...)
     if (!secureEquals(creds.ownerClientToken, req.clientSessionHeader)) fail('UNAUTHORIZED', 401);
@@ -289,6 +293,18 @@ export async function handleOwnerRoute(
     if (method === 'POST' && path === `${ROOT}/mcp-handoff-actions`) {
       if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
       return { status: 201, body: await ctx.xagtHandoff.issue(jsonBody(req)) };
+    }
+    if (method === 'POST' && path === `${ROOT}/mcp-controls`) {
+      if (!ctx.xagtControl) fail('OPERATION_NOT_ALLOWED', 403);
+      return { status: 201, body: await ctx.xagtControl.issue(jsonBody(req)) };
+    }
+    if (parts[4] === 'mcp-controls' && ((method === 'DELETE' && parts.length === 6)
+      || (method === 'PUT' && parts.length === 7 && parts[6] === 'credentials'))) {
+      if (!ctx.xagtControl) fail('OPERATION_NOT_ALLOWED', 403);
+      id(parts[5]);
+      if (method === 'PUT') return { status: 200, body: await ctx.xagtControl.renew(parts[5], jsonBody(req)) };
+      ctx.xagtControl.revoke(parts[5]);
+      return { status: 204, body: null };
     }
     if (method === 'PUT' && parts.length === 7 && parts[4] === 'mcp-handoff-actions' && parts[6] === 'credentials') {
       if (!ctx.xagtHandoff) fail('OPERATION_NOT_ALLOWED', 403);
