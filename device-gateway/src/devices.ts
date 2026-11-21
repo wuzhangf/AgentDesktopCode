@@ -17,12 +17,14 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import {
   constantEqual,
+  exact,
   fail,
   GatewayError,
   hash,
   id,
   normalizeScope,
   permitsLaunch,
+  permitsLaunchTarget,
   scopeContains,
   seal,
   secret,
@@ -32,6 +34,7 @@ import {
   type Host,
   type Invite,
   type LaunchScope,
+  type LocalScheduleGrant,
   type Pairing,
   type Resource,
   type ScopeChange,
@@ -42,6 +45,7 @@ import {
   acs,
   checkedLaunchScopes,
   checkedResources,
+  validLaunchScope,
   validateResourceActions,
   validateScope,
 } from './scope.js';
@@ -648,7 +652,7 @@ export class Devices {
           return this.unsealJson<Json>(d.envelope!);
         }
         d.state = 'REVOKED';
-        d.revision++;
+        this.advanceDeviceRevision(d);
         d.envelope = undefined;
         this.putScope('device', d.id, d);
         return { reused: true, deviceGrantId: d.id };
@@ -761,6 +765,38 @@ export class Devices {
     });
   }
 
+  localScheduleGrant(deviceId: string): LocalScheduleGrant {
+    id(deviceId);
+    const device = this.store.get<Device>('device', deviceId);
+    if (!device) fail('NOT_FOUND', 404);
+    const grant = device.localScheduleGrant;
+    return { revision: grant?.revision ?? 0,
+      launchScopes: grant?.deviceRevision === device.revision ? grant.launchScopes : [] };
+  }
+
+  setLocalScheduleGrant(deviceId: string, value: Json): LocalScheduleGrant {
+    const body = exact(value, 'expectedRevision', 'launchScopes');
+    const revision = body.expectedRevision;
+    if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) fail('INVALID_REQUEST', 400);
+    if (!Array.isArray(body.launchScopes) || body.launchScopes.length > SCOPE_RESOURCE_LIMIT
+        || !body.launchScopes.every(validLaunchScope)) fail('INVALID_SCOPE', 400);
+    const launchScopes = checkedLaunchScopes(body.launchScopes);
+    return this.store.transaction(() => {
+      const current = this.localScheduleGrant(deviceId);
+      if (current.revision !== revision) fail('REVISION_CONFLICT', 409);
+      const device = this.activeDevice(deviceId);
+      if (launchScopes.some(target => target.engineId === 'macos'
+          || !device.actions?.includes('LAUNCH') || !permitsLaunchTarget(device, target))) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
+      if (JSON.stringify(launchScopes) === JSON.stringify(current.launchScopes)) return current;
+      const grant = { revision: revision + 1, launchScopes };
+      device.localScheduleGrant = { ...grant, deviceRevision: device.revision };
+      this.putScope('device', deviceId, device);
+      return grant;
+    });
+  }
+
   revoke(deviceId: string): void {
     id(deviceId);
     this.store.transaction(() => {
@@ -768,7 +804,7 @@ export class Devices {
       if (d == null) fail('NOT_FOUND', 404);
       if (d.state !== 'REVOKED') {
         d.state = 'REVOKED';
-        d.revision++;
+        this.advanceDeviceRevision(d);
         d.envelope = undefined;
         this.putScope('device', deviceId, d);
       }
@@ -796,7 +832,7 @@ export class Devices {
       }
       if ((d.resources ?? []).length >= SCOPE_RESOURCE_LIMIT) fail('SCOPE_RESOURCE_LIMIT', 429);
       d.resources = [...(d.resources ?? []), { kind: 'WORKER_LOCAL', backendStoreId, taskId }];
-      d.revision++;
+      this.advanceDeviceRevision(d);
       this.putScope('device', deviceId, d);
     });
   }
@@ -815,7 +851,7 @@ export class Devices {
       }
       if ((d.resources ?? []).length >= SCOPE_RESOURCE_LIMIT) fail('SCOPE_RESOURCE_LIMIT', 429);
       d.resources = [...(d.resources ?? []), { kind: 'ACS_SESSION', backendStoreId: this.storeId, sessionId }];
-      d.revision++;
+      this.advanceDeviceRevision(d);
       this.putScope('device', deviceId, d);
     });
   }
@@ -918,7 +954,7 @@ export class Devices {
       d.launchScopes = launches;
       d.actions = sortedActions(actions);
       d.scopeVersion = 2;
-      d.revision++;
+      this.advanceDeviceRevision(d);
       this.putScope('device', deviceId, d);
       const result = this.deviceView(d);
       const change: ScopeChange = { fingerprint: fp, result: JSON.stringify(result), at: Date.now() };
@@ -1046,6 +1082,19 @@ export class Devices {
       launchScopes: d.launchScopes ?? [],
       lastSeenAt: this.seen.get(d.id) ?? null,
     };
+  }
+
+  private advanceDeviceRevision(device: Device): void {
+    const grant = device.localScheduleGrant;
+    // A previous binary can update device scope without understanding this grant.
+    // Leave any untracked revision unusable until the owner explicitly regrants.
+    if (grant?.deviceRevision === device.revision) {
+      const launchScopes = device.state === 'ACTIVE' && device.actions?.includes('LAUNCH')
+        ? grant.launchScopes.filter(target => permitsLaunchTarget(device, target)) : [];
+      device.localScheduleGrant = { launchScopes, deviceRevision: device.revision + 1,
+        revision: grant.revision + Number(launchScopes.length !== grant.launchScopes.length) };
+    }
+    device.revision++;
   }
 
   private active(d: Device | null | undefined): asserts d is Device {

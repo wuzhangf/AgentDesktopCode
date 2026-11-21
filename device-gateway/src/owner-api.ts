@@ -9,6 +9,7 @@
  *   GET  /api/v2/personal-access/devices                      → devices()
  *   POST /api/v2/personal-access/pairing-requests/{id}/decisions  exact{approve}
  *   PUT  /api/v2/personal-access/devices/{id}/scope           sessions|resources form
+ *   GET|PUT /api/v2/personal-access/devices/{id}/local-schedule-grant
  *   DELETE /api/v2/personal-access/devices/{id}               revoke + release → 204
  *   POST /api/v2/personal-access/mcp-readers                  → mint xagt reader grant (+token once)
  *   GET  /api/v2/personal-access/mcp-readers                  → list grants (no tokens)
@@ -29,7 +30,7 @@
  * is accepted as an alias by the listener.
  */
 import { constantEqual, exact, fail, GatewayError, id, isRecord, resourceKey, text } from './protocol.js';
-import type { LaunchScope, Resource } from './protocol.js';
+import type { LaunchScope, LocalScheduleGrant, Resource } from './protocol.js';
 import { checkedLaunchScopes, checkedResources } from './scope.js';
 import type {
   GatewayAuth,
@@ -50,6 +51,8 @@ type OwnerAuth = GatewayAuth & {
   decide?(rid: string, approve: boolean): MaybePromise<JsonObject>;
   pairingApprovalRequired?(): boolean;
   setPairingApprovalRequired?(required: boolean): void;
+  localScheduleGrant?(deviceId: string): LocalScheduleGrant;
+  setLocalScheduleGrant?(deviceId: string, body: JsonObject): LocalScheduleGrant;
 };
 
 const ROOT = '/api/v2/personal-access';
@@ -345,6 +348,15 @@ export async function handleOwnerRoute(
 
     const scheduleRoot = `${ROOT}/local-schedules`;
     const scheduler = ctx.localSchedules;
+    if (scheduler && parts.length === 7 && parts[4] === 'devices' && parts[6] === 'local-schedule-grant') {
+      const auth = ctx.auth as OwnerAuth;
+      if (method === 'GET' && auth.localScheduleGrant) {
+        return { status: 200, body: auth.localScheduleGrant(parts[5]) };
+      }
+      if (method === 'PUT' && auth.setLocalScheduleGrant) {
+        return { status: 200, body: auth.setLocalScheduleGrant(parts[5], jsonBody(req)) };
+      }
+    }
     if (scheduler && path === scheduleRoot) {
       if (method === 'GET') return { status: 200, body: scheduler.list() };
       if (method === 'POST') return { status: 201, body: await scheduler.create(jsonBody(req)) };

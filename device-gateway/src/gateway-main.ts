@@ -885,7 +885,7 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
   }
   const linuxProfile = process.platform === 'linux' && opts.localCliOnly;
   if (localTasks && (opts.localCliOnly || ctx.acsHandoffBridge)) {
-    ctx.localSchedules = new LocalSchedules(store, host.id, localTasks, ctx.updatePreparation);
+    ctx.localSchedules = new LocalSchedules(store, host.id, localTasks, ctx.updatePreparation, Date.now, devices);
   }
   const memberSession = linuxProfile && !cloudSession && !cloudRecoveryOnly
     ? env('DEVICE_GATEWAY_LINUX_MEMBER_SESSION') : undefined;

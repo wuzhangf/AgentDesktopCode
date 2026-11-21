@@ -183,6 +183,29 @@ An interrupted submission stays `submitting` until its original Worker
 receipt can be read. These rules are installed and executed on this Link
 and use its existing local SQLite state.
 
+For a paired phone to create recurring rules, look up its `deviceGrantId`
+with `GET /api/v2/personal-access/devices`. Read or update its schedule
+permission with `GET` or `PUT` at
+`/api/v2/personal-access/devices/{deviceGrantId}/local-schedule-grant`.
+`PUT` takes `expectedRevision` from the grant response and a
+`launchScopes` array containing only native targets already authorized
+for this device. A new grant has revision 0. An empty array withdraws
+permission. Removing a target from ordinary device scope also removes it
+from the schedule grant. Rule execution stops on a grant revision change
+or when the device expires or is revoked. After a new grant is in place,
+send an explicit `paused: false` update to resume a rule from its next
+future trigger. The owner can still read original Worker receipts.
+An older Link build leaves paired rules dormant. If that build changes
+ordinary device scope, set the schedule permission again after upgrading
+and explicitly resume the rule.
+
+Control clients use the paired bearer at `/personal/v1/local-schedules`
+with the same rule operations. The list includes the allowed `targets`
+and rules created by that phone. A rule requiring fresh authorization
+reports `authorizationRequired: true` and `nextFireAt: null`. The
+host advertises `capabilities.localSchedules` to phones with an active
+grant. This works over a direct connection with no member sign-in.
+
 ## Owner operations
 
 Owner API is loopback-only at `http://127.0.0.1:$OWNER_PORT` with

@@ -13,6 +13,7 @@
  *   GET  /personal/v1/host                                auth.host + capabilities merge
  *   GET  /personal/v1/inbox[/{id}]                        requestRefresh + list/detail
  *   /personal/v1/local-tasks[/**]                         localTasks.remote passthrough
+ *   /personal/v1/local-schedules[/**]                     scoped native schedules
  *   GET  /personal/v1/input-capabilities                  /api/v2/capabilities projection
  *   POST /personal/v1/transcriptions                      multipart → transcription.submit → 202
  *   GET|POST /personal/v1/transcriptions/{id}[/cancel]    get/cancel
@@ -547,6 +548,7 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     capabilities.manageExecutionPolicy = actions.has('POLICY');
     capabilities.localTasks = ctx.localTasks !== undefined;
     capabilities.launch = ctx.localTasks !== undefined && actions.has('LAUNCH');
+    if (ctx.localSchedules) capabilities.localSchedules = ctx.localSchedules.hasPhoneGrant(device.id);
     capabilities.create = ctx.agentSessions !== undefined && actions.has('CREATE');
     capabilities.sessionModelSelection = ctx.agentSessions !== undefined
       && (actions.has('CREATE') || (device.sessions ?? []).length > 0);
@@ -609,6 +611,31 @@ const route = async (ctx: GatewayContext, req: HttpRequest): Promise<HttpRespons
     const approvalId = path.split('/')[4];
     const out = await ctx.approvals.decide(device, approvalId, jsonBody(req));
     return { status: 200, body: out };
+  }
+
+  const scheduleRoot = '/personal/v1/local-schedules';
+  if (path === scheduleRoot || path.startsWith(scheduleRoot + '/')) {
+    const scheduler = ctx.localSchedules;
+    if (!scheduler) fail('NOT_FOUND', 404);
+    if (path === scheduleRoot) {
+      if (method === 'GET') return { status: 200, body: scheduler.list(device.id) };
+      if (method === 'POST') return { status: 201, body: await scheduler.create(jsonBody(req), device.id) };
+    } else {
+      const [ruleId, action, extra] = path.slice(scheduleRoot.length + 1).split('/');
+      if (ruleId && extra === undefined) {
+        if (method === 'GET' && action === undefined) return { status: 200, body: scheduler.get(ruleId, device.id) };
+        if (method === 'GET' && action === 'occurrences') {
+          return { status: 200, body: scheduler.occurrences(ruleId, device.id) };
+        }
+        if (method === 'PUT' && action === undefined) {
+          return { status: 200, body: await scheduler.update(ruleId, jsonBody(req), false, device.id) };
+        }
+        if (method === 'POST' && action === 'remove') {
+          return { status: 200, body: await scheduler.update(ruleId, jsonBody(req), true, device.id) };
+        }
+      }
+    }
+    fail('NOT_FOUND', 404);
   }
 
   if (path === '/personal/v1/local-tasks' || path.startsWith('/personal/v1/local-tasks/')) {

@@ -109,6 +109,11 @@ export interface LaunchScope {
   engineId: string;             // 'pi' | 'codex' | 'macos'
 }
 
+export interface LocalScheduleGrant {
+  revision: number;
+  launchScopes: LaunchScope[];
+}
+
 export const resourceKey = (r: Resource): string =>
   `${r.kind}:${r.backendStoreId}:${r.kind === 'ACS_SESSION' ? r.sessionId : r.taskId}`;
 
@@ -148,6 +153,9 @@ export const scopeContains = (scope: ScopeRecord, kind: string, store: string, t
 export const permitsLaunch = (scope: ScopeRecord, store: string, project: string, engine: string): boolean =>
   (scope.launchScopes ?? []).some((s) =>
     s.backendStoreId === store && s.projectId === project && s.engineId === engine);
+
+export const permitsLaunchTarget = (scope: ScopeRecord, target: LaunchScope): boolean =>
+  permitsLaunch(scope, target.backendStoreId, target.projectId, target.engineId);
 
 // ---------------------------------------------------------------------------
 // Persisted record kinds (generic kind→payload store).
@@ -200,6 +208,7 @@ export interface Device extends ScopeRecord {
   envelope?: string;
   scopeVersion: number;
   revision: number;
+  localScheduleGrant?: LocalScheduleGrant & { deviceRevision: number };
   accessExpiry: number;
   absoluteExpiry: number;
   idleExpiry: number;
