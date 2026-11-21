@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { CloudAcs, cloudIdentifier as identifier } from './cloud-acs.js';
 import { LocalTaskAccess, type LocalAuthLike, type LocalStoreLike, type LocalTransportLike } from './local-tasks.js';
-import { fail, GatewayError, hash, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
+import { exact, fail, GatewayError, hash, id, isRecord, permitsLaunch, scopeContains, type Device, type LaunchScope } from './protocol.js';
 import type { TaskFileBinding } from './sage-link-files.js';
 import type { UpdatePreparation } from './update-preparation.js';
 import type { CloudMemberIdentity, LinuxMemberEnrollment } from './linux-member.js';
+import type { LocalSchedules } from './local-schedules.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -14,6 +15,7 @@ const actionKind = 'link.task.action.v2';
 const journal = 'windows-cloud-launch';
 const actions = 'windows-cloud-action';
 const fileGrantSchema = 'windows-cloud-launch-grant/1';
+const ownershipSchema = 'link-schedule-ownership/1';
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
 
 interface Session extends CloudMemberIdentity {
@@ -100,6 +102,7 @@ export class WindowsCloudLaunch {
   private stopped = true;
   private ticking = false;
   private backoff = 3000;
+  private readonly scheduleTransfers = new Set<string>();
   private readonly abort = new AbortController();
 
   constructor(
@@ -275,6 +278,91 @@ export class WindowsCloudLaunch {
     }
     if (!isRecord(reply)) fail('CLOUD_RESPONSE_INVALID', 502);
     return reply;
+  }
+
+  async transferSchedule(scheduler: LocalSchedules, ruleId: string, value: Json): Promise<Json> {
+    id(ruleId);
+    const { destination, requestKey, expectedRevision } = exact(value, 'destination', 'requestKey', 'expectedRevision');
+    if (!identifier(requestKey) || (destination !== 'cloud' && destination !== 'local')
+        || typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision)
+        || expectedRevision < 1 || expectedRevision >= 2_147_483_647) fail('INVALID_REQUEST', 400);
+    const session = this.session();
+    if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+    if (this.scheduleTransfers.has(ruleId)) fail('OPERATION_IN_PROGRESS', 409);
+    this.scheduleTransfers.add(ruleId);
+    try {
+      const base = '/schedule-ownership';
+      const path = `${base}/${ruleId}`;
+      const command = { requestKey, hostRef: this.hostId };
+      const receipt = (reply: Json): number => {
+        const epoch = reply.epoch;
+        if (reply.schemaVersion !== ownershipSchema || reply.ruleId !== ruleId || reply.requestKey !== requestKey
+            || reply.owner !== destination || reply.hostRef !== this.hostId || reply.instanceId !== session.instanceId
+            || typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 2) fail('CLOUD_RESPONSE_INVALID', 502);
+        if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+        return epoch;
+      };
+      if (destination === 'local') {
+        const status = await this.hosted(session, 'GET', `${path}?hostRef=${encodeURIComponent(this.hostId)}`);
+        if (status.schemaVersion !== ownershipSchema || status.ruleId !== ruleId) fail('CLOUD_RESPONSE_INVALID', 502);
+        const configuration = isRecord(status.receipt) && status.receipt.owner === 'local'
+          && status.receipt.requestKey === requestKey ? status.receipt.configuration : status.configuration;
+        if (!isRecord(configuration)) fail('SCHEDULE_OWNERSHIP_CONFLICT', 409);
+        await scheduler.checkIncomingOwnership(configuration);
+        const reply = await this.hosted(session, 'POST', `${path}/release`, { ...command, expectedRevision });
+        const epoch = receipt(reply);
+        if (!isRecord(reply.configuration)) fail('CLOUD_RESPONSE_INVALID', 502);
+        return { ...reply, rule: await scheduler.acquireOwnership(ruleId, session.scope, requestKey, epoch, reply.configuration) };
+      }
+
+      const pending = scheduler.pendingOwnershipRelease(ruleId, session.scope, requestKey, expectedRevision);
+      if (pending) {
+        // Recover an accepted import even if the cloud grant has since expired.
+        let status;
+        try { status = await this.hosted(session, 'GET', `${path}?hostRef=${encodeURIComponent(this.hostId)}`); }
+        catch (error) {
+          if (!(error instanceof GatewayError) || error.httpStatus !== 404) throw error;
+        }
+        if (isRecord(status?.receipt) && status.receipt.owner === 'cloud' && status.receipt.requestKey === requestKey) {
+          if (receipt(status.receipt) !== Number(pending.sourceEpoch) + 1) fail('CLOUD_RESPONSE_INVALID', 502);
+          return status.receipt;
+        }
+      }
+      const target = scheduler.get(ruleId).target;
+      const grant = this.grant(session);
+      const native = await this.nativeTargets(grant);
+      if (!isRecord(target) || (this.ownerGrantStorage && !grant) || !native.some(entry =>
+        entry.backendId === target.backendStoreId
+          && entry.projectId === target.projectId && entry.engineId === target.engineId)) {
+        fail('TARGET_UNAVAILABLE', 409);
+      }
+      // A restart can briefly publish an empty catalog before Workers attach.
+      // Confirm current coverage at Hosted before freezing the local rule.
+      const preflight = async (): Promise<void> => {
+        const support = await this.hosted(session, 'POST', `${base}/preflight`, target);
+        if (support.schemaVersion !== ownershipSchema) fail('CLOUD_RESPONSE_INVALID', 502);
+      };
+      try { await preflight(); }
+      catch (error) {
+        if (!(error instanceof GatewayError) || error.code !== 'TARGET_UNAVAILABLE' || !grant || this.recoveryOnly) {
+          throw error;
+        }
+        try {
+          if (!await this.publish(session, grant, await this.targets(session, grant))) fail('CLOUD_GRANT_CHANGED', 409);
+        } catch (publishError) {
+          if (!(publishError instanceof GatewayError) || publishError.code !== 'STALE_TASK_STATE') throw publishError;
+        }
+        await preflight();
+      }
+      if (this.ownerGrantStorage && this.grant(session)?.revision !== grant?.revision) fail('CLOUD_GRANT_CHANGED', 409);
+      if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+      const release = pending ?? scheduler.releaseOwnership(ruleId, session.scope, requestKey, expectedRevision);
+      const reply = await this.hosted(session, 'PUT', `${path}/acquire`, { ...command, ...release });
+      if (receipt(reply) !== Number(release.sourceEpoch) + 1) fail('CLOUD_RESPONSE_INVALID', 502);
+      return reply;
+    } finally {
+      this.scheduleTransfers.delete(ruleId);
+    }
   }
 
   private save(row: Delivery): void { this.store.put(journal, row.id, row); }

@@ -133,9 +133,28 @@ async function scheduleGrant() {
   }
 }
 
+async function scheduleTransfer() {
+  const usage = 'Usage: sh install.sh schedule-transfer local|cloud RULE_ID --request-key KEY --expected-revision REV';
+  const { values, positionals } = parseArgs({ args: process.argv.slice(3), allowPositionals: true,
+    options: { 'request-key': { type: 'string' }, 'expected-revision': { type: 'string' } } });
+  const [destination, ruleId] = positionals;
+  const requestKey = values['request-key'];
+  const revision = values['expected-revision'];
+  const expectedRevision = Number(revision);
+  if (positionals.length !== 2 || !['local', 'cloud'].includes(destination) ||
+      !identifier.test(ruleId ?? '') || !identifier.test(requestKey ?? '') ||
+      !/^\d+$/.test(revision ?? '') || expectedRevision < 1 || expectedRevision >= 2_147_483_647) {
+    throw new Error(usage);
+  }
+  const owner = ownerClient('SCHEDULE_TRANSFER_REQUEST_FAILED');
+  const receipt = await owner('POST', `/schedule-ownership/${ruleId}`, { destination, requestKey, expectedRevision });
+  console.log(JSON.stringify(receipt, null, 2));
+}
+
 async function main() {
   if (process.argv[2] === 'member') return member();
   if (process.argv[2] === 'schedule-grant') return scheduleGrant();
+  if (process.argv[2] === 'schedule-transfer') return scheduleTransfer();
   if (process.argv[2] === 'diagnostics') {
     const { values } = parseArgs({ args: process.argv.slice(3),
       options: { prefix: { type: 'string' }, output: { type: 'string' } } });
@@ -162,7 +181,8 @@ async function main() {
 }
 
 main().catch(error => {
-  const command = ['member', 'schedule-grant', 'diagnostics'].includes(process.argv[2]) ? process.argv[2] : 'install';
+  const command = ['member', 'schedule-grant', 'schedule-transfer', 'diagnostics'].includes(process.argv[2])
+    ? process.argv[2] : 'install';
   console.error(`agent-link ${command}: ${error.message}`);
   process.exitCode = 1;
 });

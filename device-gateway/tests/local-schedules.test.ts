@@ -51,9 +51,50 @@ function fixture() {
   const build = () => new LocalSchedules(store, 'linux-link', tasks, undefined, () => now);
   return { build, advance: (ms: number) => { now += ms; }, count: () => submissions,
     reveal: () => { revealReceipt = true; }, onPreflight: (hook: () => Promise<void>) => { afterPreflight = hook; },
+    stored: (kind: string, ruleId: string) => store.get<Record<string, unknown>>(kind, ruleId),
     restart: () => { store.close(); store = new GatewayStore(root); return build(); },
     close: () => { store.close(); rmSync(root, { recursive: true, force: true }); } };
 }
+
+it('fences the old store kind, recovers an ownership transfer and never reuses a trigger sequence', async () => {
+  const f = fixture();
+  try {
+    let scheduler = f.build();
+    const ruleId = (await scheduler.create(request)).ruleId as string;
+    f.advance(300_000);
+    await scheduler.tick();
+    expect(() => scheduler.releaseOwnership(ruleId, 'member-a', 'outbound', 1))
+      .toThrowError(expect.objectContaining({ code: 'SCHEDULE_WORK_IN_PROGRESS' }));
+    f.reveal();
+    await scheduler.tick();
+    await scheduler.tick();
+    expect(f.count()).toBe(1);
+
+    const release = scheduler.releaseOwnership(ruleId, 'member-a', 'outbound', 1);
+    expect(release).toMatchObject({ sourceEpoch: 1, configuration: { sequence: 1, paused: false } });
+    expect(f.stored('local-schedule-rules', ruleId)).toMatchObject({ removed: true, paused: true });
+    expect(scheduler.get(ruleId)).toMatchObject({ removed: true, transferred: true });
+    scheduler = f.restart();
+    expect(scheduler.pendingOwnershipRelease(ruleId, 'member-a', 'outbound', 1)).toEqual(release);
+    expect(() => scheduler.releaseOwnership(ruleId, 'member-b', 'outbound', 1))
+      .toThrowError(expect.objectContaining({ code: 'CLOUD_SESSION_CHANGED' }));
+
+    const returned = { ...(release.configuration as Record<string, unknown>), sequence: 2 };
+    await expect(scheduler.acquireOwnership(ruleId, 'member-a', 'inbound', 2, returned))
+      .rejects.toMatchObject({ code: 'SCHEDULE_OWNERSHIP_CONFLICT' });
+    const adopted = await scheduler.acquireOwnership(ruleId, 'member-a', 'inbound', 3, returned);
+    expect(adopted).toMatchObject({ ruleId, sequence: 2, epoch: 3, removed: false });
+    expect(f.stored('local-schedule-rules', ruleId)).toMatchObject({ removed: true, paused: true });
+    expect((scheduler.list().items as unknown[])).toHaveLength(1);
+    expect(await scheduler.acquireOwnership(ruleId, 'member-a', 'inbound', 3, returned)).toEqual(adopted);
+    f.advance(300_000);
+    await scheduler.tick();
+    expect(f.count()).toBe(2);
+    expect((scheduler.occurrences(ruleId).items as Array<{ sequence: number }>).map(o => o.sequence)).toEqual([3, 1]);
+  } finally {
+    f.close();
+  }
+});
 
 it('uses the Hosted DST gap and first-fold semantics for local wall-clock schedules', () => {
   const timezone = 'America/New_York';

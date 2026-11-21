@@ -21,7 +21,7 @@ systemctl --user show-environment >/dev/null 2>&1 \
 
 # These commands use the running gateway without taking the installation lock.
 case "${1:-}" in
-    member|schedule-grant) exec "$RUNTIME" "$HERE/install.mjs" "$@" ;;
+    member|schedule-grant|schedule-transfer) exec "$RUNTIME" "$HERE/install.mjs" "$@" ;;
 esac
 mkdir -p "$UNIT_DIR"
 exec flock -F -n -E 73 "$UNIT_DIR/.agent-link.install.lock" "$RUNTIME" "$HERE/install.mjs" "$@"

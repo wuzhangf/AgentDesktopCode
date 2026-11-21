@@ -216,6 +216,23 @@ An older Link build leaves paired rules dormant. If that build changes
 ordinary device scope, set the schedule permission again after upgrading
 and explicitly resume the rule.
 
+For a Native text schedule assigned to this member Link, use the installed
+command to move the same rule between cloud and local execution.
+
+```sh
+sh "$link_cli" schedule-transfer local RULE_ID --request-key move-to-local-1 --expected-revision 1
+sh "$link_cli" schedule-transfer cloud RULE_ID --request-key move-to-cloud-1 --expected-revision 1
+```
+
+Use the revision from the source rule's most recent detail. The source must
+finish or reconcile its existing triggers before it releases the rule. Return
+to the original member and Link identity if there is an interruption, and
+rerun the same command with the original request key and revision. Use a new
+request key for the next move. The rule ID, schedule, trigger cursor and pause
+setting carry over. A locally owned rule continues on this Link without the
+Hosted connection. A cloud-owned rule needs the member entitlement and the
+selected target's cloud launch authorization.
+
 Control clients use the paired bearer at `/personal/v1/local-schedules`
 with the same rule operations. The list includes the allowed `targets`
 and rules created by that phone. A rule requiring fresh authorization

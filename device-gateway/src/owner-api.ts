@@ -364,6 +364,12 @@ export async function handleOwnerRoute(
 
     const scheduleRoot = `${ROOT}/local-schedules`;
     const scheduler = ctx.localSchedules;
+    if (ctx.scheduleOwnership && parts.length === 6 && parts[4] === 'schedule-ownership' && method === 'POST') {
+      const finish = ctx.updatePreparation?.admit();
+      try {
+        return { status: 200, body: await ctx.scheduleOwnership(parts[5], jsonBody(req)) };
+      } finally { finish?.(); }
+    }
     if (scheduler && parts.length === 7 && parts[4] === 'devices' && parts[6] === 'local-schedule-grant') {
       const auth = ctx.auth as OwnerAuth;
       if (method === 'GET' && auth.localScheduleGrant) {
@@ -396,6 +402,7 @@ export async function handleOwnerRoute(
       out.acsSessionCreate = ctx.agentSessions !== undefined;
       out.nativeLocalHandoffs = ctx.nativeLocalHandoffs === true;
       out.localSchedules = ctx.localSchedules !== undefined;
+      out.scheduleOwnership = ctx.scheduleOwnership !== undefined;
       // The tray's member-center entry reads this same field on the owner
       // surface — phone-api already publishes it (MC-R06).
       out.dailyOrigin = ctx.commercial?.dailyOrigin ?? null;

@@ -18,6 +18,13 @@ type Configuration = {
   catchUpSeconds: number;
 };
 type PhoneBinding = { deviceId: string; grantRevision: number };
+type Ownership = {
+  scope: string;
+  epoch: number;
+  requestKey: string;
+  cloud: Json;
+  release?: { expectedRevision: number; configuration: Json };
+};
 type Rule = Configuration & {
   ruleId: string;
   requestDigest: string;
@@ -28,6 +35,7 @@ type Rule = Configuration & {
   nextFire: number;
   sequence: number;
   phone?: PhoneBinding;
+  ownership?: Ownership;
 };
 type Occurrence = {
   id: string;
@@ -40,6 +48,7 @@ type Occurrence = {
   instruction: string;
   requestKey: string;
   phone?: PhoneBinding;
+  ownershipEpoch?: number;
   state: 'pending' | 'submitting' | 'accepted' | 'succeeded' | 'failed' | 'cancelled'
     | 'skipped' | 'missed' | 'rejected';
   taskId?: string;
@@ -53,7 +62,12 @@ const active = 'local-schedule-active';
 // dispatch records invisible to those schedulers if an update rolls back.
 const pairedRules = 'local-schedule-phone-rules';
 const pairedActive = 'local-schedule-phone-active';
-const activeKind = (occurrence: Occurrence) => occurrence.phone ? pairedActive : active;
+// Old gateways see the outgoing rule as removed. Incoming rules and their
+// unsettled commands live in kinds an old scheduler cannot process.
+const transferredRules = 'local-schedule-transferred-rules';
+const transferredActive = 'local-schedule-transferred-active';
+const activeKind = (occurrence: Occurrence) => occurrence.ownershipEpoch !== undefined
+  ? transferredActive : occurrence.phone ? pairedActive : active;
 const history = (ruleId: string) => `local-schedule-history:${ruleId}`;
 const live = new Set<Occurrence['state']>(['pending', 'submitting', 'accepted']);
 const intervalMillis = 5_000;
@@ -192,32 +206,37 @@ export class LocalSchedules {
   }
 
   private view(rule: Rule): Json {
-    const { requestDigest: _digest, nextFire, phone, ...publicRule } = rule;
+    const { requestDigest: _digest, nextFire, phone, ownership, ...publicRule } = rule;
     const authorizationRequired = !this.canRun(rule);
     return { ...publicRule,
       ...(phone && { deviceGrantId: phone.deviceId, authorizationRequired }),
+      ...(ownership && { epoch: ownership.epoch, ...(ownership.release && { transferred: true }) }),
       nextFireAt: rule.removed || authorizationRequired ? null : new Date(nextFire).toISOString() };
   }
 
   list(deviceId?: string): Json {
     const grant = deviceId ? this.requirePhoneGrant(deviceId) : undefined;
-    const items = (grant ? this.store.list<Rule>(pairedRules) : this.allRules()).filter(rule => !rule.removed &&
+    const items = this.allRules().filter(rule => !rule.removed &&
       (!grant || (rule.phone?.deviceId === deviceId && permitsLaunchTarget(grant, rule.target))));
     return { schemaVersion: 'link-local-schedule-list/1',
       items: items.map(rule => this.view(rule)), ...(grant && { targets: grant.launchScopes }) };
   }
 
   private allRules(): Rule[] {
-    return [...this.store.list<Rule>(rules), ...this.store.list<Rule>(pairedRules)];
+    const transferred = this.store.list<Rule>(transferredRules);
+    const replaced = new Set(transferred.map(rule => rule.ruleId));
+    return [...this.store.list<Rule>(rules), ...this.store.list<Rule>(pairedRules)]
+      .filter(rule => !replaced.has(rule.ruleId)).concat(transferred);
   }
 
   private saveRule(rule: Rule): void {
-    this.store.put(rule.phone ? pairedRules : rules, rule.ruleId, rule);
+    this.store.put(rule.ownership ? transferredRules : rule.phone ? pairedRules : rules, rule.ruleId, rule);
   }
 
   private requireRule(ruleId: string, deviceId?: string): Rule {
     id(ruleId);
-    const value = this.store.get<Rule>(pairedRules, ruleId) ?? (!deviceId ? this.store.get<Rule>(rules, ruleId) : undefined);
+    const value = this.store.get<Rule>(transferredRules, ruleId) ?? this.store.get<Rule>(pairedRules, ruleId)
+      ?? (!deviceId ? this.store.get<Rule>(rules, ruleId) : undefined);
     if (!value || (deviceId && value.phone?.deviceId !== deviceId)) fail('NOT_FOUND', 404);
     if (deviceId) this.requirePhoneGrant(deviceId, value.target);
     return value;
@@ -258,7 +277,7 @@ export class LocalSchedules {
     const replay = (): Rule | undefined => {
       const prior = this.store.get<Rule>(deviceId ? pairedRules : rules, ruleId);
       if (prior && prior.requestDigest !== requestDigest) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
-      return prior;
+      return prior && (this.store.get<Rule>(transferredRules, ruleId) ?? prior);
     };
     if (deviceId) this.requirePhoneGrant(deviceId, config.target);
     const prior = replay();
@@ -315,6 +334,100 @@ export class LocalSchedules {
     });
   }
 
+  private activeOccurrences(): Occurrence[] {
+    return [active, pairedActive, transferredActive].flatMap(kind => this.store.list<Occurrence>(kind));
+  }
+
+  private handoffConfiguration(rule: Rule): Json {
+    return {
+      ...Object.fromEntries(configFields.map(field => [field, rule[field as keyof Configuration]])),
+      sequence: rule.sequence, paused: rule.paused, nextFireAt: new Date(rule.nextFire).toISOString(),
+      cloud: rule.ownership?.cloud ?? {},
+    };
+  }
+
+  pendingOwnershipRelease(ruleId: string, scope: string, requestKey: string, expectedRevision: number): Json | undefined {
+    if (this.requireRule(ruleId).ownership?.release) {
+      return this.releaseOwnership(ruleId, scope, requestKey, expectedRevision);
+    }
+    return undefined;
+  }
+
+  releaseOwnership(ruleId: string, scope: string, requestKey: string, expectedRevision: number): Json {
+    id(requestKey);
+    return this.store.transaction(() => {
+      const rule = this.requireRule(ruleId);
+      const previous = rule.ownership;
+      if (previous && previous.scope !== scope) fail('CLOUD_SESSION_CHANGED', 409);
+      if (previous?.release) {
+        if (previous.requestKey !== requestKey || previous.release.expectedRevision !== expectedRevision) {
+          fail('SCHEDULE_OWNERSHIP_CONFLICT', 409);
+        }
+        return { sourceEpoch: previous.epoch, configuration: previous.release.configuration };
+      }
+      if (rule.revision !== expectedRevision || rule.removed) fail('REVISION_CONFLICT', 409);
+      if (this.activeOccurrences().some(item => item.ruleId === ruleId)) fail('SCHEDULE_WORK_IN_PROGRESS', 409);
+      const configuration = this.handoffConfiguration(rule);
+      const epoch = previous?.epoch ?? 1;
+      const frozen = { ...rule, removed: true, paused: true, revision: rule.revision + 1 };
+      // Keep the tombstone in the original kind for versions that do not
+      // understand the transfer record. These writes commit together.
+      if (!previous) this.saveRule(frozen);
+      this.saveRule({ ...frozen, ownership: { scope, epoch, requestKey, cloud: previous?.cloud ?? {},
+        release: { expectedRevision, configuration } } });
+      return { sourceEpoch: epoch, configuration };
+    });
+  }
+
+  private incoming(value: Json): { config: Configuration; nextFire: number; sequence: number; paused: boolean; cloud: Json } {
+    const body = exact(value, ...configFields, 'sequence', 'paused', 'nextFireAt', 'cloud');
+    const config = configuration(body);
+    const nextFire = typeof body.nextFireAt === 'string' ? Date.parse(body.nextFireAt) : NaN;
+    if (!Number.isFinite(nextFire) || typeof body.paused !== 'boolean') fail('INVALID_SCHEDULE', 400);
+    const cloud = exact(body.cloud ?? {}, 'title', 'queueForSeconds');
+    return { config, nextFire, sequence: integer(body.sequence, 0, 2_147_483_646), paused: body.paused, cloud };
+  }
+
+  async checkIncomingOwnership(value: Json): Promise<void> {
+    await this.requireTarget(this.incoming(value).config.target);
+  }
+
+  async acquireOwnership(ruleId: string, scope: string, requestKey: string, epoch: number, value: Json): Promise<Json> {
+    id(ruleId);
+    id(requestKey);
+    integer(epoch, 2, 2_147_483_647);
+    const incoming = this.incoming(value);
+    const priorTransfer = (): Rule | undefined => {
+      const found = this.store.get<Rule>(transferredRules, ruleId);
+      if (found?.ownership?.scope === scope && !found.ownership.release
+          && found.ownership.epoch === epoch && found.ownership.requestKey === requestKey) return found;
+      return undefined;
+    };
+    const replay = priorTransfer();
+    if (replay) return this.view(replay);
+    await this.requireTarget(incoming.config.target);
+    return this.store.transaction(() => {
+      const raced = priorTransfer();
+      if (raced) return this.view(raced);
+      const prior = this.store.get<Rule>(transferredRules, ruleId);
+      const ownership = prior?.ownership;
+      if (prior ? !ownership?.release || ownership.scope !== scope || epoch !== ownership.epoch + 2
+        : this.store.get<Rule>(rules, ruleId) || this.store.get<Rule>(pairedRules, ruleId)) {
+        fail('SCHEDULE_OWNERSHIP_CONFLICT', 409);
+      }
+      const latest = this.store.listOrdered<Occurrence>(history(ruleId), 0, 1)[0]?.value;
+      if (incoming.sequence < (prior?.sequence ?? 0) || (latest && incoming.nextFire <= latest.fireAt)) {
+        fail('SCHEDULE_OWNERSHIP_CONFLICT', 409);
+      }
+      const rule: Rule = { ...incoming.config, ruleId, requestDigest: prior?.requestDigest ?? '',
+        owner: 'local', revision: (prior?.revision ?? 0) + 1, paused: incoming.paused, removed: false,
+        nextFire: incoming.nextFire, sequence: incoming.sequence, phone: prior?.phone,
+        ownership: { epoch, scope, requestKey, cloud: incoming.cloud } };
+      this.saveRule(rule);
+      return this.view(rule);
+    });
+  }
+
   private reserve(ruleId: string): void {
     this.store.transaction(() => {
       const rule = this.requireRule(ruleId);
@@ -335,6 +448,7 @@ export class LocalSchedules {
       }
       this.save({ id, ruleId, sequence, fireAt, validUntil: fireAt + rule.catchUpSeconds * 1000,
         revision: rule.revision, target: rule.target, instruction: rule.instruction, phone: rule.phone,
+        ownershipEpoch: rule.ownership?.epoch,
         requestKey: `local-schedule-${hash(id)}`,
         state: fireAt < windowStart ? 'missed'
           : rule.offlinePolicy === 'skip' && fireAt < this.startedAt ? 'skipped' : 'pending' });
@@ -362,7 +476,9 @@ export class LocalSchedules {
     }
     const canStart = (): Rule => {
       const rule = this.requireRule(row.ruleId);
-      if (rule.revision !== row.revision || rule.paused || rule.removed) fail('SCHEDULE_SUPERSEDED', 409);
+      if (rule.revision !== row.revision || rule.ownership?.epoch !== row.ownershipEpoch || rule.paused || rule.removed) {
+        fail('SCHEDULE_SUPERSEDED', 409);
+      }
       if (!this.canRun(rule)) fail('SCHEDULE_GRANT_REQUIRED', 403);
       if (this.now() > row.validUntil) fail('SCHEDULE_OCCURRENCE_EXPIRED', 409);
       return rule;
@@ -439,7 +555,7 @@ export class LocalSchedules {
         .filter(rule => !rule.paused && !rule.removed && rule.nextFire <= this.now() && this.canRun(rule))
         .sort((a, b) => a.nextFire - b.nextFire).slice(0, maxRulesPerTick);
       for (const rule of candidates) this.reserve(rule.ruleId);
-      for (const row of [...this.store.list<Occurrence>(active), ...this.store.list<Occurrence>(pairedActive)]) {
+      for (const row of this.activeOccurrences()) {
         if (this.stopping) break;
         try { await this.process(row); } catch { /* retain the original receipt for the next poll */ }
       }
