@@ -726,6 +726,21 @@ describe('LocalTaskAccess session history', () => {
       .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
   });
 
+  it('binds shared history to the exact granted workspace and rejects unscoped Worker receipts', async () => {
+    const { access, devices } = harness();
+    devices.get('dev1')!.launchScopes = [{ backendStoreId: STORE, projectId: 'desk', engineId: 'codex' }];
+    const history = `${ROOT}/${STORE}/history`;
+    const elsewhere = 'engine=codex&projectId=another&limit=20';
+    expect(await codeOf(remote(access, 'GET', history, null, null, elsewhere)))
+      .toEqual({ code: 'DEVICE_SCOPE_DENIED', status: 403 });
+    expect(fx.gets('/local/v1/history?' + elsewhere)).toHaveLength(0);
+    const allowed = 'engine=codex&projectId=desk&limit=20';
+    expect(await codeOf(remote(access, 'GET', history, null, null, allowed)))
+      .toEqual({ code: 'LOCAL_BINDING_MISMATCH', status: 409 });
+    expect(await codeOf(remote(access, 'GET', history + '/sessions/sess-1', null, null, 'engine=codex&after=1')))
+      .toEqual({ code: 'INVALID_REQUEST', status: 400 });
+  });
+
   it('POST history/questions forwards the validated body', async () => {
     const { access } = harness();
     const body = { requestKey: 'k-q1', sessionId: 'sess-1', question: 'what did it do', engine: 'pi', model: 'm1' };

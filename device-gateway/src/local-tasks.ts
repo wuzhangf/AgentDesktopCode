@@ -801,16 +801,26 @@ export class LocalTaskAccess {
           || !(d.launchScopes ?? []).some((s) => s.backendStoreId === backend)) {
         fail('DEVICE_SCOPE_DENIED', 403);
       }
-      const engine = new URLSearchParams(query ?? '').get('engine');
+      const parameters = new URLSearchParams(query ?? '');
+      const engine = parameters.get('engine');
+      const project = parameters.get('projectId');
       if (historyTranscript && engine === null) fail('INVALID_REQUEST', 400);
+      if (project !== null && !(d.launchScopes ?? []).some(scope =>
+        scope.backendStoreId === backend && scope.projectId === project && scope.engineId === engine)) {
+        fail('DEVICE_SCOPE_DENIED', 403);
+      }
       const route = historyTranscript ? '/history/sessions/' + p[3] : '/history';
       const out = this.ok(await this.source(backend, 'GET', route + (query ? '?' + query : '')));
       if (historyTranscript && (out.schemaVersion !== 'worker-vendor-transcript/1'
           || out.sessionId !== p[3] || out.engine !== engine)) {
         fail('LOCAL_BINDING_MISMATCH', 409);
       }
+      if (project !== null && (out.projectId !== project || !historyTranscript
+          && (out.schemaVersion !== 'worker-local-history/2' || out.engineId !== engine))) {
+        fail('LOCAL_BINDING_MISMATCH', 409);
+      }
       if ((await this.auth.authenticate(token)).revision !== d.revision) fail('GRANT_REVISION_CONFLICT', 409);
-      return { status: 200, body: { ...(isRecord(out) ? out : {}), backendStoreId: backend } };
+      return { status: 200, body: { ...out, backendStoreId: backend } };
     }
 
     // Session side-questions: the same detached read-only Q&A as task
@@ -1441,13 +1451,16 @@ export class LocalTaskAccess {
       // Engine ids are backend-declared — only the id shape is checked here;
       // the bridge itself rejects engines it does not serve.
       if (name === 'engine' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) continue;
+      if (name === 'projectId' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) continue;
       if (name === 'limit' && /^[1-9][0-9]?$/.test(value) && Number(value) <= (transcript ? 20 : 50)) continue;
       if (transcript && name === 'before' && /^[1-9][0-9]{0,14}$/.test(value)) continue;
+      if (transcript && name === 'after' && /^(0|[1-9][0-9]{0,14})$/.test(value)) continue;
       if (!transcript && name === 'cursor' && /^[A-Za-z0-9_-]{1,1024}$/.test(value)) continue;
       if (!transcript && name === 'q' && Buffer.byteLength(value) <= 200) continue;
       fail('INVALID_REQUEST', 400);
     }
-    if (seen.has('cursor') && !seen.has('engine')) fail('INVALID_REQUEST', 400);
+    if ((seen.has('cursor') || seen.has('projectId')) && !seen.has('engine')) fail('INVALID_REQUEST', 400);
+    if (seen.has('after') && (!seen.has('projectId') || seen.has('before'))) fail('INVALID_REQUEST', 400);
   }
 
   private static validateMessagesQuery(query: string): void {
@@ -1474,7 +1487,7 @@ export class LocalTaskAccess {
     // ways, so they ride alongside the required envelope and forward verbatim
     // — the worker validates the ref against its advertised catalog.
     const rest = isRecord(body) ? (({ model: _m, effort: _e, context: _c, linkFile: _f,
-      adoptSessionId: _as, adoptEngine: _ae, ...r }) => r)(body) : body;
+      adoptSessionId: _as, adoptEngine: _ae, sharedSession: _ss, ...r }) => r)(body) : body;
     let parsed: Json;
     if (office) {
       parsed = exact(rest, 'requestKey', 'projectId', 'engineId', 'optionsRevision', 'instruction', 'nativeWorkSpec');
@@ -1524,6 +1537,11 @@ export class LocalTaskAccess {
     const project = text(parsed, 'projectId');
     const engine = text(parsed, 'engineId');
     id(project);
+    if (isRecord(body) && body.sharedSession !== undefined) {
+      if (body.sharedSession !== true || office || body.linkFile !== undefined
+          || parsed.adoptEngine !== undefined && parsed.adoptEngine !== engine) fail('INVALID_REQUEST', 400);
+      parsed.sharedSession = true;
+    }
     if (office && engine !== 'macos') fail('LOCAL_PROFILE_NOT_SUPPORTED', 409);
     let attachment: FileAttachment | undefined;
     if (isRecord(body) && body.linkFile !== undefined) {
@@ -1543,6 +1561,13 @@ export class LocalTaskAccess {
     let device = await this.auth.authorizeLaunch(token, backend, project, engine);
     const fingerprint = LocalTaskAccess.digest(attachment ? { ...parsed, linkFile: attachment } : parsed);
 
+    if (parsed.sharedSession === true && this.find(LAUNCH, device.id, key!) === undefined) {
+      const feed = this.ok(await this.source(backend, 'GET', '/engines'));
+      if (!Array.isArray(feed.items) || !feed.items.some(item => isRecord(item)
+          && item.engineId === engine && isRecord(item.capabilities) && item.capabilities.sharedSessions === true)) {
+        fail('SHARED_SESSION_UNSUPPORTED', 409);
+      }
+    }
     if (engine === 'macos' && this.find(LAUNCH, device.id, key!) === undefined) {
       const preflight = this.ok(await this.source(
         backend, 'POST', '/task-preflights', { projectId: project, engineId: engine }));
