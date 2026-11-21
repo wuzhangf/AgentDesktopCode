@@ -904,8 +904,10 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.cloudLaunchGrant = request => cloudLaunch.ownerGrant(request);
   }
   const scheduler = ctx.localSchedules;
-  if (cloudLaunch && scheduler) ctx.scheduleOwnership = (ruleId, request) =>
-    cloudLaunch.transferSchedule(scheduler, ruleId, request);
+  if (cloudLaunch && scheduler) {
+    ctx.scheduleOwnership = (ruleId, request) => cloudLaunch.transferSchedule(scheduler, ruleId, request);
+    ctx.scheduleOwnershipDirectory = () => cloudLaunch.scheduleOwnershipDirectory(scheduler);
+  }
   if (linuxMember && cloudLaunch) ctx.linuxMember = linuxMember;
   if (memberCluster && ctx.xagt) {
     ctx.xagtOfflineOrigin = new OfflineOrigin(store, transport, memberCluster);

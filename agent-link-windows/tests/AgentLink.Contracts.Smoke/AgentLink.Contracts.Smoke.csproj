@@ -6,5 +6,6 @@
     <ProjectReference Include="../../src/AgentLink.Contracts/AgentLink.Contracts.csproj"/>
     <Compile Include="../../src/AgentLink.Host/MemberLogoutFiles.cs" Link="MemberLogoutFiles.cs"/>
     <Compile Include="../../src/AgentLink.Host/LocalScheduleGrantRequests.cs" Link="LocalScheduleGrantRequests.cs"/>
+    <Compile Include="../../src/AgentLink.Host/ScheduleTransferRequests.cs" Link="ScheduleTransferRequests.cs"/>
   </ItemGroup>
 </Project>

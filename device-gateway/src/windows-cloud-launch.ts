@@ -7,6 +7,7 @@ import type { TaskFileBinding } from './sage-link-files.js';
 import type { UpdatePreparation } from './update-preparation.js';
 import type { CloudMemberIdentity, LinuxMemberEnrollment } from './linux-member.js';
 import type { LocalSchedules } from './local-schedules.js';
+import type { GatewayStoreView } from './context.js';
 
 type Json = Record<string, unknown>;
 const root = '/api/daily/v1/member/link/v2';
@@ -16,6 +17,7 @@ const journal = 'windows-cloud-launch';
 const actions = 'windows-cloud-action';
 const fileGrantSchema = 'windows-cloud-launch-grant/1';
 const ownershipSchema = 'link-schedule-ownership/1';
+const ownershipRequests = 'schedule-ownership-requests';
 const time = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
 
 interface Session extends CloudMemberIdentity {
@@ -27,6 +29,21 @@ interface Grant {
   scopes: LaunchScope[];
   controls: boolean;
   approvals: boolean;
+}
+
+type ScheduleTransferRequest = {
+  scope: string;
+  ruleId: string;
+  requestKey: string;
+  expectedRevision: number;
+  destination: 'cloud' | 'local';
+  title: string;
+};
+
+function scheduleTitle(rule: Json): string {
+  const cloud = isRecord(rule.cloud) ? rule.cloud.title : undefined;
+  const title = typeof cloud === 'string' && cloud.trim() ? cloud : rule.instruction;
+  return typeof title === 'string' ? [...title.trim()].slice(0, 160).join('') : '';
 }
 
 const sessionScope = ({ origin, memberId, workspaceId, instanceId }: CloudMemberIdentity): string =>
@@ -106,7 +123,7 @@ export class WindowsCloudLaunch {
   private readonly abort = new AbortController();
 
   constructor(
-    private readonly store: LocalStoreLike,
+    private readonly store: LocalStoreLike & Pick<GatewayStoreView, 'delete'>,
     private readonly localCatalog: LocalTaskAccess | undefined,
     private readonly transport: LocalTransportLike,
     private readonly hostId: string,
@@ -280,15 +297,65 @@ export class WindowsCloudLaunch {
     return reply;
   }
 
+  async scheduleOwnershipDirectory(scheduler: LocalSchedules): Promise<Json> {
+    const session = this.session();
+    let cloud: Json[] = [];
+    let cloudProblem: string | undefined;
+    try {
+      if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+      const remote = await this.hosted(session, 'GET', `/schedule-ownership?hostRef=${encodeURIComponent(this.hostId)}`);
+      if (remote.schemaVersion !== ownershipSchema || !Array.isArray(remote.items) || !remote.items.every(isRecord)) {
+        fail('CLOUD_RESPONSE_INVALID', 502);
+      }
+      cloud = remote.items;
+    } catch (error) {
+      cloudProblem = error instanceof GatewayError
+        ? (error.httpStatus === 404 ? 'NOT_FOUND' : error.code) : 'CLOUD_UNAVAILABLE';
+    }
+    const active = this.session();
+    if (active?.scope !== session?.scope) fail('CLOUD_SESSION_CHANGED', 409);
+    const pending = this.store.list<ScheduleTransferRequest>(ownershipRequests).filter(row => row.scope === active?.scope)
+      .map(({ scope: _scope, ...row }) => row);
+    const excluded = new Set(pending.map(row => row.ruleId));
+    const local: Json[] = [];
+    const rules = scheduler.list().items;
+    for (const rule of Array.isArray(rules) ? rules : []) {
+      if (!isRecord(rule) || !isRecord(rule.target) || typeof rule.ruleId !== 'string' || excluded.has(rule.ruleId)) continue;
+      local.push({
+        ruleId: rule.ruleId, revision: rule.revision, title: scheduleTitle(rule), paused: rule.paused,
+        projectId: rule.target.projectId, engineId: rule.target.engineId,
+      });
+      excluded.add(rule.ruleId);
+    }
+    return { schemaVersion: ownershipSchema, scope: active?.scope ?? null, local,
+      cloud: cloud.filter(row => typeof row.ruleId === 'string' && !excluded.has(row.ruleId)), pending, cloudProblem };
+  }
+
   async transferSchedule(scheduler: LocalSchedules, ruleId: string, value: Json): Promise<Json> {
     id(ruleId);
-    const { destination, requestKey, expectedRevision } = exact(value, 'destination', 'requestKey', 'expectedRevision');
+    const { destination, requestKey, expectedRevision, expectedScope } =
+      exact(value, 'destination', 'requestKey', 'expectedRevision', 'expectedScope');
     if (!identifier(requestKey) || (destination !== 'cloud' && destination !== 'local')
         || typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision)
         || expectedRevision < 1 || expectedRevision >= 2_147_483_647) fail('INVALID_REQUEST', 400);
     const session = this.session();
     if (!session) fail('CLOUD_SESSION_REQUIRED', 409);
+    if (expectedScope !== undefined && expectedScope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
     if (this.scheduleTransfers.has(ruleId)) fail('OPERATION_IN_PROGRESS', 409);
+    const requestID = hash(JSON.stringify([session.scope, ruleId]));
+    const original = this.store.get<ScheduleTransferRequest>(ownershipRequests, requestID);
+    if (original && (original.requestKey !== requestKey || original.expectedRevision !== expectedRevision
+        || original.destination !== destination)) fail('SCHEDULE_TRANSFER_PENDING', 409);
+    const remember = (configuration: Json): void => {
+      if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
+      if (!original) this.store.put(ownershipRequests, requestID, {
+        scope: session.scope, ruleId, requestKey, expectedRevision, destination, title: scheduleTitle(configuration),
+      });
+    };
+    const completed = (reply: Json): Json => {
+      this.store.delete(ownershipRequests, requestID);
+      return reply;
+    };
     this.scheduleTransfers.add(ruleId);
     try {
       const base = '/schedule-ownership';
@@ -309,10 +376,19 @@ export class WindowsCloudLaunch {
           && status.receipt.requestKey === requestKey ? status.receipt.configuration : status.configuration;
         if (!isRecord(configuration)) fail('SCHEDULE_OWNERSHIP_CONFLICT', 409);
         await scheduler.checkIncomingOwnership(configuration);
-        const reply = await this.hosted(session, 'POST', `${path}/release`, { ...command, expectedRevision });
+        remember(configuration);
+        let reply;
+        try { reply = await this.hosted(session, 'POST', `${path}/release`, { ...command, expectedRevision }); }
+        catch (error) {
+          if (isRecord(status.configuration) && error instanceof GatewayError && [
+            'REVISION_CONFLICT', 'SCHEDULE_WORK_IN_PROGRESS', 'SCHEDULE_TRANSFER_UNSUPPORTED',
+          ].includes(error.code)) this.store.delete(ownershipRequests, requestID);
+          throw error;
+        }
         const epoch = receipt(reply);
         if (!isRecord(reply.configuration)) fail('CLOUD_RESPONSE_INVALID', 502);
-        return { ...reply, rule: await scheduler.acquireOwnership(ruleId, session.scope, requestKey, epoch, reply.configuration) };
+        const rule = await scheduler.acquireOwnership(ruleId, session.scope, requestKey, epoch, reply.configuration);
+        return completed({ ...reply, rule });
       }
 
       const pending = scheduler.pendingOwnershipRelease(ruleId, session.scope, requestKey, expectedRevision);
@@ -325,10 +401,11 @@ export class WindowsCloudLaunch {
         }
         if (isRecord(status?.receipt) && status.receipt.owner === 'cloud' && status.receipt.requestKey === requestKey) {
           if (receipt(status.receipt) !== Number(pending.sourceEpoch) + 1) fail('CLOUD_RESPONSE_INVALID', 502);
-          return status.receipt;
+          return completed(status.receipt);
         }
       }
-      const target = scheduler.get(ruleId).target;
+      const source = scheduler.get(ruleId);
+      const target = source.target;
       const grant = this.grant(session);
       const native = await this.nativeTargets(grant);
       if (!isRecord(target) || (this.ownerGrantStorage && !grant) || !native.some(entry =>
@@ -356,10 +433,23 @@ export class WindowsCloudLaunch {
       }
       if (this.ownerGrantStorage && this.grant(session)?.revision !== grant?.revision) fail('CLOUD_GRANT_CHANGED', 409);
       if (this.session()?.scope !== session.scope) fail('CLOUD_SESSION_CHANGED', 409);
-      const release = pending ?? scheduler.releaseOwnership(ruleId, session.scope, requestKey, expectedRevision);
+      let release: Json;
+      try {
+        release = pending ?? this.store.transaction(() => {
+          const staged = scheduler.releaseOwnership(ruleId, session.scope, requestKey, expectedRevision);
+          remember(source);
+          return staged;
+        });
+      } catch (error) {
+        if (original && error instanceof GatewayError && ['REVISION_CONFLICT', 'SCHEDULE_WORK_IN_PROGRESS'].includes(error.code)) {
+          this.store.delete(ownershipRequests, requestID);
+        }
+        throw error;
+      }
+      if (pending) remember(source);
       const reply = await this.hosted(session, 'PUT', `${path}/acquire`, { ...command, ...release });
       if (receipt(reply) !== Number(release.sourceEpoch) + 1) fail('CLOUD_RESPONSE_INVALID', 502);
-      return reply;
+      return completed(reply);
     } finally {
       this.scheduleTransfers.delete(ruleId);
     }

@@ -364,6 +364,9 @@ export async function handleOwnerRoute(
 
     const scheduleRoot = `${ROOT}/local-schedules`;
     const scheduler = ctx.localSchedules;
+    if (ctx.scheduleOwnershipDirectory && path === `${ROOT}/schedule-ownership` && method === 'GET') {
+      return { status: 200, body: await ctx.scheduleOwnershipDirectory() };
+    }
     if (ctx.scheduleOwnership && parts.length === 6 && parts[4] === 'schedule-ownership' && method === 'POST') {
       const finish = ctx.updatePreparation?.admit();
       try {

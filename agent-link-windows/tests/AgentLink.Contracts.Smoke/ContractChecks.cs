@@ -11,6 +11,7 @@ internal static class ContractChecks
             case "contract-relay-invite": RelayInvite(); break;
             case "contract-launch-scopes": LaunchScopesCheck(); break;
             case "contract-local-schedule-grant": LocalScheduleGrantCheck.RunAsync().GetAwaiter().GetResult(); break;
+            case "contract-schedule-transfer": ScheduleTransferCheck.RunAsync().GetAwaiter().GetResult(); break;
             case "contract-menu-model": MenuModel(); break;
             case "contract-quick-configuration": QuickConfiguration(); break;
             case "contract-update-schedule": WindowsUpdateScheduleCheck.Run(); break;

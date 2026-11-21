@@ -327,6 +327,12 @@ public partial class ConfigurationWindow : Window
         });
     }
 
+    private void ScheduleTransfer_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy) return;
+        new ScheduleTransferWindow(call) { Owner = this }.ShowDialog();
+    }
+
     private async Task RunAsync(Func<Task> action)
     {
         if (busy) return;

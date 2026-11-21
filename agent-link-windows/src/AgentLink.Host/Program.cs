@@ -64,12 +64,14 @@ internal sealed class LinkHost : IDisposable
             && configured.StartsWith("https://", StringComparison.Ordinal)
             ? configured : "https://api.steercrew.com";
     private readonly CancellationTokenSource stop = new();
-    private readonly HttpClient owner = new(new SocketsHttpHandler
+    private static HttpClient OwnerClient(int seconds) => new(new SocketsHttpHandler
     {
         UseProxy = false,
         AllowAutoRedirect = false,
         ConnectTimeout = TimeSpan.FromSeconds(2),
-    }) { Timeout = TimeSpan.FromSeconds(5) };
+    }) { Timeout = TimeSpan.FromSeconds(seconds) };
+    private readonly HttpClient owner = OwnerClient(5);
+    private readonly HttpClient scheduleOwner = OwnerClient(55);
     private readonly string computer = Environment.MachineName;
     private readonly SemaphoreSlim mutations = new(1, 1);
     private readonly UpdateActivity updateActivity = new();
@@ -424,7 +426,9 @@ internal sealed class LinkHost : IDisposable
         req.Headers.Authorization = new("Bearer", identity!.OwnerToken);
         req.Headers.Add("X-Client-Session", identity.ClientToken);
         if (body is not null) req.Content = System.Net.Http.Json.JsonContent.Create(body);
-        using var response = await owner.SendAsync(req, cancellation);
+        var client = route == ScheduleTransferRequests.Route || route.StartsWith(ScheduleTransferRequests.Route + "/", StringComparison.Ordinal)
+            ? scheduleOwner : owner;
+        using var response = await client.SendAsync(req, cancellation);
         var text = await response.Content.ReadAsStringAsync(cancellation);
         var node = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
         if (!response.IsSuccessStatusCode)
@@ -658,6 +662,7 @@ internal sealed class LinkHost : IDisposable
                 try
                 {
                     var request = await LinkProtocol.ReadAsync<LinkRequest>(channel, deadline.Token);
+                    if (LinkProtocol.IsScheduleTransfer(request.Operation)) deadline.CancelAfter(TimeSpan.FromSeconds(60));
                     LinkReply reply;
                     try { reply = await HandleAsync(request, deadline.Token); }
                     catch (HttpRequestException error) { reply = new(false, error.Message); }
@@ -700,6 +705,11 @@ internal sealed class LinkHost : IDisposable
             return new(true, Data: JsonSerializer.SerializeToNode(CcSwitch.ReadUsage(DateTimeOffset.UtcNow, days), LinkProtocol.Json));
         }
         if (request.Operation == "exit") return new(true);
+        if (LinkProtocol.IsScheduleTransfer(request.Operation))
+        {
+            if (!status.Ready || ports is null) return new(false, "GATEWAY_UNAVAILABLE");
+            return await ScheduleTransferRequests.HandleAsync(request, OwnerAsync, cancellation);
+        }
         await mutations.WaitAsync(cancellation);
         try
         {
@@ -940,6 +950,7 @@ internal sealed class LinkHost : IDisposable
     {
         managed.Dispose();
         owner.Dispose();
+        scheduleOwner.Dispose();
         mutations.Dispose();
         stop.Dispose();
     }

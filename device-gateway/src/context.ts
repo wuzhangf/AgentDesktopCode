@@ -467,6 +467,7 @@ export interface GatewayContext {
   linuxMember?: import('./linux-member.js').LinuxMemberEnrollment;
   localSchedules?: import('./local-schedules.js').LocalSchedules;
   scheduleOwnership?: (ruleId: string, request: JsonObject) => Promise<JsonObject>;
+  scheduleOwnershipDirectory?: () => Promise<JsonObject>;
   auth: GatewayAuth;
   /** Undefined → worker registration routes fail OPERATION_NOT_ALLOWED. */
   workers?: GatewayWorkers;

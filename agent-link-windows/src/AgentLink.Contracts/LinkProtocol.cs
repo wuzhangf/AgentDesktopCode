@@ -42,7 +42,10 @@ public static class LinkProtocol
     }
 
     public static async Task<LinkReply> CallAsync(LinkRequest request, CancellationToken cancellation = default)
-        => await CallPipeAsync(Pipe, request, TimeSpan.FromSeconds(10), cancellation);
+        => await CallPipeAsync(Pipe, request, TimeSpan.FromSeconds(IsScheduleTransfer(request.Operation) ? 65 : 10),
+            cancellation);
+
+    public static bool IsScheduleTransfer(string operation) => operation is "scheduleTransferDirectory" or "transferSchedule";
 
     public static async Task<LinkReply> CallFilesAsync(LinkRequest request, CancellationToken cancellation = default)
         => await CallPipeAsync(FilePipe, request, TimeSpan.FromMinutes(30), cancellation);
