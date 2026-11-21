@@ -19,9 +19,9 @@ command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 systemctl --user show-environment >/dev/null 2>&1 \
     || die "systemd --user is unavailable (log in a user session; for headless use: loginctl enable-linger $USER)"
 
-# Member authorization uses the running gateway and may wait for the account owner.
-if [ "${1:-}" = member ]; then
-    exec "$RUNTIME" "$HERE/install.mjs" "$@"
-fi
+# These commands use the running gateway without taking the installation lock.
+case "${1:-}" in
+    member|schedule-grant) exec "$RUNTIME" "$HERE/install.mjs" "$@" ;;
+esac
 mkdir -p "$UNIT_DIR"
 exec flock -F -n -E 73 "$UNIT_DIR/.agent-link.install.lock" "$RUNTIME" "$HERE/install.mjs" "$@"

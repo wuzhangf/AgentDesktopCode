@@ -183,8 +183,25 @@ An interrupted submission stays `submitting` until its original Worker
 receipt can be read. These rules are installed and executed on this Link
 and use its existing local SQLite state.
 
-For a paired phone to create recurring rules, look up its `deviceGrantId`
-with `GET /api/v2/personal-access/devices`. Read or update its schedule
+Use the installed copy of `install.sh` as the Link service user to manage a
+paired phone's permission to create recurring rules. These commands work
+without a member account and leave the service running.
+
+```sh
+link_cli="${XDG_DATA_HOME:-$HOME/.local/share}/agent-link/program/current/install.sh"
+sh "$link_cli" schedule-grant list
+sh "$link_cli" schedule-grant show DEVICE_ID
+sh "$link_cli" schedule-grant set DEVICE_ID --expected-revision 0 --scope WORKER_STORE/PROJECT/codex
+sh "$link_cli" schedule-grant withdraw DEVICE_ID --expected-revision 1
+```
+
+Copy the device ID and target IDs from `list` and use the revision returned by
+`show`. Repeat `--scope` for every target you want to keep. `set` replaces the
+full permission and `withdraw` clears it. If another change makes the
+revision stale, read the current grant before trying again.
+
+The corresponding owner API lists paired devices at
+`GET /api/v2/personal-access/devices`. Read or update their schedule
 permission with `GET` or `PUT` at
 `/api/v2/personal-access/devices/{deviceGrantId}/local-schedule-grant`.
 `PUT` takes `expectedRevision` from the grant response and a
