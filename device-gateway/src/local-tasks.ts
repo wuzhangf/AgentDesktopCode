@@ -1555,7 +1555,9 @@ export class LocalTaskAccess {
       attachment = { transferID, signature, requestID: text(file, 'requestID'), projectID: text(file, 'projectID'), expiresAt: file.expiresAt };
     }
     const instruction = parsed.instruction;
-    if (typeof instruction !== 'string' || instruction.trim() === ''
+    // Empty instruction is a draft launch: the worker creates the task
+    // without spawning; the first follow-up message dispatches it.
+    if (typeof instruction !== 'string'
         || Buffer.byteLength(instruction, 'utf8') > 16384) fail('INVALID_INSTRUCTION', 400);
     text(parsed, 'optionsRevision');
     let device = await this.auth.authorizeLaunch(token, backend, project, engine);
