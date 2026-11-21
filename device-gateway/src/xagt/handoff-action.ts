@@ -26,13 +26,13 @@ const json = (value: unknown): Json => { if (!isRecord(value)) fail('LOCAL_REPLY
 
 export interface HandoffActionDeps {
   store: Pick<GatewayStoreView, 'get' | 'put' | 'list'>;
-  handoffs: Pick<GatewayWorkHandoffs, 'remote'>;
+  remote(sourceRef: Json, ...request: Parameters<GatewayWorkHandoffs['remote']>): Promise<LocalTaskResult>;
   /** Current owner/grant revision; a change invalidates every capability. */
   ownerRevision(): string | Promise<string>;
   /** Resolves an owner-issued credential reference to a coordinator token. */
   resolveCredential(credentialRef: string): string | Promise<string>;
   /** Reads the exact current source task/session round. */
-  sourceRound(sourceRef: Json): Json | Promise<Json>;
+  sourceRound(sourceRef: Json, token: string): Json | Promise<Json>;
   now?: () => number;
 }
 
@@ -99,13 +99,10 @@ export class HandoffActionService {
     const ownerBefore = await this.deps.ownerRevision();
     if (ownerBefore !== authRevision) fail('GRANT_REVISION_CONFLICT', 409);
     // Source facts are captured as a binding, not as a caller-provided hint.
-    const round = await this.deps.sourceRound(sourceRef);
-    const sourceRoundFingerprint = this.roundFingerprint(sourceRef, round);
-    if (await this.deps.ownerRevision() !== authRevision) fail('GRANT_REVISION_CONFLICT', 409);
-    // Resolve once at mint time to prove that the owner credential exists. The
-    // raw token is retained only by the owner credential provider, not here.
     const token = await this.deps.resolveCredential(credentialRef);
     if (typeof token !== 'string' || token.length < 1) fail('ACCESS_UNAUTHORIZED', 401);
+    const round = await this.deps.sourceRound(sourceRef, token);
+    const sourceRoundFingerprint = this.roundFingerprint(sourceRef, round);
     if (await this.deps.ownerRevision() !== authRevision) fail('GRANT_REVISION_CONFLICT', 409);
     const action: Action = {
       actionId: `xha-${randomUUID()}`, credentialRef, authRevision, sourceRef, targetAgentRef,
@@ -174,8 +171,9 @@ export class HandoffActionService {
     const phase = typeof current.phase === 'string' ? current.phase : undefined;
     if (!phase || !action.handoffId) fail('HANDOFF_PHASE_MISMATCH', 409);
     const requestKey = `handoff:${action.requestKey}:${phase}`;
+    const sendsPreflight = action.targetPreflight !== undefined && (action.sourceRef.kind !== 'ACS' || phase === 'SOURCE_SEALING');
     const wire: Json = { requestKey, importBinding: args.importBinding ?? null,
-      ...(action.targetPreflight === undefined ? {} : { targetPreflight: action.targetPreflight }) };
+      ...(sendsPreflight ? { targetPreflight: action.targetPreflight } : {}) };
     return this.write(action, 'ADVANCE', requestKey, wire, [action.handoffId, 'continue'], false);
   }
 
@@ -203,7 +201,7 @@ export class HandoffActionService {
     if (!allowExpiredTracking && Date.parse(action.expiresAt) <= this.now()) fail('GRANT_EXPIRED', 409);
     if (await this.deps.ownerRevision() !== action.authRevision) fail('GRANT_REVISION_CONFLICT', 409);
     if (checkSourceRound) {
-      const current = await this.deps.sourceRound(action.sourceRef);
+      const current = await this.deps.sourceRound(action.sourceRef, await this.token(action));
       if (this.roundFingerprint(action.sourceRef, current) !== action.sourceRoundFingerprint) fail('NATIVE_TARGET_CHANGED', 409);
     }
     return action;
@@ -235,6 +233,11 @@ export class HandoffActionService {
         return { ...verified, actionId: action.actionId };
       }
     }
+    // Before the first seal attempt, check the approved ACS session version
+    // again. Once dispatched, only the coordinator may reconcile its seal.
+    if (!prior && phase === 'SOURCE_SEALING' && action.sourceRef.kind === 'ACS') {
+      await this.authorized(action.actionId, false, true);
+    }
     const call: Call = prior ?? { actionId: action.actionId, operation, requestKey, fingerprint,
       ...(phase === undefined ? {} : { phase }), body, state: 'DISPATCHED', createdAt: nowIso(this.now()), updatedAt: nowIso(this.now()) };
     if (prior) { call.fingerprint = fingerprint; call.body = body; call.state = 'DISPATCHED'; call.response = undefined; }
@@ -245,7 +248,8 @@ export class HandoffActionService {
     await this.authorized(action.actionId, false, operation === 'PREPARE' || operation === 'CONFIRM');
     let result: LocalTaskResult;
     try {
-      result = await this.deps.handoffs.remote(token, 'POST', tail, body, requestKey, null);
+      result = await this.deps.remote(action.sourceRef, token, 'POST', tail, body, requestKey, null);
+      if (result.status >= 500) fail('COORDINATOR_UNAVAILABLE', 503);
     } catch (error) {
       this.ensureActive(action.actionId);
       if (create) {
@@ -260,7 +264,8 @@ export class HandoffActionService {
         const recovered = await this.readCoordinator(action, [action.handoffId]);
         if (recovered) {
           this.updateState(action, recovered);
-          if (operation === 'ADVANCE' && recovered.phase === call.phase) {
+          if ((operation === 'ADVANCE' && recovered.phase === call.phase) ||
+              (operation === 'CONFIRM' && recovered.phase === 'AWAITING_CONFIRM')) {
             call.state = 'DISPATCHED'; call.response = undefined; call.updatedAt = nowIso(this.now());
           } else {
             call.state = 'OBSERVED'; call.response = recovered;
@@ -275,7 +280,10 @@ export class HandoffActionService {
       fail('COORDINATOR_UNAVAILABLE', 503);
     }
     this.ensureActive(action.actionId);
-    if (result.status < 200 || result.status >= 300) fail('HANDOFF_ACTION_REJECTED', result.status >= 500 ? 503 : 409);
+    if (result.status < 200 || result.status >= 300) {
+      const code = isRecord(result.body) && typeof result.body.code === 'string' ? result.body.code : 'HANDOFF_ACTION_REJECTED';
+      fail(code, result.status);
+    }
     const response = json(result.body);
     if (operation === 'ADVANCE' && response.phase === call.phase) {
       // Same-phase progress is pending, not a spent success. Keep the durable
@@ -314,7 +322,7 @@ export class HandoffActionService {
 
   private async readCoordinator(action: Action, tail: string[]): Promise<Json | undefined> {
     try {
-      const response = await this.deps.handoffs.remote(await this.token(action), 'GET', tail, null, null, null);
+      const response = await this.deps.remote(action.sourceRef, await this.token(action), 'GET', tail, null, null, null);
       if (response.status !== 200 || !isRecord(response.body)) return undefined;
       return response.body;
     } catch { return undefined; }
@@ -345,7 +353,7 @@ export class HandoffActionService {
     if (actual !== expected) fail('LOCAL_BINDING_MISMATCH', 409);
     const selected: Json = {};
     for (const field of ['taskId', 'sessionId', 'taskRef', 'storeId', 'engineId', 'generation', 'nativeSessionId',
-      'nativeTurnId', 'currentCommandId', 'sessionVersion']) {
+      'nativeTurnId', 'currentCommandId', 'sessionVersion', 'activeRunId']) {
       if (round[field] !== undefined) selected[field] = round[field];
     }
     return digest([sourceRef, selected]);

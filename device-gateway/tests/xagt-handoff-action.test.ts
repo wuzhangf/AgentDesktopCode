@@ -41,7 +41,7 @@ function fixture() {
     },
   };
   const service = new HandoffActionService({
-    store, handoffs,
+    store, remote: async (_source, ...request) => handoffs.remote(...request),
     ownerRevision: () => 'rev-1',
     resolveCredential: (ref) => ref === 'cred-1' ? 'coordinator-token' : (() => { throw new GatewayError('ACCESS_UNAUTHORIZED', 401); })(),
     sourceRound: () => round,
@@ -65,6 +65,21 @@ it('persists the original create intent and recovers a lost prepare by requests/
   const replay = await f.service.prepare(String(action.actionId));
   expect(replay.handoffId).toBe('wh-a');
   expect(f.calls.filter(call => call.method === 'POST' && call.tail.length === 0)).toHaveLength(1);
+});
+
+it('checks the ACS source revision before the first coordinator seal attempt', async () => {
+  const f = fixture();
+  const session = { sessionId: 'acs-source', sessionVersion: 12, activeRunId: null };
+  f.setRound(session);
+  const action = await f.service.issue({ credentialRef: 'cred-1', authRevision: 'rev-1',
+    sourceRef: { kind: 'ACS', sessionId: session.sessionId }, targetAgentRef,
+    requestKey: 'orig-1', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const actionId = String(action.actionId);
+  await f.service.prepare(actionId);
+  await f.service.confirm(actionId, { expectedMaterialRevision: 1 });
+  f.setRound({ ...session, sessionVersion: 13, activeRunId: 'another-run' });
+  await expect(f.service.advance(actionId, {})).rejects.toMatchObject({ code: 'NATIVE_TARGET_CHANGED' });
+  expect(f.calls.filter(call => call.tail[1] === 'continue')).toHaveLength(0);
 });
 
 it('refuses confirmation when the bound source round or owner revision changed', async () => {

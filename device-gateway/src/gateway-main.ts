@@ -74,6 +74,7 @@ import { createAcsClient } from './acs.js';
 import { createClientAccess } from './client-access.js';
 import { createInboxSourceReader } from './inbox-source.js';
 import { bindingFor } from './bindings.js';
+import { acsHandoff } from './phone-api.js';
 import { AgentSessionAccess, type AgentUpstream } from './agent-sessions.js';
 import { ChildMessagesAccess } from './child-messages.js';
 import { WorkHandoffAccess } from './work-handoffs.js';
@@ -907,8 +908,19 @@ function buildStoredContext(opts: GatewayBootstrapOptions, store: GatewayStore):
     ctx.xagtOfflineTarget = new OfflineTargetService({ store, transport, memberCluster });
     if (ctx.workHandoffs && localTasks) {
       memberCluster.handoffSigningKey(host.id, () => ctx.workHandoffs!.publicSigningKey());
+      const handoffUpstream = ctx.acsHandoffBridge ? agentUpstream : undefined;
       ctx.xagtHandoff = new HandoffMcp({ store, handoffs: ctx.workHandoffs, auth: devices,
-        local: localTasks, member: memberCluster, storeKey: () => opts.storeKey, hostRef: host.id });
+        local: localTasks, member: memberCluster, storeKey: () => opts.storeKey, hostRef: host.id,
+        ...(handoffUpstream === undefined ? {} : { acsSource: {
+          round: async (token, sessionId) => handoffUpstream.call(
+            await devices.authorize(token, sessionId, 'OBSERVE'), 'GET', `/api/v2/sessions/${sessionId}`, null, undefined),
+          remote: async (token, method, tail, body, key, query) => acsHandoff(ctx, {
+            method, path: '/personal/v1/work-handoffs' + (tail.length ? `/${tail.join('/')}` : ''),
+            query: new URLSearchParams(query ?? ''), rawQuery: query ?? null, body, clientIp: '127.0.0.1',
+            ...(key == null ? {} : { idempotencyKey: key, idempotencyKeyCount: 1 }),
+          }, token, await devices.authenticate(token)),
+        } }),
+      });
     }
   }
   return { ctx, store, devices, localTasks, inbox, config, cliSupervisor, cloudLaunch, memberCluster,

@@ -296,7 +296,7 @@ async function acsHandoffCapabilities(ctx: GatewayContext, device: Device, relay
   }
 }
 
-async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, device: Device): Promise<HttpResponse> {
+export async function acsHandoff(ctx: GatewayContext, req: HttpRequest, token: string, device: Device): Promise<HttpResponse> {
   if (req.relayIngress === true || !ctx.acs || !ctx.auth.appendCreatedSession ||
       !device.actions?.includes('HANDOFF') || !device.actions.includes('OBSERVE')) {
     fail('WORK_HANDOFFS_NOT_CONFIGURED', 409);

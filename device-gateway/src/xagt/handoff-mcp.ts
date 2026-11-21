@@ -32,6 +32,7 @@ interface Actor {
   ref: string;
   actionId?: string;
   sourceRequestKey: string;
+  sourceAcs?: true;
   sourceDeviceId: string;
   sourceDeviceRevision: number;
   sourceEnvelope: string;
@@ -50,6 +51,10 @@ interface Dependencies {
   handoffs: GatewayWorkHandoffs;
   auth: GatewayAuth;
   local: Pick<GatewayLocalTasks, 'nativeCall' | 'okNative'>;
+  acsSource?: {
+    round(token: string, sessionId: string): Promise<LocalTaskResult>;
+    remote: GatewayWorkHandoffs['remote'];
+  };
   member: Pick<MemberCluster, 'delegationIdentity' | 'delegationRequest'>;
   storeKey: () => Uint8Array;
   hostRef: string;
@@ -72,7 +77,11 @@ function publicStatus(view: JsonObject, transfer?: JsonObject): JsonObject {
 
 function payload(reply: LocalTaskResult): JsonObject {
   if (reply.status < 200 || reply.status >= 300) {
-    fail(isRecord(reply.body) && typeof reply.body.code === 'string' ? reply.body.code : 'HANDOFF_PEER_UNAVAILABLE', reply.status);
+    const code = isRecord(reply.body) && typeof reply.body.code === 'string' ? reply.body.code : 'HANDOFF_PEER_UNAVAILABLE';
+    if (['LOCAL_SOURCE_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_OUTCOME_UNKNOWN', 'LAUNCH_OUTCOME_UNKNOWN'].includes(code)) {
+      throw new XagtError(code, '交接回执待核对，可按原请求继续。', true, reply.status);
+    }
+    fail(code, reply.status);
   }
   if (!isRecord(reply.body)) fail('LOCAL_REPLY_INVALID', 502);
   return reply.body;
@@ -92,12 +101,20 @@ export class HandoffMcp {
 
   constructor(private readonly deps: Dependencies) {
     this.actions = new HandoffActionService({
-      store: deps.store, handoffs: deps.handoffs,
+      store: deps.store, remote: (source, ...request) => this.sourceCall(source.kind === 'ACS', ...request),
       ownerRevision: () => deps.member.delegationIdentity(),
       resolveCredential: async credentialRef => (
         await this.current(credentialRef, false)).token,
-      sourceRound: async source => {
-        if (source.kind !== 'WORKER_LOCAL') fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+      sourceRound: async (source, token) => {
+        if (source.kind === 'ACS') {
+          const session = text(source, 'sessionId');
+          if (!deps.acsSource || !identifier.test(session)) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+          const facts = payload(await deps.acsSource.round(token, session));
+          const version = Number(facts.sessionVersion);
+          if (facts.sessionId !== session || !Number.isSafeInteger(version) || version < 1
+            || (facts.engineId != null && facts.engineId !== source.engineId)) fail('LOCAL_BINDING_MISMATCH', 409);
+          return { sessionId: session, sessionVersion: version, activeRunId: facts.activeRunId ?? null };
+        }
         const backend = text(source, 'storeId');
         const task = text(source, 'taskId');
         if (!identifier.test(backend) || !identifier.test(task)) fail('INVALID_REQUEST', 400);
@@ -111,16 +128,24 @@ export class HandoffMcp {
   async issue(input: unknown): Promise<JsonObject> {
     const body = exact(input, ['sourceDeviceToken', 'sourceRef', 'targetAgentRef', 'targetPreflight',
       'targetConnection', 'options', 'requestKey', 'expiresAt', 'sourceDelegation']);
-    const source = exact(body.sourceRef, ['kind', 'storeId', 'taskId', 'engineId']);
-    if (source.kind !== 'WORKER_LOCAL') fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+    let source = exact(body.sourceRef, ['kind', 'storeId', 'taskId', 'sessionId', 'engineId']);
+    const sourceAcs = source.kind === 'ACS';
+    if (sourceAcs ? !this.deps.acsSource : source.kind !== 'WORKER_LOCAL') fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+    if (sourceAcs ? source.taskId !== undefined : source.sessionId !== undefined) fail('INVALID_REQUEST', 400);
+    if (sourceAcs && body.sourceDelegation !== undefined) fail('HANDOFF_SOURCE_EXECUTION_MISMATCH', 409);
+    if (sourceAcs) source = { ...source, engineId: source.engineId ?? 'acs' };
     const targetAgent = exact(body.targetAgentRef, ['hostKey', 'kind', 'storeId', 'engineId', 'projectRef', 'policyPresetId']);
     const nativePi = targetAgent.kind === 'WORKER_LOCAL' && ['pi', 'sage-pi'].includes(String(targetAgent.engineId));
     const remoteAcs = targetAgent.kind === 'ACS' && targetAgent.hostKey !== 'local'
       && targetAgent.engineId == null && targetAgent.policyPresetId == null;
-    if (!nativePi && !remoteAcs) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+    if ((!nativePi && !remoteAcs) || (sourceAcs && targetAgent.hostKey === 'local')) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
     const memberIdentity = this.deps.member.delegationIdentity();
     const sourceToken = text(body, 'sourceDeviceToken');
-    const device = await this.deps.auth.authorizeLocal(sourceToken, text(source, 'storeId'), text(source, 'taskId'), 'OBSERVE');
+    if (sourceAcs && source.storeId !== undefined && source.storeId !== (await this.deps.auth.ownerStatus()).storeId) {
+      fail('LOCAL_BINDING_MISMATCH', 409);
+    }
+    const device = sourceAcs ? await this.deps.auth.authorize(sourceToken, text(source, 'sessionId'), 'OBSERVE')
+      : await this.deps.auth.authorizeLocal(sourceToken, text(source, 'storeId'), text(source, 'taskId'), 'OBSERVE');
     if (!device.actions?.includes('HANDOFF')) fail('SCOPE_DENIED', 403);
     const expiresAt = Date.parse(text(body, 'expiresAt'));
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 86_400_000) fail('INVALID_REQUEST', 400);
@@ -142,6 +167,7 @@ export class HandoffMcp {
     const token = `xhw-${randomBytes(24).toString('base64url')}`;
     const actor: Actor = {
       ref, sourceRequestKey: text(body, 'requestKey'), sourceDeviceId: device.id, sourceDeviceRevision: device.revision,
+      ...(sourceAcs ? { sourceAcs: true } : {}),
       sourceEnvelope: seal(sourceToken, this.deps.storeKey(), PURPOSE), tokenHash: fingerprint(token), memberIdentity,
       expiresAt, target, successor,
     };
@@ -156,6 +182,14 @@ export class HandoffMcp {
       this.deps.store.delete(ACTOR, ref);
       throw error;
     }
+  }
+
+  private async sourceCall(acs: boolean, ...request: Parameters<GatewayWorkHandoffs['remote']>): Promise<LocalTaskResult> {
+    if (acs) {
+      if (!this.deps.acsSource) fail('HANDOFF_ENGINE_UNSUPPORTED', 409);
+      return this.deps.acsSource.remote(...request);
+    }
+    return this.deps.handoffs.remote(...request);
   }
 
   private bindDelegation(input: unknown, source: JsonObject, target: JsonObject, memberIdentity: string): SuccessorBinding {
@@ -278,7 +312,7 @@ export class HandoffMcp {
       requestKey: actor.sourceRequestKey, sourceHostRef: this.deps.hostRef,
       sourceGet: async (tail, query) => {
         await this.current(actor.ref, true);
-        return payload(await this.deps.handoffs.remote(token, 'GET', tail, null, null, query ?? null));
+        return payload(await this.sourceCall(actor.sourceAcs === true, token, 'GET', tail, null, null, query ?? null));
       },
       targetCall: async (method, tail, body, key) => {
         await this.current(actor.ref, true);
