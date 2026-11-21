@@ -158,7 +158,8 @@ class AttachmentClient:
         else:
             url = f"{self.base_url}/{url_or_path.lstrip('/')}"
         headers = {"Accept": "*/*"}
-        if self.uploader.bearer:
+        target, origin = urlsplit(url), urlsplit(self.base_url)
+        if self.uploader.bearer and (target.scheme, target.netloc) == (origin.scheme, origin.netloc):
             headers["Authorization"] = f"Bearer {self.uploader.bearer}"
         if operation_id:
             headers["Idempotency-Key"] = operation_id
@@ -348,17 +349,52 @@ class AttachmentClient:
         The source is opened read-only and never replaced, renamed or deleted.
         The journal owns a mode-appropriate staging copy for safe retry.
         """
+        resolved, plain, _ = _source_bytes(source, maximum=self.max_bytes)
+        return self.attach_bytes(
+            plain, name=_filename(resolved), asset_id=asset_id, revision_id=revision_id,
+            mode=mode, journal=journal, attachment_id=attachment_id, operation_id=operation_id,
+            recipient_public_key=recipient_public_key, signer_private_key=signer_private_key,
+            recipient_device_id=recipient_device_id, signer_device_id=signer_device_id, grant_id=grant_id)
+
+    def attach_bytes(self, plain: bytes, *, name: str, asset_id: str, revision_id: str,
+                     mode: str, journal: Journal, attachment_id: str | None = None,
+                     operation_id: str | None = None, content_type: str | None = None,
+                     recipient_public_key: bytes | None = None, signer_private_key: bytes | None = None,
+                     recipient_device_id: str | None = None, signer_device_id: str | None = None,
+                     grant_id: str | None = None) -> dict[str, Any]:
+        """Journal captured bytes; a repeat recovers the first sealed representation."""
         asset_id, revision_id = _id(asset_id, label="asset id"), _id(revision_id, label="revision id")
         mode = _validate_mode(mode)
         if not isinstance(journal, Journal):
             raise AttachmentError("a Journal is required")
-        resolved, plain, plain_sha = _source_bytes(source, maximum=self.max_bytes)
-        name = _filename(resolved)
+        if not isinstance(plain, bytes) or len(plain) > self.max_bytes:
+            raise AttachmentError("invalid attachment bytes or size")
+        if not isinstance(name, str) or not name.strip() or len(name) > 240 or any(
+                char in name for char in ("/", "\\", "\x00", "\r", "\n")):
+            raise AttachmentError("attachment name is invalid")
+        content_type = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        plain_sha = _sha256(plain)
         attachment_id = attachment_id or "att-" + hashlib.sha256(
             f"{asset_id}\0{revision_id}\0{name}\0{plain_sha}".encode("utf-8")).hexdigest()[:40]
         attachment_id = _id(attachment_id, label="attachment id")
         operation_id = operation_id or _operation_id(asset_id, revision_id, name, plain_sha)
         operation_id = _id(operation_id, label="operation id")
+        prior = journal.load(operation_id)
+        if prior is not None:
+            expected = {"attachmentId": attachment_id, "assetId": asset_id, "revisionId": revision_id,
+                        "mode": mode, "name": name, "plainSha256": plain_sha, "contentType": content_type}
+            metadata = prior.get("metadata")
+            if (prior.get("destination") != self.base_url or not isinstance(metadata, Mapping)
+                    or any(metadata.get(key) != value for key, value in expected.items())):
+                raise AttachmentError("operation id is already bound to another attachment")
+            if mode == "userHeld":
+                envelope = (metadata.get("crypto") or {}).get("envelope") or {}
+                if (recipient_public_key is None
+                        or envelope.get("recipientKeyFingerprint") != _sha256(recipient_public_key)
+                        or envelope.get("recipientDeviceId") != recipient_device_id):
+                    raise AttachmentError("attachment operation is bound to another recipient")
+            return self.retry(operation_id, journal=journal)
+
         staged, crypto = self._prepare(
             plain, asset_id=asset_id, revision_id=revision_id, attachment_id=attachment_id,
             mode=mode, recipient_public_key=recipient_public_key, signer_private_key=signer_private_key,
@@ -369,18 +405,16 @@ class AttachmentClient:
         _atomic_stage(stage, staged)
         metadata: dict[str, Any] = {
             "attachmentId": attachment_id, "mode": mode, "name": name,
-            "contentType": mimetypes.guess_type(name)[0] or "application/octet-stream",
+            "contentType": content_type,
             "assetId": asset_id, "revisionId": revision_id, "objectKind": ATTACHMENT_OBJECT_KIND,
             "plainBytes": len(plain), "plainSha256": plain_sha,
             "cipherBytes": len(staged), "cipherSha256": _sha256(staged),
             "crypto": crypto.get("crypto"),
         }
-        prior = journal.load(operation_id)
-        if prior is not None and (prior.get("destination") != self.base_url or prior.get("metadata") != metadata):
-            raise AttachmentError("operation id is already bound to another attachment")
         request_metadata = {
             "attachmentId": attachment_id, "mode": mode,
-            "contentType": metadata["contentType"], "expectedBytes": len(staged),
+            "contentType": "application/octet-stream" if mode == "userHeld" else content_type,
+            "expectedBytes": len(staged),
             "sha256": metadata["cipherSha256"],
             **({"envelope": metadata["crypto"]["envelope"]}
                if mode == "userHeld" and isinstance(metadata.get("crypto"), Mapping) else {}),
@@ -389,40 +423,10 @@ class AttachmentClient:
             "operationId": operation_id, "destination": self.base_url, "state": "reserving",
             "assetId": asset_id, "revisionId": revision_id, "attachmentId": attachment_id,
             "metadata": metadata, "requestMetadata": request_metadata, "stagePath": str(stage),
-            "createdAt": prior.get("createdAt", _utc_now()) if prior else _utc_now(),
+            "createdAt": _utc_now(),
         }
-        if prior:
-            entry.update({key: value for key, value in prior.items()
-                          if key in {"reservation", "parts", "state", "result"}})
         journal.save(operation_id, entry)
-        if isinstance(entry.get("result"), dict) and entry.get("state") == "committed":
-            return dict(entry["result"])
-        reservation = entry.get("reservation")
-        if not isinstance(reservation, Mapping):
-            try:
-                reservation = self._init(asset_id, revision_id, request_metadata, operation_id)
-            except (AttachmentUncertain, UploadUncertain) as exc:
-                journal.save(operation_id, {**entry, "state": "reconciling"})
-                raise AttachmentUncertain(str(exc)) from exc
-            entry["reservation"], entry["state"] = dict(reservation), "uploading"
-            journal.save(operation_id, entry)
-        try:
-            parts = self._upload(reservation, stage, operation_id=operation_id,
-                                 prior_parts=entry.get("parts") if isinstance(entry.get("parts"), list) else None)
-            entry["parts"], entry["state"] = parts, "sealing"
-            journal.save(operation_id, entry)
-            result = self._complete(asset_id, revision_id, attachment_id, operation_id, metadata, parts)
-        except (AttachmentUncertain, UploadUncertain) as exc:
-            journal.save(operation_id, {**entry, "state": "reconciling"})
-            raise AttachmentUncertain(str(exc)) from exc
-        entry.pop("stagePath", None)
-        entry["state"], entry["result"], entry["completedAt"] = "committed", result, _utc_now()
-        journal.save(operation_id, entry)
-        try:
-            stage.unlink()
-        except OSError:
-            pass
-        return result
+        return self.retry(operation_id, journal=journal)
 
     def retry(self, operation_id: str, *, journal: Journal) -> dict[str, Any]:
         operation_id = _id(operation_id, label="operation id")
@@ -435,10 +439,11 @@ class AttachmentClient:
         stage = Path(str(entry.get("stagePath") or self._stage_path(journal, operation_id)))
         if not isinstance(metadata, Mapping) or not isinstance(request_metadata, Mapping) or not stage.is_file():
             raise AttachmentError("durable attachment staging record is missing")
-        if not isinstance(reservation, Mapping):
-            reservation = self._init(str(entry["assetId"]), str(entry["revisionId"]), request_metadata, operation_id)
-            entry["reservation"] = dict(reservation)
         try:
+            if not isinstance(reservation, Mapping):
+                reservation = self._init(str(entry["assetId"]), str(entry["revisionId"]), request_metadata, operation_id)
+                entry["reservation"], entry["state"] = dict(reservation), "uploading"
+                journal.save(operation_id, entry)
             parts = self._upload(reservation, stage, operation_id=operation_id,
                                  prior_parts=entry.get("parts") if isinstance(entry.get("parts"), list) else None)
             entry["parts"], entry["state"] = parts, "sealing"

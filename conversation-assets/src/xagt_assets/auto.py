@@ -37,6 +37,9 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Mapping, Sequence
 
+from .acs_reader import AcsReader
+from .attachment_client import AttachmentClient, AttachmentError
+from .auto_attachments import MAX_CAPTURE_BYTES, MAX_CAPTURE_ITEMS, MAX_CAPTURE_TOTAL, source_attachments
 from .collector import (
     AssetUploader,
     CollectorError,
@@ -135,12 +138,15 @@ class AutoSource:
     max_total_bytes: int = DEFAULT_AUTO_MAX_TOTAL_BYTES
     max_files: int = 256
     max_records: int = 100_000
+    archive_attachments: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"cloudProcessable", "userHeld"}:
             raise AutoArchiveError("source mode must be cloudProcessable or userHeld")
         if self.kind not in {"local", "acs"}:
             raise AutoArchiveError("source kind must be local or acs")
+        if type(self.archive_attachments) is not bool:
+            raise AutoArchiveError("archiveAttachments must be true or false")
         if not self.installation_id or not self.store_id:
             raise AutoArchiveError("each source requires installationId and storeId")
         if self.kind == "local":
@@ -232,6 +238,7 @@ class AutoSource:
             max_total_bytes=int(value.get("maxTotalBytes", DEFAULT_AUTO_MAX_TOTAL_BYTES)),
             max_files=int(value.get("maxFiles", 256)),
             max_records=int(value.get("maxRecords", 100_000)),
+            archive_attachments=value.get("archiveAttachments", False),
         )
 
     def identity(self) -> dict[str, Any]:
@@ -452,12 +459,110 @@ class AutoArchive:
             recipient_device_id=source.recipient_device_id or "",
             signer_device_id=source.signer_device_id or "", grant_id=grant_id)
 
+    def _retry_attachments(self, entry: dict[str, Any]) -> list[str]:
+        client = AttachmentClient(self.uploader)
+        pending = entry.setdefault("pendingAttachments", [])
+        if not isinstance(pending, list) or len(pending) > MAX_CAPTURE_ITEMS:
+            raise AutoArchiveError("invalid pending attachment state")
+        tried = []
+        for operation in tuple(pending):
+            if self.journal.load(operation) is None:
+                # A fault before journaling cannot have uploaded any bytes.
+                pending.remove(operation)
+                continue
+            tried.append(operation)
+            try:
+                result = client.retry(operation, journal=self.journal)
+            except (AttachmentError, UploadError):
+                continue
+            if self._committed(result):
+                pending.remove(operation)
+        return tried
+
+    def _sync_attachments(self, source: AutoSource, revision: Any, reader: AcsReader | None,
+                          entry: dict[str, Any], state: dict[str, Any], tried: list[str]) -> dict:
+        if not source.archive_attachments:
+            return {}
+        previous = entry.get("attachmentReport")
+        if (isinstance(previous, dict) and previous.get("revisionId") == revision.revisionId
+                and previous.get("status") == "complete" and not entry.get("pendingAttachments")):
+            return previous
+        report = {"revisionId": revision.revisionId, "status": "complete",
+                  "sealed": 0, "pending": 0, "unavailable": 0, "limited": False}
+        client = AttachmentClient(self.uploader)
+        pending = entry.setdefault("pendingAttachments", [])
+        crypto = {}
+        if source.mode == "userHeld":
+            try:
+                crypto = {
+                    "recipient_public_key": _read_key_file(str(source.recipient_public_key_file),
+                                                           name="recipient public key"),
+                    "signer_private_key": _read_key_file(str(source.signer_private_key_file),
+                                                         name="signer private key"),
+                    "recipient_device_id": source.recipient_device_id,
+                    "signer_device_id": source.signer_device_id,
+                }
+            except CollectorError:
+                return {**report, "status": "partial", "unavailable": 1}
+
+        remaining = MAX_CAPTURE_TOTAL
+        for index, item in enumerate(source_attachments(revision, reader)):
+            if index >= MAX_CAPTURE_ITEMS or remaining <= 0:
+                report["limited"] = True
+                break
+            identity = _digest([revision.assetId, revision.revisionId, item.reference])
+            operation = "auto-attachment-" + identity
+            journaled = self.journal.load(operation)
+            if journaled and self._committed(journaled.get("result")):
+                report["sealed"] += 1
+                remaining -= int(journaled["metadata"]["plainBytes"])
+                continue
+            if operation in tried or len(pending) >= MAX_CAPTURE_ITEMS:
+                report["pending"] += 1
+                continue
+            try:
+                data = item.read(min(MAX_CAPTURE_BYTES, remaining))
+            except CollectorError:
+                report["unavailable"] += 1
+                continue
+            remaining -= len(data)
+            if operation not in pending:
+                pending.append(operation)
+            self._save_state(state)
+            try:
+                result = client.attach_bytes(
+                    data, name=item.name, content_type=item.media, asset_id=revision.assetId,
+                    revision_id=revision.revisionId, attachment_id="att-" + identity[:40],
+                    operation_id=operation, mode=source.mode, journal=self.journal, **crypto)
+            except (AttachmentError, UploadError):
+                if self.journal.load(operation) is None:
+                    pending.remove(operation)
+                    report["unavailable"] += 1
+                else:
+                    report["pending"] += 1
+                continue
+            if self._committed(result):
+                report["sealed"] += 1
+                pending.remove(operation)
+            else:
+                report["pending"] += 1
+        if report["pending"] or report["unavailable"] or report["limited"]:
+            report["status"] = "partial"
+        entry["attachmentReport"] = report
+        return report
+
+    def _attachment_result(self, source, revision, reader, entry, state, tried) -> dict:
+        if not source.archive_attachments:
+            return {}
+        return {"attachments": self._sync_attachments(source, revision, reader, entry, state, tried)}
+
     def _poll_locked(self) -> dict[str, Any]:
         state = self._load_state()
         outcomes: list[dict[str, Any]] = []
         for source in self.sources:
             key = source.key()
             entry = state["sources"].setdefault(key, {"identity": source.identity(), "status": "new"})
+            tried = self._retry_attachments(entry) if source.archive_attachments else []
             pending_id = entry.get("pendingOperationId")
             if isinstance(pending_id, str):
                 # The state record is written before the uploader writes its
@@ -487,26 +592,27 @@ class AutoArchive:
                     coverage = entry.get("pendingCoverage") if isinstance(entry.get("pendingCoverage"), dict) else {}
                     self._record_committed(entry, revision_id, digest, str(entry.get("assetId") or ""), coverage, resumed)
 
+            reader = None
             try:
                 if source.kind == "acs":
                     # ACS is a separate, explicitly authorized read source.
                     # Its URL/session/scope are fixed in the allowlist and
                     # the bearer is resolved only from the named environment
                     # variables, never from configuration JSON.
-                    from .acs_reader import AcsReader
                     client_session_token = os.environ.get(source.acs_client_session_token_env or "")
                     if not client_session_token:
                         raise CollectorError(
                             "ACS client-session token environment variable is not set: "
                             f"{source.acs_client_session_token_env}")
                     bearer = os.environ.get(source.acs_bearer_env or "") if source.acs_bearer_env else None
-                    revision = AcsReader(
+                    reader = AcsReader(
                         source.acs_base_url or "", source.session_id or "", scope=source.acs_scope,
                         bearer=bearer, client_session_token=client_session_token,
                         installation_id=source.installation_id,
                         store_id=source.store_id, page_size=source.acs_page_size,
                         max_pages=source.acs_max_pages, max_messages=source.acs_max_messages,
-                    ).read()
+                    )
+                    revision = reader.read()
                 else:
                     revision = collect_source(
                         source.path, source_root=source.root, max_bytes=source.max_bytes,
@@ -527,7 +633,8 @@ class AutoArchive:
                 continue
             if entry.get("status") == "committed" and entry.get("lastRevisionId") == revision.revisionId:
                 entry.update({"coverage": dict(coverage), "updatedAt": _now(), "lastError": None})
-                outcomes.append({"source": key, "status": "unchanged", "revisionId": revision.revisionId})
+                outcomes.append({"source": key, "status": "unchanged", "revisionId": revision.revisionId,
+                                 **self._attachment_result(source, revision, reader, entry, state, tried)})
                 continue
 
             operation_id = _safe_operation_id(revision.assetId, revision.revisionId)
@@ -537,7 +644,8 @@ class AutoArchive:
                     self._record_committed(entry, revision.revisionId, revision.payload["digest"],
                                            revision.assetId, coverage, resumed)
                     outcomes.append({"source": key, "status": "committed", "revisionId": revision.revisionId,
-                                     "operationId": operation_id, "resumed": True})
+                                     "operationId": operation_id, "resumed": True,
+                                     **self._attachment_result(source, revision, reader, entry, state, tried)})
                     continue
             except UploadError as exc:
                 entry.update({"status": "error", "lastError": str(exc), "updatedAt": _now()})
@@ -569,7 +677,8 @@ class AutoArchive:
             self._record_committed(entry, revision.revisionId, revision.payload["digest"],
                                    revision.assetId, coverage, result)
             outcomes.append({"source": key, "status": "committed", "revisionId": revision.revisionId,
-                             "operationId": operation_id})
+                             "operationId": operation_id,
+                             **self._attachment_result(source, revision, reader, entry, state, tried)})
         state["updatedAt"] = _now()
         self._save_state(state)
         return {"schemaVersion": AUTO_SCHEMA_VERSION, "checkedAt": state["updatedAt"], "sources": outcomes}

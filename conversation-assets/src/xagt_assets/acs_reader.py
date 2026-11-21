@@ -220,43 +220,7 @@ class AcsReader:
         return value
 
     def _get(self, path: str, query: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        query_string = urllib.parse.urlencode({key: value for key, value in (query or {}).items() if value is not None})
-        url = f"{self.base_url}/{path.lstrip('/')}" + (f"?{query_string}" if query_string else "")
-        headers = {"Accept": "application/json"}
-        # No ambient credentials: the caller must pass the token for this read.
-        if self.bearer:
-            headers["Authorization"] = f"Bearer {self.bearer}"
-        if self.client_session_token:
-            headers["x-codeagent-client-token"] = self.client_session_token
-        request = urllib.request.Request(url, method="GET", headers=headers)
-        for attempt in range(2):
-            try:
-                if hasattr(self.opener, "open"):
-                    response = self.opener.open(request, timeout=self.timeout)
-                else:
-                    response = self.opener(request, timeout=self.timeout)
-                try:
-                    raw = response.read(MAX_RESPONSE_BYTES + 1)
-                except TypeError:
-                    raw = response.read()
-                status = int(getattr(response, "status", 200))
-            except urllib.error.HTTPError as exc:
-                try:
-                    raw = exc.read(MAX_RESPONSE_BYTES + 1)
-                except TypeError:
-                    raw = exc.read()
-                status = exc.code
-            except (OSError, TimeoutError) as exc:
-                raise AcsReaderError("ACS read failed") from exc
-            if status == 409 and attempt == 0:
-                continue
-            break
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise AcsReaderError("ACS response exceeds bound")
-        if 300 <= status < 400:
-            raise AcsSourceHTTPError(status, f"ACS redirect is not allowed (HTTP {status})")
-        if status >= 400:
-            raise AcsSourceHTTPError(status, f"ACS returned HTTP {status}")
+        raw, _ = self._read_bytes(path, query, accept="application/json", maximum=MAX_RESPONSE_BYTES)
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -264,6 +228,72 @@ class AcsReader:
         if not isinstance(value, dict):
             raise AcsReaderError("ACS response must be a JSON object")
         return value
+
+    def _read_bytes(self, path: str, query: Mapping[str, Any] | None, *,
+                    accept: str, maximum: int) -> tuple[bytes, str]:
+        query_string = urllib.parse.urlencode({key: value for key, value in (query or {}).items() if value is not None})
+        url = f"{self.base_url}/{path.lstrip('/')}" + (f"?{query_string}" if query_string else "")
+        headers = {"Accept": accept}
+        # No ambient credentials: the caller must pass the token for this read.
+        if self.bearer:
+            headers["Authorization"] = f"Bearer {self.bearer}"
+        if self.client_session_token:
+            headers["x-codeagent-client-token"] = self.client_session_token
+        request = urllib.request.Request(url, method="GET", headers=headers)
+        for attempt in range(2):
+            content_type = ""
+            try:
+                if hasattr(self.opener, "open"):
+                    response = self.opener.open(request, timeout=self.timeout)
+                else:
+                    response = self.opener(request, timeout=self.timeout)
+                try:
+                    status = int(getattr(response, "status", 200))
+                    content_type = (getattr(response, "headers", {}) or {}).get("Content-Type", "")
+                    raw = response.read(maximum + 1)
+                finally:
+                    close = getattr(response, "close", None)
+                    if close is not None:
+                        close()
+            except urllib.error.HTTPError as exc:
+                status, raw = exc.code, b""
+                exc.close()
+            except (OSError, TimeoutError) as exc:
+                raise AcsReaderError("ACS read failed") from exc
+            if status == 409 and attempt == 0:
+                continue
+            break
+        if len(raw) > maximum:
+            raise AcsReaderError("ACS response exceeds bound")
+        if 300 <= status < 400:
+            raise AcsSourceHTTPError(status, f"ACS redirect is not allowed (HTTP {status})")
+        if status >= 400:
+            raise AcsSourceHTTPError(status, f"ACS returned HTTP {status}")
+        return raw, content_type.split(";", 1)[0].strip().lower()
+
+    def read_attachment(self, message_id: str, attachment: Mapping[str, Any], *, maximum: int) -> bytes:
+        """Read a transcript-listed attachment by its bound IDs and expected digest."""
+        message = urllib.parse.quote(self._validate_id(message_id, "message_id"), safe="")
+        identifier = urllib.parse.quote(self._validate_id(attachment.get("attachmentId"), "attachment_id"), safe="")
+        media = attachment.get("mediaType")
+        digest = attachment.get("sha256")
+        size = attachment.get("sizeBytes")
+        if (not isinstance(media, str) or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
+                or type(size) is not int or not 0 <= size <= maximum):
+            raise AcsReaderError("ACS attachment metadata is incomplete or exceeds bounds")
+        if media in {"image/png", "image/jpeg"}:
+            segment, expected_media = "bytes", media
+        elif media.startswith("text/") or media in {"application/json", "application/xml"}:
+            segment, expected_media = "content", "text/plain"
+        else:
+            raise AcsReaderError("ACS attachment media type is unsupported")
+        session = urllib.parse.quote(self.session_id, safe="")
+        path = f"sessions/{session}/messages/{message}/attachments/{identifier}/{segment}"
+        raw, content_type = self._read_bytes(path, None, accept=expected_media, maximum=min(size, maximum))
+        if content_type != expected_media or len(raw) != size or _sha256(raw) != digest.lower():
+            raise AcsReaderError("ACS attachment bytes do not match the authorized transcript reference")
+        return raw
 
     def _check_session(self, value: Mapping[str, Any], endpoint: str) -> None:
         actual = value.get("sessionId")

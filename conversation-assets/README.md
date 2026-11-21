@@ -60,6 +60,8 @@ Create a local JSON allowlist outside the source trees. Each local item sets `pa
 
 An ACS item sets `kind` to `acs` and specifies `baseUrl`, `sessionId`, `installationId`, `storeId`, `scope` with `OBSERVE`, `clientSessionTokenEnv`, and `mode`. Set `bearerEnv` when the ACS deployment also requires a bearer. Supply authorized source credentials through the named environment variables. The destination collector credential is `XAGT_ASSET_BEARER`. The archiver binds history pages to the selected session and transcript revision.
 
+Set `archiveAttachments: true` on sources whose attachment content you want to archive. Pi reads inline PNG and JPEG image blocks from the selected native user-message history. ACS reads the listed text and image references through its per-session attachment endpoints and verifies each size and SHA-256. Capture is bounded to 32 references, 2 MiB per source item, and 8 MiB per revision poll. A sealed conversation can report an attachment as pending or unavailable. Restart with the same state and journal to reconcile pending objects, and an unchanged revision can fill an attachment gap.
+
 ```sh
 python -m xagt_assets.auto --enable --config /private/asset-sources.json \
   --base-url http://127.0.0.1:8765/assets/v1 \

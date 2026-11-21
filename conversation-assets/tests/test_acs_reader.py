@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -159,6 +160,36 @@ def test_rejects_path_traversal_and_redirects():
 
     with pytest.raises(AcsSourceHTTPError, match="redirect"):
         AcsReader("http://127.0.0.1:54803", SESSION, scope="OBSERVE", opener=RedirectOpener()).read()
+
+
+def test_reads_attachment_from_bound_bytes_endpoint_and_checks_digest():
+    raw = b"\xff\xd8\xff\xd9"
+    calls = []
+
+    def open_image(request, timeout=0):
+        calls.append(request)
+        response = Response({})
+        response.headers = {"Content-Type": "image/jpeg"}
+        response._raw = raw
+        return response
+
+    reader = AcsReader(
+        "http://localhost:54803", SESSION, scope="OBSERVE",
+        client_session_token="source-client-token", opener=open_image,
+    )
+    reference = {
+        "attachmentId": "image 1", "mediaType": "image/jpeg", "sizeBytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(), "url": "https://ignored.invalid/",
+    }
+    assert reader.read_attachment("message 1", reference, maximum=8) == raw
+    request, = calls
+    assert request.full_url == (
+        f"http://localhost:54803/api/v2/sessions/{SESSION}/messages/message%201/"
+        "attachments/image%201/bytes"
+    )
+    assert request.get_header("X-codeagent-client-token") == "source-client-token"
+    with pytest.raises(AcsReaderError, match="do not match"):
+        reader.read_attachment("message 1", {**reference, "sha256": "0" * 64}, maximum=8)
 
 
 def test_retries_one_upstream_409_and_pins_transcript_revision():
