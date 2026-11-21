@@ -22,6 +22,8 @@ For a Windows Host launched with a configured local ACS, set `DEVICE_GATEWAY_ACS
 
 ## Local scheduled tasks
 
+In **连接**, choose **定时授权** on a paired phone to let it create and manage local recurring tasks. Select from the phone's existing launch scopes and save. Clearing the selection and saving withdraws its schedule permission while keeping ordinary launches. When the grant changes during editing, the dialog reloads the current selection for review. Each phone has its own local grant and can use it without a member account.
+
 The Windows Host exposes the native Worker scheduler at the authenticated
 loopback owner path `/api/v2/personal-access/local-schedules`. It works in
 the CLI profile and with a configured ACS when a native Worker is available.
@@ -68,7 +70,7 @@ State-root startup regression checks run without opening a UI or touching user d
 
 ```powershell
 dotnet build agent-link-windows/tests/AgentLink.Contracts.Smoke
-foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines','contract-relay-invite','contract-launch-scopes','contract-member-logout') {
+foreach ($case in 'absent','empty','whitespace','explicit','contract-relay-lines','contract-relay-invite','contract-launch-scopes','contract-local-schedule-grant','contract-member-logout') {
     dotnet run --no-build --project agent-link-windows/tests/AgentLink.Contracts.Smoke -- $case
     if ($LASTEXITCODE) { throw "Smoke case failed: $case" }
 }

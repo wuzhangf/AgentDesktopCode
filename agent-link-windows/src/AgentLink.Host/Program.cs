@@ -508,7 +508,8 @@ internal sealed class LinkHost : IDisposable
             MemberStateName(member.Phase), member.UserCode ?? member.Detail
                 ?? (!member.PackagePresent ? "此安装不包含会员连接组件" : null),
             cap?["dailyOrigin"]?.GetValue<string>(), pairingApproval,
-            cap?["acsSessionCreate"]?.GetValue<bool>() == true);
+            cap?["acsSessionCreate"]?.GetValue<bool>() == true,
+            cap?["localSchedules"]?.GetValue<bool>() == true);
     }
 
     private static string MemberStateName(ConnectorSupervisor.Phase phase) => phase switch
@@ -807,6 +808,8 @@ internal sealed class LinkHost : IDisposable
                         histArgs["file"]?.GetValue<string>(), cancellation));
                 case "devices":
                     return new(true, Data: await OwnerAsync(HttpMethod.Get, "devices", null, cancellation));
+                case "localScheduleGrant" or "setLocalScheduleGrant":
+                    return await LocalScheduleGrantRequests.HandleAsync(request, OwnerAsync, cancellation);
                 case "requests":
                     return new(true, Data: await OwnerAsync(HttpMethod.Get, "pairing-requests", null, cancellation));
                 case "approve" or "reject":

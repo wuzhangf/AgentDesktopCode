@@ -12,7 +12,7 @@ public sealed record LinkReply(bool Ok, string? Error = null, JsonNode? Data = n
 public sealed record LinkStatus(bool Ready, string Message, string Computer, string? Origin, int DeviceCount,
     int PendingCount, string? PersonalHostId, string? StoreId, int? GatewayPid, bool Enabled,
     string? MemberState = null, string? MemberInfo = null, string? DailyOrigin = null,
-    bool PairingApprovalRequired = false, bool AcsSessionCreate = false);
+    bool PairingApprovalRequired = false, bool AcsSessionCreate = false, bool LocalSchedules = false);
 
 public static class LinkProtocol
 {

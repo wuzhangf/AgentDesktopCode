@@ -156,7 +156,7 @@ public partial class LinkWindow : Window
             if (Tabs.SelectedIndex == 1) await BuildAgentListAsync();
             else if (Tabs.SelectedIndex == 0)
             {
-                if (await ReadListAsync("devices") is { } devices) ShowDevices(devices);
+                if (await ReadListAsync("devices") is { } devices) ShowDevices(devices, state.LocalSchedules);
                 if (state.PendingCount == 0) ShowRequests(new JsonArray());
                 else if (await ReadListAsync("requests") is { } requests) ShowRequests(requests);
             }
@@ -202,12 +202,16 @@ public partial class LinkWindow : Window
     private string? deviceListSig;
     private string? agentListSig;
 
-    private void ShowDevices(JsonArray devices)
+    private void ShowDevices(JsonArray devices, bool localSchedules)
     {
         var list = devices.OfType<JsonObject>()
             .Where(d => Text(d, "state") != "REVOKED").ToArray();
-        var sig = JsonSerializer.Serialize(list.Select(d =>
-            new { Id = Text(d, "deviceGrantId"), Label = Text(d, "label"), State = Text(d, "state") }), LinkProtocol.Json);
+        var sig = JsonSerializer.Serialize(new
+        {
+            localSchedules,
+            devices = list.Select(d =>
+                new { Id = Text(d, "deviceGrantId"), Label = Text(d, "label"), State = Text(d, "state") }),
+        }, LinkProtocol.Json);
         if (sig == deviceListSig) return;
         deviceListSig = sig;
         DeviceList.Children.Clear();
@@ -240,6 +244,7 @@ public partial class LinkWindow : Window
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var icon = new Viewbox
             {
                 Width = 16, Height = 16, Margin = new Thickness(0, 0, 10, 0),
@@ -253,7 +258,11 @@ public partial class LinkWindow : Window
                     StrokeEndLineCap = PenLineCap.Round,
                 },
             };
-            var name = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+            var name = new TextBlock
+            {
+                Text = label, ToolTip = label, TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
             var state = new TextBlock
             {
                 Text = active ? "在线" : "不可用", FontSize = 11,
@@ -264,6 +273,19 @@ public partial class LinkWindow : Window
             grid.Children.Add(icon); grid.Children.Add(name); grid.Children.Add(state);
             if (grant is { Length: > 0 })
             {
+                if (active && localSchedules)
+                {
+                    var schedule = new Button
+                    {
+                        Content = "定时授权", FontSize = 11, MinHeight = 24,
+                        Padding = new Thickness(8, 1, 8, 1), Margin = new Thickness(8, 0, 0, 0),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    };
+                    AutomationProperties.SetName(schedule, $"定时授权 {label}");
+                    schedule.Click += (_, _) => OpenScheduleGrant(grant, label);
+                    Grid.SetColumn(schedule, 3);
+                    grid.Children.Add(schedule);
+                }
                 var unpair = new Button
                 {
                     Content = "解除", FontSize = 11, MinHeight = 24,
@@ -297,7 +319,7 @@ public partial class LinkWindow : Window
                     reset.Stop();
                     await ActAsync(new("revokeDevice", grant));
                 };
-                Grid.SetColumn(unpair, 3);
+                Grid.SetColumn(unpair, 4);
                 grid.Children.Add(unpair);
             }
             DeviceList.Children.Add(new Border
@@ -307,6 +329,14 @@ public partial class LinkWindow : Window
                 Child = grid,
             });
         }
+    }
+
+    private void OpenScheduleGrant(string deviceId, string label)
+    {
+        choosingWorker = true;
+        CancelDismissal();
+        try { new LocalScheduleGrantWindow(deviceId, label) { Owner = this }.ShowDialog(); }
+        finally { choosingWorker = false; }
     }
 
     private async Task BuildAgentListAsync()
