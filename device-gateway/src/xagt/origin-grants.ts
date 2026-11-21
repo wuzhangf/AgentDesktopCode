@@ -4,15 +4,19 @@ import { fail, isRecord } from '../protocol.js';
 import type { PeerStore } from './peer-reader.js';
 import { canSeeBackend, canUsePeer, type ReaderAccess, type ReaderGrant } from './reader-access.js';
 
-export interface ImportedOrigin {
+export interface OriginIdentity {
   sourceHostRef: string;
   sourceKeyId: string;
   sourceHandoffId: string;
   manifestDigest: string;
   sourceStoreId: string;
   sourceTaskId: string;
+}
+
+export interface ImportedOrigin extends OriginIdentity {
   targetProjectId: string;
   publicFacts: JsonObject;
+  ancestors?: Array<OriginIdentity & { publicFacts: JsonObject }>;
 }
 
 export type ResolveImportedOrigin = (importId: string, targetStoreId: string, targetTaskId: string) => Promise<ImportedOrigin>;
@@ -30,6 +34,7 @@ interface OriginGrant {
   sourceHostRef: string;
   sourceKeyId: string;
   manifestDigest: string;
+  sourceHandoffId?: string;
 }
 
 const KIND = 'xagt-origin-grant';
@@ -44,17 +49,17 @@ export class OriginGrants {
 
   async create(input: unknown): Promise<JsonObject> {
     if (!isRecord(input) || Object.keys(input).some(key =>
-      !['readerId', 'importId', 'targetStoreId', 'targetTaskId', 'sourcePeerId'].includes(key))) fail('INVALID_REQUEST', 400);
-    const { readerId, importId, targetStoreId, targetTaskId, sourcePeerId } = input;
+      !['readerId', 'importId', 'targetStoreId', 'targetTaskId', 'sourcePeerId', 'sourceHandoffId'].includes(key))) fail('INVALID_REQUEST', 400);
+    const { readerId, importId, targetStoreId, targetTaskId, sourcePeerId, sourceHandoffId } = input;
     if (!isId(readerId) || !isId(importId) || !isId(targetStoreId) || !isId(targetTaskId)
-      || (sourcePeerId !== undefined && !isId(sourcePeerId))) fail('INVALID_REQUEST', 400);
+      || (sourcePeerId !== undefined && !isId(sourcePeerId)) || (sourceHandoffId !== undefined && !isId(sourceHandoffId))) fail('INVALID_REQUEST', 400);
     const reader = this.readers.get(readerId);
     if (reader.state !== 'ACTIVE' || Date.parse(reader.expiresAt) <= Date.now()) fail('GRANT_EXPIRED', 410);
     this.requireTarget(reader, targetStoreId, targetTaskId);
     const peer = sourcePeerId === undefined ? undefined : this.peers.require(sourcePeerId);
     if (peer && !canUsePeer(reader, peer.peerId)) fail('SCOPE_DENIED', 403);
     const memberBinding = this.memberIdentity();
-    const source = await this.resolveImported(importId, targetStoreId, targetTaskId);
+    const source = this.select(await this.resolveImported(importId, targetStoreId, targetTaskId), sourceHandoffId);
     if (memberBinding !== this.memberIdentity()) fail('MEMBER_SESSION_CHANGED', 409);
     this.requireCurrent(reader);
     if (peer && !canSeeBackend(reader, source.sourceStoreId)) fail('SCOPE_DENIED', 403);
@@ -62,7 +67,7 @@ export class OriginGrants {
     const grant: OriginGrant = {
       handoffRef, readerId, readerRevision: reader.grantRevision, memberBinding, importId, targetStoreId, targetTaskId,
       peerId: peer?.peerId, peerRevision: peer?.revision, sourceHostRef: source.sourceHostRef,
-      sourceKeyId: source.sourceKeyId, manifestDigest: source.manifestDigest,
+      sourceKeyId: source.sourceKeyId, manifestDigest: source.manifestDigest, sourceHandoffId,
     };
     this.store.put(KIND, handoffRef, grant);
     return { handoffRef, readerId, sourceHostRef: grant.sourceHostRef, manifestDigest: grant.manifestDigest };
@@ -86,7 +91,7 @@ export class OriginGrants {
     if (!grant || grant.readerId !== reader.readerId || grant.readerRevision !== reader.grantRevision
       || grant.memberBinding !== this.memberIdentity()) fail('NOT_FOUND', 404);
     this.requireTarget(reader, grant.targetStoreId, grant.targetTaskId);
-    const source = await this.resolveImported(grant.importId, grant.targetStoreId, grant.targetTaskId);
+    const source = this.select(await this.resolveImported(grant.importId, grant.targetStoreId, grant.targetTaskId), grant.sourceHandoffId);
     this.requireCurrent(reader);
     if (!this.store.get(KIND, handoffRef) || grant.memberBinding !== this.memberIdentity() || source.sourceHostRef !== grant.sourceHostRef
       || source.sourceKeyId !== grant.sourceKeyId || source.manifestDigest !== grant.manifestDigest) fail('NOT_FOUND', 404);
@@ -100,6 +105,13 @@ export class OriginGrants {
     const current = this.readers.get(reader.readerId);
     if (current.state !== 'ACTIVE' || current.grantRevision !== reader.grantRevision
       || Date.parse(current.expiresAt) <= Date.now()) fail('GRANT_EXPIRED', 410);
+  }
+
+  private select(origin: ImportedOrigin, handoffId?: string): ImportedOrigin {
+    if (!handoffId || origin.sourceHandoffId === handoffId) return origin;
+    const predecessor = origin.ancestors?.find(source => source.sourceHandoffId === handoffId);
+    if (!predecessor) fail('NOT_FOUND', 404);
+    return { ...origin, ...predecessor };
   }
 
   private requireTarget(reader: ReaderGrant, storeId: string, taskId: string): void {

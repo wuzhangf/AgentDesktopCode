@@ -26,6 +26,7 @@ interface SuccessorBinding {
   sourceExecutionRef: string;
   targetInstanceId: string;
   targetHostRef: string;
+  parentHandoffRef?: string;
 }
 
 interface Actor {
@@ -161,7 +162,7 @@ export class HandoffMcp {
       target = { origin, certSha256, deviceEnvelope: seal(text(connection, 'deviceToken'), this.deps.storeKey(), PURPOSE) };
     } else if (body.targetConnection !== undefined) fail('INVALID_REQUEST', 400);
     const successor = body.sourceDelegation === undefined ? undefined
-      : this.bindDelegation(body.sourceDelegation, source, targetAgent, memberIdentity);
+      : await this.bindDelegation(body.sourceDelegation, source, targetAgent, memberIdentity);
     if (successor && !target) fail('INVALID_REQUEST', 400);
     const ref = `xhc-${randomUUID()}`;
     const token = `xhw-${randomBytes(24).toString('base64url')}`;
@@ -192,7 +193,21 @@ export class HandoffMcp {
     return this.deps.handoffs.remote(...request);
   }
 
-  private bindDelegation(input: unknown, source: JsonObject, target: JsonObject, memberIdentity: string): SuccessorBinding {
+  private async bindDelegation(input: unknown, source: JsonObject, target: JsonObject, memberIdentity: string): Promise<SuccessorBinding> {
+    if (isRecord(input) && input.parentHandoffRef !== undefined) {
+      const args = exact(input, ['delegationRef', 'parentHandoffRef', 'targetInstanceId']);
+      const delegationRef = text(args, 'delegationRef'), parentHandoffRef = text(args, 'parentHandoffRef');
+      const targetInstanceId = text(args, 'targetInstanceId');
+      if (![delegationRef, parentHandoffRef, targetInstanceId].every(value => identifier.test(value))) fail('INVALID_REQUEST', 400);
+      const store = text(source, 'storeId'), task = text(source, 'taskId');
+      const record = await this.deps.member.delegationRequest('GET', `/delegations/${delegationRef}/handoffs/${parentHandoffRef}`);
+      if (record.handoffRef !== parentHandoffRef || record.targetHostRef !== this.deps.hostRef
+        || record.targetTaskRef !== task || !this.deps.handoffs.resolveImportedOrigin) fail('HANDOFF_SOURCE_EXECUTION_MISMATCH', 409);
+      const proof = await this.deps.handoffs.resolveImportedOrigin(text(record, 'importId'), store, task);
+      if (proof.sourceHandoffId !== record.handoffId || proof.manifestDigest !== record.materialDigest
+        || this.deps.member.delegationIdentity() !== memberIdentity) fail('HANDOFF_SOURCE_EXECUTION_MISMATCH', 409);
+      return { delegationRef, parentHandoffRef, sourceExecutionRef: task, targetInstanceId, targetHostRef: text(target, 'hostKey') };
+    }
     const args = exact(input, ['delegationRef', 'permitRef', 'requestKey', 'sourceExecutionRef', 'targetInstanceId']);
     const delegationRef = text(args, 'delegationRef'), permitRef = text(args, 'permitRef'), requestKey = text(args, 'requestKey');
     const sourceExecutionRef = text(args, 'sourceExecutionRef'), targetInstanceId = text(args, 'targetInstanceId');

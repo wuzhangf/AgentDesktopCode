@@ -2061,7 +2061,21 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
   }
 
   private buildManifest(h: Handoff, frozen: boolean): string {
-    return JSON.stringify(this.manifestObject(h, frozen));
+    const manifest = this.manifestObject(h, frozen);
+    if (frozen && h.targetPreflight) {
+      const previous = this.store.transaction(() => this.store.list<HandoffImport>(IMPORT_KIND).find(imp =>
+        imp.phase === 'STARTED' && imp.targetKind === h.sourceKind && imp.targetStoreId === h.sourceStoreId &&
+        imp.targetTaskRef === (h.sourceTaskId ?? h.sourceSessionId) && imp.sealScheme === 'RSA-SHA256-FROZEN-1' &&
+        imp.evidenceJson != null && imp.retirementProof == null));
+      if (previous) {
+        const report = this.importView(previous).consumptionReport;
+        if (!isRecord(report)) fail('CONSUMPTION_PROOF_INVALID', 409);
+        const predecessor = { sourceHostRef: previous.sourceHostRef, manifest: JSON.parse(previous.manifestJson),
+          sealProof: { sourceKeyId: previous.sourceKeyId, signature: previous.sealSignature }, consumptionReport: report };
+        manifest.predecessor = predecessor;
+      }
+    }
+    return JSON.stringify(manifest);
   }
 
   // ---------- SOURCE_SEALING ----------
@@ -4503,6 +4517,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         })),
       } : {}),
     };
+    const { ancestors, complete } = this.verifyOriginChain(manifest, imp.sourceHostRef);
     const publicFacts: JsonObject = {
       schemaVersion: 'xagt-origin/1', importId: imp.importId,
       sourceHostRef: imp.sourceHostRef, source: sourceIdentity, sourceRound,
@@ -4522,6 +4537,7 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
         optionsRevision: imp.targetOptionsRevision, phase: imp.phase,
       },
       materials, availableLocalCopies: materials.filter(item => item.availableLocally === true).length,
+      ...(manifest.predecessor === undefined ? {} : { ancestors: ancestors.map(row => row.publicFacts), ancestryVerified: complete }),
     };
     return {
       sourceHostRef: imp.sourceHostRef,
@@ -4531,8 +4547,78 @@ export class WorkHandoffAccess implements GatewayWorkHandoffs {
       sourceStoreId,
       sourceTaskId: sourceTaskId ?? sourceSessionId!,
       targetProjectId: imp.targetProjectRef ?? '',
-      publicFacts,
+      publicFacts, ancestors,
     };
+  }
+
+  private verifyOriginChain(manifest: JsonObject, sourceHost: string): {
+    ancestors: NonNullable<ImportedOrigin['ancestors']>; complete: boolean;
+  } {
+    const ancestors: NonNullable<ImportedOrigin['ancestors']> = [];
+    const seen = new Set([manifest.handoffId]);
+    let hop = manifest;
+    let receiver = sourceHost;
+    while (hop.predecessor !== undefined) {
+      const prior = hop.predecessor;
+      if (ancestors.length >= 32 || !isRecord(prior) || !isRecord(prior.manifest) || !isRecord(prior.sealProof)
+        || !isRecord(prior.consumptionReport)) fail('HANDOFF_ORIGIN_CHAIN_INVALID', 409);
+      const previous = prior.manifest;
+      const report = prior.consumptionReport;
+      const nextHost = text(prior, 'sourceHostRef');
+      const handoffId = text(previous, 'handoffId');
+      const keyId = text(prior.sealProof, 'sourceKeyId');
+      const previousTarget = at(previous, 'targetAgentRef');
+      const source = at(hop, 'sourceRef');
+      const task = asText(at(source, 'taskId')) ?? asText(at(source, 'sessionId'));
+      const materialDigest = text(previous, 'materialDigest');
+      const digest = this.digest(previous);
+      const evidenceDigest = text(report, 'evidenceDigest');
+      const verifiedAt = asLong(report.verifiedAt);
+      const importId = text(report, 'importId');
+      if (seen.has(handoffId) || previous.schemaVersion !== 'work-handoff/1' || !task ||
+        at(previous, 'sourceSeal', 'state') !== 'SEALED' || !/^[a-f0-9]{64}$/.test(materialDigest) ||
+        at(previousTarget, 'hostKey') !== receiver || at(previousTarget, 'kind') !== at(source, 'kind') ||
+        (at(previousTarget, 'storeId') != null && at(previousTarget, 'storeId') !== at(source, 'storeId')) ||
+        report.scheme !== 'RSA-SHA256' || report.handoffId !== handoffId || report.targetTaskRef !== task ||
+        report.frozenManifestDigest !== digest || !/^[a-f0-9]{64}$/.test(evidenceDigest) || verifiedAt <= 0) {
+        fail('HANDOFF_ORIGIN_CHAIN_INVALID', 409);
+      }
+      const consumer = this.peer(receiver, text(report, 'sourceKeyId'));
+      const issuer = this.peer(nextHost, keyId);
+      if (!consumer || !issuer) return { ancestors, complete: false };
+      if (!this.verify(consumer.publicKey, `${importId}|${handoffId}|${task}|${evidenceDigest}|${verifiedAt}|${digest}`, text(report, 'signature')) ||
+        !this.verify(issuer.publicKey, `work-handoff-frozen/1|${digest}`, text(prior.sealProof, 'signature'))) {
+        fail('HANDOFF_ORIGIN_CHAIN_INVALID', 409);
+      }
+      const origin = previous.sourceRef;
+      if (!isRecord(origin) || !['ACS', 'WORKER_LOCAL'].includes(String(origin.kind))) fail('HANDOFF_ORIGIN_CHAIN_INVALID', 409);
+      const sourceStoreId = text(origin, 'storeId');
+      const sourceIdKey = origin.kind === 'ACS' ? 'sessionId' : 'taskId';
+      const sourceTaskId = text(origin, sourceIdKey);
+      const sourceIdentity: JsonObject = {
+        kind: origin.kind, storeId: sourceStoreId, hostRef: nextHost,
+        [sourceIdKey]: sourceTaskId,
+        ...(asText(origin.engineId) ? { engineId: asText(origin.engineId) } : {}),
+        ...(asText(origin.workspaceAlias) ? { workspaceAlias: asText(origin.workspaceAlias) } : {}),
+      };
+      const materials = this.manifestItems(previous);
+      if (this.itemsDigest(materials) !== materialDigest) fail('MANIFEST_DIGEST_MISMATCH', 409);
+      const publicFacts: JsonObject = {
+        schemaVersion: 'xagt-origin/1', source: sourceIdentity, sourceHostRef: nextHost,
+        sourceRound: { handoffId, requestKey: previous.requestKey, materialRevision: previous.materialRevision,
+          materialDigest, snapshotRange: previous.snapshotRange },
+        frozenManifest: { handoffId, materialRevision: previous.materialRevision, materialDigest, frozenManifestDigest: digest },
+        proof: { verified: true, sourceKeyId: keyId },
+        materials: materials.map(item => ({ relName: item.relName, sizeBytes: item.sizeBytes, sha256: item.sha256, type: item.type,
+          role: item.role, availableLocally: false })),
+      };
+      ancestors.push({ sourceHostRef: nextHost, sourceKeyId: keyId, sourceHandoffId: handoffId, manifestDigest: materialDigest,
+        sourceStoreId, sourceTaskId, publicFacts });
+      seen.add(handoffId);
+      receiver = nextHost;
+      hop = previous;
+    }
+    return { ancestors, complete: true };
   }
 
   private importView(imp: HandoffImport): JsonObject {

@@ -518,7 +518,7 @@ if (delegationToken && delegationUrl) {
   const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/);
   const keySchema = { permitRef: identifier, requestKey: identifier };
   const text = z.string().min(1).max(16_384).refine(value => value.trim() !== '' && Buffer.byteLength(value, 'utf8') <= 16_384);
-  const callDelegation = async (operation: 'queue' | 'lookup' | 'inbox', args: Record<string, unknown>) => {
+  const callDelegation = async (operation: 'queue' | 'lookup' | 'inbox' | 'accept', args: Record<string, unknown>) => {
     try {
       const reply = await callRpc(DELEGATION_PATH, delegationToken, { version: 1, operation, arguments: args }, delegationUrl);
       if (reply.ok && reply.result) return toolResult(reply.result);
@@ -544,6 +544,15 @@ if (delegationToken && delegationUrl) {
     inputSchema: {},
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, () => callDelegation('inbox', {}));
+  if (env('XAGT_DELEGATION_ACCEPTANCE') === '1') {
+    server.registerTool('xagt_record_acceptance', {
+      description: 'Record the original main Agent’s explicit verdict and references against an observed delegation event.',
+      inputSchema: { ...keySchema, acceptanceKey: identifier, basisEventId: z.number().int().positive(),
+        decision: z.enum(['accepted', 'changes_requested']), summary: z.string().trim().min(1).max(2048),
+        evidenceRefs: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/)).min(1).max(12) },
+      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+    }, args => callDelegation('accept', args));
+  }
 }
 
 if (handoffToken && handoffUrl) {

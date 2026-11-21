@@ -9,6 +9,7 @@ const SOURCES = 'xagt-offline-origin';
 const SENDS = 'xagt-offline-send';
 const EVENTS = 'xagt-offline-event';
 const CURSORS = 'xagt-offline-cursor';
+const ACCEPTANCES = 'xagt-delegation-acceptance';
 const PREFIX = '/delegations';
 const tokenHash = (token: string): string => hash(`xagt-offline-origin:${token}`);
 const identifier = (value: unknown): string => {
@@ -29,6 +30,7 @@ interface Source {
   taskId: string;
   nativeSessionId: string;
   wakeOnCompletion: boolean;
+  allowAcceptance?: boolean;
   revoked?: boolean;
 }
 
@@ -38,6 +40,8 @@ interface InboxEvent {
   sourceEventId: string;
   delegationRef: string;
   executionRef?: string;
+  handoffRef?: string;
+  targetTaskRef?: string;
   state: string;
   resumeState: 'PENDING' | 'SUBMITTING' | 'OBSERVED' | 'UNKNOWN' | 'MANUAL';
 }
@@ -91,10 +95,10 @@ export class OfflineOrigin {
   }
 
   async create(body: unknown): Promise<JsonObject> {
-    const args = exact(body, ['backendStoreId', 'taskId', 'wakeOnCompletion']);
+    const args = exact(body, ['backendStoreId', 'taskId', 'wakeOnCompletion', 'allowAcceptance']);
     const backendStoreId = identifier(args.backendStoreId);
     const taskId = identifier(args.taskId);
-    if (typeof args.wakeOnCompletion !== 'boolean') fail('INVALID_REQUEST', 400);
+    if (typeof args.wakeOnCompletion !== 'boolean' || (args.allowAcceptance !== undefined && typeof args.allowAcceptance !== 'boolean')) fail('INVALID_REQUEST', 400);
     const memberBinding = this.member.delegationIdentity();
     const { nativeSessionId } = await this.native({ backendStoreId, taskId }, Date.now() + LIMITS.peerDeadlineMillis);
     if (memberBinding !== this.member.delegationIdentity()) fail('MEMBER_SESSION_CHANGED', 409);
@@ -102,7 +106,8 @@ export class OfflineOrigin {
     const sourceSubjectRef = `xsrc-${randomUUID()}`;
     const returnSessionRef = `xret-${randomUUID()}`;
     this.store.put(SOURCES, sourceSubjectRef, { sourceSubjectRef, returnSessionRef, tokenHash: tokenHash(token),
-      memberBinding, backendStoreId, taskId, nativeSessionId, wakeOnCompletion: args.wakeOnCompletion } satisfies Source);
+      memberBinding, backendStoreId, taskId, nativeSessionId, wakeOnCompletion: args.wakeOnCompletion,
+      allowAcceptance: args.allowAcceptance === true } satisfies Source);
     return { sourceSubjectRef, returnSessionRef, token };
   }
 
@@ -172,6 +177,37 @@ export class OfflineOrigin {
       .sort((a, b) => a.eventId - b.eventId);
   }
 
+  private async accept(source: Source, input: unknown): Promise<JsonObject> {
+    if (!source.allowAcceptance) fail('SCOPE_DENIED', 403);
+    const args = exact(input, ['permitRef', 'requestKey', 'acceptanceKey', 'basisEventId', 'decision', 'summary', 'evidenceRefs']);
+    const permitRef = identifier(args.permitRef), requestKey = identifier(args.requestKey);
+    const acceptanceKey = identifier(args.acceptanceKey);
+    if (typeof args.basisEventId !== 'number' || !Number.isSafeInteger(args.basisEventId) || args.basisEventId < 1 ||
+      (args.decision !== 'accepted' && args.decision !== 'changes_requested') || typeof args.summary !== 'string' ||
+      !args.summary.trim() || args.summary.length > 2048 || !Array.isArray(args.evidenceRefs) ||
+      args.evidenceRefs.length < 1 || args.evidenceRefs.length > 12 || args.evidenceRefs.some(ref =>
+        typeof ref !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(ref))) fail('INVALID_REQUEST', 400);
+    const recordKey = `${source.sourceSubjectRef}:${acceptanceKey}`;
+    const fingerprint = hash(JSON.stringify([permitRef, requestKey, args.basisEventId, args.decision, args.summary, args.evidenceRefs]));
+    const previous = this.store.get<{ fingerprint: string; delegationRef: string; wire: JsonObject }>(ACCEPTANCES, recordKey);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+      return this.member.delegationRequest('POST', `${PREFIX}/${previous.delegationRef}/acceptances`, previous.wire);
+    }
+    const delegation = await this.lookup(source, permitRef, requestKey);
+    const event = this.inbox(source).find(row => row.eventId === args.basisEventId && row.delegationRef === delegation.delegationRef);
+    if (!event?.executionRef || !['SUCCEEDED', 'FAILED', 'HANDOFF_TAKEN_OVER'].includes(event.state)) fail('EXECUTION_CONFLICT', 409);
+    const native = await this.native(source, Date.now() + LIMITS.localDeadlineMillis);
+    if (native.nativeSessionId !== source.nativeSessionId) fail('NATIVE_TARGET_CHANGED', 409);
+    this.authorize(source);
+    const wire = { requestKey: acceptanceKey, sourceSubjectRef: source.sourceSubjectRef, returnSessionRef: source.returnSessionRef,
+      executionRef: event.executionRef, basisEventId: event.eventId, decision: args.decision, summary: args.summary, evidenceRefs: args.evidenceRefs };
+    const raced = this.store.get<{ fingerprint: string }>(ACCEPTANCES, recordKey);
+    if (raced && raced.fingerprint !== fingerprint) fail('IDEMPOTENCY_PAYLOAD_MISMATCH', 409);
+    this.store.put(ACCEPTANCES, recordKey, { fingerprint, delegationRef: event.delegationRef, wire });
+    return this.member.delegationRequest('POST', `${PREFIX}/${event.delegationRef}/acceptances`, wire);
+  }
+
   async rpc(token: string | undefined, body: unknown): Promise<JsonObject> {
     const source = this.source(token);
     const request = exact(body, ['version', 'operation', 'arguments']);
@@ -180,6 +216,7 @@ export class OfflineOrigin {
       let result: JsonObject;
       switch (request.operation) {
         case 'queue': result = await this.queue(source, request.arguments); break;
+        case 'accept': result = await this.accept(source, request.arguments); break;
         case 'lookup': {
           const args = exact(request.arguments, ['permitRef', 'requestKey']);
           result = await this.lookup(source, identifier(args.permitRef), identifier(args.requestKey));
@@ -209,8 +246,10 @@ export class OfflineOrigin {
       cursor = event.eventId;
       const executionRef = event.executionRef == null ? undefined : identifier(event.executionRef);
       const state = identifier(event.state).toUpperCase();
-      pending.push({ sourceSubjectRef: source.sourceSubjectRef, eventId: cursor, sourceEventId: identifier(event.sourceEventId),
+      if (typeof event.sourceEventId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(event.sourceEventId)) fail('LOCAL_REPLY_INVALID', 502);
+      pending.push({ sourceSubjectRef: source.sourceSubjectRef, eventId: cursor, sourceEventId: event.sourceEventId,
         delegationRef: identifier(event.delegationRef), executionRef, state,
+        ...(event.handoffRef === undefined ? {} : { handoffRef: identifier(event.handoffRef), targetTaskRef: identifier(event.targetTaskRef) }),
         resumeState: source.wakeOnCompletion && executionRef && ['SUCCEEDED', 'FAILED'].includes(state) ? 'PENDING' : 'MANUAL' });
     }
     this.store.transaction(() => {
